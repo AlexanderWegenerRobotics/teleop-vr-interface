@@ -4,6 +4,7 @@
 #include "InputAction.h"
 #include "InputMappingContext.h" 
 #include "UObject/ConstructorHelpers.h"
+#include "GStreamerSource.h"
 
 AOperatorPawn::AOperatorPawn() {
 	PrimaryActorTick.bCanEverTick = true;
@@ -42,15 +43,21 @@ AOperatorPawn::AOperatorPawn() {
 	if (RightTrig.Succeeded()) PoseMapper->RightTriggerAction = RightTrig.Object;
 
 	ComLink = CreateDefaultSubobject<UComLink>(TEXT("ComLink"));
+	VideoFeed = CreateDefaultSubobject<UVideoFeedComponent>(TEXT("VideoFeed"));
 }
 
 void AOperatorPawn::BeginPlay()
 {
-	Super::BeginPlay();
-	
-	// Reset HMD orientation and position to align with the VR origin
-	UHeadMountedDisplayFunctionLibrary::ResetOrientationAndPosition(0.0f, EOrientPositionSelector::OrientationAndPosition);
+	// Register sources BEFORE Super::BeginPlay triggers component BeginPlay
+	FGStreamerSource::FConfig GstConfig;
+	GstConfig.Port = 5000;
+	GstConfig.bUseHardwareDecoder = false;
+	GstConfig.SRTLatencyMs = 125;
+	VideoFeed->RegisterSource(TEXT("LiveStream"), MakeUnique<FGStreamerSource>(GstConfig));
 
+	Super::BeginPlay();
+
+	UHeadMountedDisplayFunctionLibrary::ResetOrientationAndPosition(0.0f, EOrientPositionSelector::OrientationAndPosition);
 	UE_LOG(LogTemp, Log, TEXT("TeleOpPawn::BeginPlay - VR pawn initialized"));
 }
 

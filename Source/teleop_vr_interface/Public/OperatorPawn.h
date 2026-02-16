@@ -8,6 +8,7 @@
 
 #include "PoseMapper.h"
 #include "ComLink.h"
+#include "VideoFeedComponent.h"
 
 #include "OperatorPawn.generated.h"
 
@@ -48,5 +49,8 @@ protected:
 public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "TeleOp")
 	TObjectPtr<UComLink> ComLink;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "TeleOp")
+	TObjectPtr<UVideoFeedComponent> VideoFeed;
 
 };

@@ -20,7 +20,7 @@ public class teleop_vr_interface : ModuleRules
             "Core", "CoreUObject", "Engine", "InputCore", "RenderCore", "EnhancedInput",
             "NDIIO", "MediaAssets", "Renderer", "RHI", "Sockets", "Networking",
             "HeadMountedDisplay", "OpenXRHMD", "XRBase", "OpenCV", "OpenCVHelper",
-            "AudioMixer", "Synthesis", "Json", "JsonUtilities", "ImageWrapper"
+            "AudioMixer", "Synthesis", "Json", "JsonUtilities", "ImageWrapper", "GStreamerPlugin"
         });
 
 		PrivateDependencyModuleNames.AddRange(new string[] {
