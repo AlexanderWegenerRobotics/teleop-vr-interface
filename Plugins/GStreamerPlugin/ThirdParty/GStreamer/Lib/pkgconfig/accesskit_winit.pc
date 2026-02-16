@@ -1,0 +1,12 @@
+prefix=${pcfiledir}/../..
+exec_prefix=${prefix}
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: accesskit_winit
+Description: AccessKit UI accessibility infrastructure: winit adapter
+Version: 0.29.1
+Libs: -L${libdir} -laccesskit_winit -lwindows.0.52.0 -lkernel32 -lntdll -luserenv -lws2_32 -ldbghelp
+Cflags: -I${includedir}/accesskit_winit
+Libs.private: -lwindows.0.52.0 -lkernel32 -lntdll -luserenv -lws2_32 -ldbghelp
+

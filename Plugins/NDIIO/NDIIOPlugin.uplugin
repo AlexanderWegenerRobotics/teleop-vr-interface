@@ -1,0 +1,58 @@
+{
+	"FileVersion": 3,
+	"Version": 9,
+	"VersionName": "3.6",
+	"FriendlyName": "NDI IO Plugin",
+	"Description": "Exposes Core NDI Support for integration into Unreal Engine Applications",
+	"Category": "Virtual Production",
+	"CreatedBy": "Vizrt NDI AB",
+	"CreatedByURL": "https://www.ndi.video",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "",
+	"EngineVersion": "5.4.0",
+	"CanContainContent": true,
+	"Installed": true,
+	"Modules": [
+		{
+			"Name": "NDIIO",
+			"Type": "Runtime",
+			"LoadingPhase": "Default",
+			"PlatformAllowList": [
+				"Win64",
+				"Linux",
+				"LinuxArm64"
+			]
+		},
+		{
+			"Name": "NDIIOEditor",
+			"Type": "Editor",
+			"LoadingPhase": "PostEngineInit",
+			"PlatformAllowList": [
+				"Win64",
+				"Linux",
+				"LinuxArm64"
+			]
+		},
+		{
+			"Name": "NDIIOShaders",
+			"Type": "Runtime",
+			"LoadingPhase": "PostConfigInit",
+			"PlatformAllowList": [
+				"Win64",
+				"Linux",
+				"LinuxArm64"
+			]
+		}
+	],
+	"Plugins": [
+		{
+			"Name": "MediaIOFramework",
+			"Enabled": true
+		},
+		{
+			"Name": "MediaFrameworkUtilities",
+			"Enabled": true
+		}
+	]
+}

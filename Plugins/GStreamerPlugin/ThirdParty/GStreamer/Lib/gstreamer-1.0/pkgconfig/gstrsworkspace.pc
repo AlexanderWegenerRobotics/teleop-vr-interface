@@ -1,0 +1,16 @@
+prefix=${pcfiledir}/../../..
+exec_prefix=${prefix}
+libdir=${prefix}/lib
+includedir=${prefix}/include
+datarootdir=${prefix}/share
+datadir=${datarootdir}
+
+Name: gstrsworkspace
+Description: gst-plugins-rs workspace library
+Version: 0.15.0-alpha.1
+Requires: 
+Requires.private: 
+Libs: -L${libdir}/gstreamer-1.0 -lgstrsworkspace -lws2_32 -lntdll -lsecur32 -lcrypt32 -lncrypt -luserenv  /FORCE:UNRESOLVED 
+Libs.private: 
+Cflags: 
+

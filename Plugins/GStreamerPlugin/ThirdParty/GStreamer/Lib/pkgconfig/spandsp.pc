@@ -1,0 +1,12 @@
+prefix=${pcfiledir}/../..
+includedir=${prefix}/include
+libdir=${prefix}/lib
+
+Name: spandsp
+Description: A DSP library for telephony.
+Version: 0.0.6
+Requires.private: libtiff-4, libjpeg
+Libs: -L${libdir} -lspandsp
+Libs.private: -lws2_32
+Cflags: -I${includedir}
+

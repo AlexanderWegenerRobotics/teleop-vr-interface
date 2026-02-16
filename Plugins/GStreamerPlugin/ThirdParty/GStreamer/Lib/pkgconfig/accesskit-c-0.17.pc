@@ -1,0 +1,11 @@
+prefix=${pcfiledir}/../..
+includedir=${prefix}/include
+libdir=${prefix}/lib
+
+Name: accesskit-c
+Description: UI accessibility infrastructure (C API)
+Version: 0.17.0
+Libs: -L${prefix}/lib -laccesskit-c-0.17
+Libs.private: -lntdll -luserenv -ldbghelp -lkernel32 -l/defaultlib:msvcrt -lws2_32 -luiautomationcore -lruntimeobject -lpropsys
+Cflags: -I${includedir}/accesskit-c-0.17
+

@@ -1,0 +1,255 @@
+/*
+	Copyright (C) 2024 Vizrt NDI AB. All rights reserved.
+
+	This file and it's use within a Product is bound by the terms of NDI SDK license that was provided
+	as part of the NDI SDK. For more information, please review the license and the NDI SDK documentation.
+*/
+
+#include "/Engine/Public/Platform.ush"
+#include "/Engine/Generated/GeneratedUniformBuffers.ush" 
+#include "/Engine/Private/GammaCorrectionCommon.ush"
+
+
+// Matches FNDIIOShaderPS::EColorCorrection enum
+#define COLOR_CORRECTION_None         0
+#define COLOR_CORRECTION_sRGBToLinear 1
+#define COLOR_CORRECTION_LinearTosRGB 2
+
+
+void NDIIOMainVS(
+	in float4 InPosition : ATTRIBUTE0,
+	in float2 InUV : ATTRIBUTE1,
+	out float4 OutPosition : SV_POSITION,
+	out float2 OutUV : TEXCOORD0)
+{
+	OutPosition = InPosition;
+	OutUV = InUV;
+}
+
+
+
+// Shader from 8 bits RGBA to 8 bits UYVY
+void NDIIOBGRAtoUYVYPS(
+	float4 InPosition : SV_POSITION,
+	float2 InUV : TEXCOORD0,
+	out float4 OutColor : SV_Target0)
+{
+	float3x3 RGBToYCbCrMat =
+	{
+		0.18300, 0.61398, 0.06201,
+		-0.10101, -0.33899, 0.43900,
+		0.43902, -0.39900, -0.04001
+	};
+	float3 RGBToYCbCrVec = { 0.06302, 0.50198, 0.50203 };
+
+	float2 UV = NDIIOShaderUB.UVOffset + InUV * NDIIOShaderUB.UVScale;
+	float2 UVdelta = NDIIOShaderUB.UVScale * float2(2.0f/NDIIOShaderUB.OutputWidth, 1.0f/NDIIOShaderUB.OutputHeight);
+	float2 UV0 = UV + float2(-1.0f/4.0f, 0.0f) * UVdelta;
+	float2 UV1 = UV + float2( 1.0f/4.0f, 0.0f) * UVdelta;
+
+	float3 YUV0 = RGBToYCbCrVec;
+	float3 YUV1 = RGBToYCbCrVec;
+
+	if(all(UV0 >= float2(0,0)) && all(UV0 < float2(1,1)))
+	{
+		float4 RGBA0 = NDIIOShaderUB.InputTarget.Sample(NDIIOShaderUB.SamplerT, UV0);
+		float3 RGB0 = (NDIIOShaderUB.ColorCorrection == COLOR_CORRECTION_LinearTosRGB) ? LinearToSrgb(RGBA0.xyz) : RGBA0.xyz;
+		YUV0 = mul(RGBToYCbCrMat, RGB0) + RGBToYCbCrVec;
+	}
+	if(all(UV1 >= float2(0,0)) && all(UV1 < float2(1,1)))
+	{
+		float4 RGBA1 = NDIIOShaderUB.InputTarget.Sample(NDIIOShaderUB.SamplerT, UV1);
+		float3 RGB1 = (NDIIOShaderUB.ColorCorrection == COLOR_CORRECTION_LinearTosRGB) ? LinearToSrgb(RGBA1.xyz) : RGBA1.xyz;
+		YUV1 = mul(RGBToYCbCrMat, RGB1) + RGBToYCbCrVec;
+	}
+
+	OutColor.xz = (YUV0.zy + YUV1.zy) / 2.f;
+	OutColor.y = YUV0.x;
+	OutColor.w = YUV1.x;
+}
+
+
+// Shader from 8 bits RGBA to 8 bits Alpha suitable for UYVA; even-numbered lines
+void NDIIOBGRAtoAlphaEvenPS(
+	float4 InPosition : SV_POSITION,
+	float2 InUV : TEXCOORD0,
+	out float4 OutColor : SV_Target0)
+{
+	float2 UV = NDIIOShaderUB.UVOffset + InUV * NDIIOShaderUB.UVScale;
+	float2 UVdelta = NDIIOShaderUB.UVScale * float2(4.0f/NDIIOShaderUB.OutputWidth, 2.0f/NDIIOShaderUB.OutputHeight);
+	float2 UV0 = UV + float2(-3.0f/8.0f, -1.0f/4.0f) * UVdelta;
+	float2 UV1 = UV + float2(-1.0f/8.0f, -1.0f/4.0f) * UVdelta;
+	float2 UV2 = UV + float2( 1.0f/8.0f, -1.0f/4.0f) * UVdelta;
+	float2 UV3 = UV + float2( 3.0f/8.0f, -1.0f/4.0f) * UVdelta;
+
+	float A0 = 0.0f;
+	float A1 = 0.0f;
+	float A2 = 0.0f;
+	float A3 = 0.0f;
+
+	if(all(UV0 >= float2(0,0)) && all(UV0 < float2(1,1)))
+	{
+		float4 RGBA0 = NDIIOShaderUB.InputTarget.Sample(NDIIOShaderUB.SamplerT, UV0);
+		A0 = RGBA0.w * NDIIOShaderUB.AlphaScale + NDIIOShaderUB.AlphaOffset;
+	}
+	if(all(UV1 >= float2(0,0)) && all(UV1 < float2(1,1)))
+	{
+		float4 RGBA1 = NDIIOShaderUB.InputTarget.Sample(NDIIOShaderUB.SamplerT, UV1);
+		A1 = RGBA1.w * NDIIOShaderUB.AlphaScale + NDIIOShaderUB.AlphaOffset;
+	}
+	if(all(UV2 >= float2(0,0)) && all(UV2 < float2(1,1)))
+	{
+		float4 RGBA2 = NDIIOShaderUB.InputTarget.Sample(NDIIOShaderUB.SamplerT, UV2);
+		A2 = RGBA2.w * NDIIOShaderUB.AlphaScale + NDIIOShaderUB.AlphaOffset;
+	}
+	if(all(UV3 >= float2(0,0)) && all(UV3 < float2(1,1)))
+	{
+		float4 RGBA3 = NDIIOShaderUB.InputTarget.Sample(NDIIOShaderUB.SamplerT, UV3);
+		A3 = RGBA3.w * NDIIOShaderUB.AlphaScale + NDIIOShaderUB.AlphaOffset;
+	}
+
+	OutColor.xyzw = float4(A2, A1, A0, A3);
+}
+
+
+// Shader from 8 bits RGBA to 8 bits Alpha suitable for UYVA; odd-numbered lines
+void NDIIOBGRAtoAlphaOddPS(
+	float4 InPosition : SV_POSITION,
+	float2 InUV : TEXCOORD0,
+	out float4 OutColor : SV_Target0)
+{
+	float2 UV = NDIIOShaderUB.UVOffset + InUV * NDIIOShaderUB.UVScale;
+	float2 UVdelta = NDIIOShaderUB.UVScale * float2(4.0f/NDIIOShaderUB.OutputWidth, 2.0f/NDIIOShaderUB.OutputHeight);
+	float2 UV0 = UV + float2(-3.0f/8.0f,  1.0f/4.0f) * UVdelta;
+	float2 UV1 = UV + float2(-1.0f/8.0f,  1.0f/4.0f) * UVdelta;
+	float2 UV2 = UV + float2( 1.0f/8.0f,  1.0f/4.0f) * UVdelta;
+	float2 UV3 = UV + float2( 3.0f/8.0f,  1.0f/4.0f) * UVdelta;
+
+	float A0 = 0.0f;
+	float A1 = 0.0f;
+	float A2 = 0.0f;
+	float A3 = 0.0f;
+
+	if(all(UV0 >= float2(0,0)) && all(UV0 < float2(1,1)))
+	{
+		float4 RGBA0 = NDIIOShaderUB.InputTarget.Sample(NDIIOShaderUB.SamplerT, UV0);
+		A0 = RGBA0.w * NDIIOShaderUB.AlphaScale + NDIIOShaderUB.AlphaOffset;
+	}
+	if(all(UV1 >= float2(0,0)) && all(UV1 < float2(1,1)))
+	{
+		float4 RGBA1 = NDIIOShaderUB.InputTarget.Sample(NDIIOShaderUB.SamplerT, UV1);
+		A1 = RGBA1.w * NDIIOShaderUB.AlphaScale + NDIIOShaderUB.AlphaOffset;
+	}
+	if(all(UV2 >= float2(0,0)) && all(UV2 < float2(1,1)))
+	{
+		float4 RGBA2 = NDIIOShaderUB.InputTarget.Sample(NDIIOShaderUB.SamplerT, UV2);
+		A2 = RGBA2.w * NDIIOShaderUB.AlphaScale + NDIIOShaderUB.AlphaOffset;
+	}
+	if(all(UV3 >= float2(0,0)) && all(UV3 < float2(1,1)))
+	{
+		float4 RGBA3 = NDIIOShaderUB.InputTarget.Sample(NDIIOShaderUB.SamplerT, UV3);
+		A3 = RGBA3.w * NDIIOShaderUB.AlphaScale + NDIIOShaderUB.AlphaOffset;
+	}
+
+	OutColor.xyzw = float4(A2, A1, A0, A3);
+}
+
+
+// Shader from 8 bits UYVY to 8 bits RGBA (alpha set to 1)
+void NDIIOUYVYtoBGRAPS(
+	float4 InPosition : SV_POSITION,
+	float2 InUV : TEXCOORD0,
+	out float4 OutColor : SV_Target0)
+{
+	float3x3 YCbCrToRGBMat =
+	{
+		1.16414, -0.0011, 1.7923,
+		1.16390, -0.2131, -0.5342,
+		1.16660, 2.1131, -0.0001
+	};
+	float3 YCbCrToRGBVec = { -0.9726, 0.3018, -1.1342 };
+
+	if(all(InUV >= float2(0,0)) && all(InUV < float2(1,1)) && all(InUV >= float2(0,0)) && all(InUV < float2(1,1)))
+	{
+		float4 UYVYB = NDIIOShaderUB.InputTarget.Sample(NDIIOShaderUB.SamplerB, InUV);
+        
+		// changed shader
+		float4 UYVYT0 = NDIIOShaderUB.InputTarget.Sample(NDIIOShaderUB.SamplerT, InUV + float2(-0.25f / NDIIOShaderUB.InputWidth, 0));
+        float4 UYVYT1 = NDIIOShaderUB.InputTarget.Sample(NDIIOShaderUB.SamplerT, InUV + float2(0.25f / NDIIOShaderUB.InputWidth, 0));
+		
+		float4 UYVYT = NDIIOShaderUB.InputTarget.Sample(NDIIOShaderUB.SamplerT, InUV);
+
+		float PosX = 2.0f * InUV.x * NDIIOShaderUB.InputWidth;
+		float4 YUVA;
+
+		//float FracX = PosX % 2.0f;
+        float FracX = (PosX % 2.0f) * 0.5f;
+        YUVA.x = (1 - FracX) * UYVYT1.y + FracX * UYVYT0.w;
+		
+		//YUVA.x = (1 - FracX) * UYVYT.y + FracX * UYVYT.w;
+		YUVA.yz = UYVYB.zx;
+		YUVA.w = 1;
+
+		OutColor.xyz = mul(YCbCrToRGBMat, YUVA.xyz) + YCbCrToRGBVec;
+		if(NDIIOShaderUB.ColorCorrection == COLOR_CORRECTION_sRGBToLinear)
+			OutColor.xyz = sRGBToLinear(OutColor.xyz);
+		OutColor.w = YUVA.w;
+	}
+	else
+	{
+		OutColor.xyz = YCbCrToRGBVec;
+		if(NDIIOShaderUB.ColorCorrection == COLOR_CORRECTION_sRGBToLinear)
+			OutColor.xyz = sRGBToLinear(OutColor.xyz);
+		OutColor.w = 1;
+	}
+}
+
+// Shader from 8 bits UYVA to 8 bits RGBA
+void NDIIOUYVAtoBGRAPS(
+	float4 InPosition : SV_POSITION,
+	float2 InUV : TEXCOORD0,
+	out float4 OutColor : SV_Target0)
+{
+	float3x3 YCbCrToRGBMat =
+	{
+		1.16414, -0.0011, 1.7923,
+		1.16390, -0.2131, -0.5342,
+		1.16660, 2.1131, -0.0001
+	};
+	float3 YCbCrToRGBVec = { -0.9726, 0.3018, -1.1342 };
+
+	if(all(InUV >= float2(0,0)) && all(InUV < float2(1,1)) && all(InUV >= float2(0,0)) && all(InUV < float2(1,1)))
+	{
+		float4 UYVYB = NDIIOShaderUB.InputTarget.Sample(NDIIOShaderUB.SamplerB, InUV);
+		
+		// changed shader
+        float4 UYVYT0 = NDIIOShaderUB.InputTarget.Sample(NDIIOShaderUB.SamplerT, InUV + float2(-0.25f / NDIIOShaderUB.InputWidth, 0));
+        float4 UYVYT1 = NDIIOShaderUB.InputTarget.Sample(NDIIOShaderUB.SamplerT, InUV + float2(0.25f / NDIIOShaderUB.InputWidth, 0));
+		
+		float4 UYVYT = NDIIOShaderUB.InputTarget.Sample(NDIIOShaderUB.SamplerT, InUV);
+		float Alpha = NDIIOShaderUB.InputAlphaTarget.Sample(NDIIOShaderUB.SamplerT, InUV).w;
+
+		float PosX = 2.0f * InUV.x * NDIIOShaderUB.InputWidth;
+		float4 YUVA;
+
+		//float FracX = PosX % 2.0f;
+        float FracX = (PosX % 2.0f) * 0.5f;
+		//YUVA.x = (1 - FracX) * UYVYT.y + FracX * UYVYT.w;
+        YUVA.x = (1 - FracX) * UYVYT1.y + FracX * UYVYT0.w;
+		
+		YUVA.yz = UYVYB.zx;
+		YUVA.w = Alpha;
+
+		OutColor.xyz = mul(YCbCrToRGBMat, YUVA.xyz) + YCbCrToRGBVec;
+		if(NDIIOShaderUB.ColorCorrection == COLOR_CORRECTION_sRGBToLinear)
+			OutColor.xyz = sRGBToLinear(OutColor.xyz);
+		OutColor.w = YUVA.w;
+	}
+	else
+	{
+		OutColor.xyz = YCbCrToRGBVec;
+		if(NDIIOShaderUB.ColorCorrection == COLOR_CORRECTION_sRGBToLinear)
+			OutColor.xyz = sRGBToLinear(OutColor.xyz);
+		OutColor.w = 1;
+	}
+}
