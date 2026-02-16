@@ -1,2 +1,112 @@
-# Google App Engine generated folder
-appengine-generated/
+# ============================================================================
+# Unreal Engine .gitignore — teleop-vr-interface
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# Unreal Engine generated directories
+# ----------------------------------------------------------------------------
+
+# Compiled binaries (rebuilt from source)
+Binaries/
+
+# Build artifacts
+Build/
+
+# Derived data cache (engine-generated, machine-specific)
+DerivedDataCache/
+
+# Intermediate build files (compiled objects, generated headers)
+Intermediate/
+
+# Editor and runtime saved data (autosaves, logs, local configs)
+Saved/
+
+# ----------------------------------------------------------------------------
+# Unreal Engine files
+# ----------------------------------------------------------------------------
+
+# Auto-generated project files
+*.xcodeproj
+*.xcworkspace
+*.sln
+*.suo
+*.opensdf
+*.sdf
+*.VC.db
+*.VC.opendb
+
+# Compiled assets
+*.obb
+*.apk
+
+# ----------------------------------------------------------------------------
+# C++ build artifacts
+# ----------------------------------------------------------------------------
+*.o
+*.obj
+*.lib
+*.a
+*.so
+*.dll
+*.dylib
+*.exp
+*.pdb
+*.ilk
+*.idb
+*.pch
+*.gch
+
+# ----------------------------------------------------------------------------
+# Visual Studio / Rider
+# ----------------------------------------------------------------------------
+.vs/
+.vsconfig
+*.vcxproj
+*.vcxproj.*
+.idea/
+*.DotSettings.user
+
+# ----------------------------------------------------------------------------
+# OS files
+# ----------------------------------------------------------------------------
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# macOS
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+
+# Linux
+*~
+
+# ----------------------------------------------------------------------------
+# Plugin-specific ignores
+# ----------------------------------------------------------------------------
+
+# If your gstreamer plugin generates intermediate build files
+Plugins/*/Binaries/
+Plugins/*/Intermediate/
+
+# ----------------------------------------------------------------------------
+# Project-specific ignores
+# ----------------------------------------------------------------------------
+
+# Log files
+*.log
+
+# Crash reports
+CrashReportClient/
+
+# Local user settings (not shared between machines)
+*.user
+
+# Ignore content paks if you're not versioning cooked builds
+*.pak
+
+# Ignore any local testing scripts or configs
+local_config.*
