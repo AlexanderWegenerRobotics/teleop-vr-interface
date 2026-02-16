@@ -1,9 +1,13 @@
-// Fill out your copyright notice in the Description page of Project Settings.
-
 #pragma once
 
 #include "CoreMinimal.h"
 #include "GameFramework/Pawn.h"
+#include "Camera/CameraComponent.h"
+#include "Components/SceneComponent.h"
+#include "MotionControllerComponent.h"
+
+#include "PoseMapper.h"
+
 #include "OperatorPawn.generated.h"
 
 UCLASS()
@@ -12,18 +16,32 @@ class TELEOP_VR_INTERFACE_API AOperatorPawn : public APawn
 	GENERATED_BODY()
 
 public:
-	// Sets default values for this pawn's properties
 	AOperatorPawn();
+	virtual void BeginPlay() override;
+	virtual void Tick(float DeltaTime) override;
+	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
+
+	FORCEINLINE UCameraComponent* GetVRCamera() const { return VRCamera; }
+	FORCEINLINE UMotionControllerComponent* GetLeftController() const { return LeftController; }
+	FORCEINLINE UMotionControllerComponent* GetRightController() const { return RightController; }
 
 protected:
-	// Called when the game starts or when spawned
-	virtual void BeginPlay() override;
+	// Scene root for VR origin
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "VR")
+	USceneComponent* VROrigin;
 
-public:	
-	// Called every frame
-	virtual void Tick(float DeltaTime) override;
+	// Head-tracked camera
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "VR")
+	UCameraComponent* VRCamera;
 
-	// Called to bind functionality to input
-	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
+	// Hand controllers
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "VR")
+	UMotionControllerComponent* LeftController;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "VR")
+	UMotionControllerComponent* RightController;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "TeleOp")
+	TObjectPtr<UPoseMapper> PoseMapper;
 
 };

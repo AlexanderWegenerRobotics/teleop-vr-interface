@@ -32,16 +32,17 @@
 			]
 		},
 		{
-			"Name": "ViveOpenXR",
+			"Name": "NDIIOPlugin",
+			"Enabled": true
+		},
+		{
+			"Name": "OpenXRViveTracker",
 			"Enabled": true,
 			"SupportedTargetPlatforms": [
 				"Win64",
+				"Linux",
 				"Android"
 			]
-		},
-		{
-			"Name": "NDIIOPlugin",
-			"Enabled": true
 		}
 	]
 }
