@@ -10,6 +10,7 @@
 #include "GameFramework/PlayerController.h"
 #include "IXRTrackingSystem.h"
 #include "IHeadMountedDisplay.h"
+#include "ComLink.h"
 
 UPoseMapper::UPoseMapper() {
 	PrimaryComponentTick.bCanEverTick = true;
@@ -29,6 +30,7 @@ void UPoseMapper::BeginPlay(){
 		SetComponentTickEnabled(false);
 		return;
 	}
+	ComLinkRef = OwnerPawn->ComLink;
 
 	SetupInput();
 
@@ -78,6 +80,15 @@ void UPoseMapper::TickComponent(float DeltaTime, ELevelTick TickType, FActorComp
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
 	UpdatePoses();
+
+	if (ComLinkRef)
+	{
+		ComLinkRef->SendHeadPose(HeadPose);
+		if (RightHandPose.bIsValid)
+			ComLinkRef->SendHandPose(RightHandPose, bRightTriggerHeld ? 1.0f : 0.0f, false);
+		if (LeftHandPose.bIsValid)
+			ComLinkRef->SendHandPose(LeftHandPose, bLeftTriggerHeld ? 1.0f : 0.0f, true);
+	}
 
 	// Throttled debug printing
 	PrintTimer += DeltaTime;

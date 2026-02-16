@@ -12,6 +12,7 @@ class UCameraComponent;
 class UInputAction;
 class UInputMappingContext;
 class UEnhancedInputLocalPlayerSubsystem;
+class UComLink;
 
 
 UCLASS( ClassGroup=(Custom), meta=(BlueprintSpawnableComponent) )
@@ -45,6 +46,9 @@ public:
 
 	UPROPERTY(EditAnywhere, Category = "Input")
 	TObjectPtr<UInputMappingContext> PoseMappingContext;
+
+	UPROPERTY()
+	TObjectPtr<UComLink> ComLinkRef;
 
 private:
 

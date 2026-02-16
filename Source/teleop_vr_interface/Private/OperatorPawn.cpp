@@ -40,6 +40,8 @@ AOperatorPawn::AOperatorPawn() {
 	if (IMC.Succeeded()) PoseMapper->PoseMappingContext = IMC.Object;
 	if (LeftTrig.Succeeded()) PoseMapper->LeftTriggerAction = LeftTrig.Object;
 	if (RightTrig.Succeeded()) PoseMapper->RightTriggerAction = RightTrig.Object;
+
+	ComLink = CreateDefaultSubobject<UComLink>(TEXT("ComLink"));
 }
 
 void AOperatorPawn::BeginPlay()

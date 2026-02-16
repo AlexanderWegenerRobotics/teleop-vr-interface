@@ -7,6 +7,7 @@
 #include "MotionControllerComponent.h"
 
 #include "PoseMapper.h"
+#include "ComLink.h"
 
 #include "OperatorPawn.generated.h"
 
@@ -43,5 +44,9 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "TeleOp")
 	TObjectPtr<UPoseMapper> PoseMapper;
+
+public:
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "TeleOp")
+	TObjectPtr<UComLink> ComLink;
 
 };
