@@ -40,6 +40,11 @@ uint32 FFramePullRunnable::Run()
                 Frame.Timestamp = FPlatformTime::Seconds();
                 
                 int bufferSize = GStreamerGetBufferSize(buffer);
+                if (bufferSize <= 0 || bufferSize > (width * height * 4 * 2))
+                {
+                    GStreamerFreeSample(sample);
+                    continue;
+                }
                 Frame.Data.SetNumUninitialized(bufferSize);
                 GStreamerCopyBufferData(buffer, Frame.Data.GetData(), bufferSize);
                 
@@ -324,25 +329,35 @@ bool FGStreamerVideoReceiver::UpdateTexture(UTexture2D* Texture)
     VideoWidth = Frame.Width;
     VideoHeight = Frame.Height;
 
-    // Update texture using UpdateTextureRegions (game thread safe)
+    if (!Texture->GetResource() || !Texture->GetResource()->TextureRHI) {
+        return false;
+    }
+
+    if (bUpdateInFlight)
+    {
+        return false;  // Previous update still processing, skip this frame
+    }
+
+    bUpdateInFlight = true;
+
     FUpdateTextureRegion2D* Region = new FUpdateTextureRegion2D(0, 0, 0, 0, Frame.Width, Frame.Height);
 
-    // Store data in a shared pointer to manage lifetime across async operations
-    TSharedPtr<TArray<uint8>, ESPMode::ThreadSafe> ImageDataPtr = 
+    TSharedPtr<TArray<uint8>, ESPMode::ThreadSafe> ImageDataPtr =
         MakeShared<TArray<uint8>, ESPMode::ThreadSafe>(MoveTemp(Frame.Data));
 
+    TAtomic<bool>* FlagPtr = &bUpdateInFlight;
+
     Texture->UpdateTextureRegions(
-        0,  // Mip level
-        1,  // Number of regions
+        0,
+        1,
         Region,
-        Frame.Width * 4,  // Source pitch (RGBA = 4 bytes per pixel)
-        4,  // Bytes per pixel
+        Frame.Width * 4,
+        4,
         ImageDataPtr->GetData(),
-        [Region, ImageDataPtr](auto* Data, const FUpdateTextureRegion2D* Regions)
+        [Region, ImageDataPtr, FlagPtr](auto* Data, const FUpdateTextureRegion2D* Regions)
         {
-            // Cleanup callback - delete region when done
             delete Region;
-            // ImageDataPtr shared_ptr will be released automatically
+            *FlagPtr = false;
         }
     );
 

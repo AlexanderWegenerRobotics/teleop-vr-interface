@@ -71,6 +71,17 @@ void UVideoFeedComponent::TickComponent(float DeltaTime, ELevelTick TickType, FA
 
 	if (!ActiveSource || !VideoTexture) return;
 
+	// Just update texture, skip auto-resize for now
+	ActiveSource->UpdateTexture(VideoTexture);
+}
+
+/*
+void UVideoFeedComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
+{
+	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
+
+	if (!ActiveSource || !VideoTexture) return;
+
 	// Check if source dimensions changed (auto-detect resolution)
 	int32 SrcWidth, SrcHeight;
 	if (ActiveSource->GetDimensions(SrcWidth, SrcHeight))
@@ -85,6 +96,7 @@ void UVideoFeedComponent::TickComponent(float DeltaTime, ELevelTick TickType, FA
 	// Pull latest frame into texture
 	ActiveSource->UpdateTexture(VideoTexture);
 }
+*/
 
 // ============================================================================
 // Source Management

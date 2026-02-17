@@ -117,4 +117,5 @@ private:
     TUniquePtr<FFramePullRunnable> FramePullRunnable;
     TUniquePtr<FRunnableThread> FramePullThread;
     bool bUseBackgroundThread;
+    TAtomic<bool> bUpdateInFlight{ false };
 };

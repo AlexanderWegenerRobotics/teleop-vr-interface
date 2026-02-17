@@ -9,6 +9,7 @@
 #include "PoseMapper.h"
 #include "ComLink.h"
 #include "VideoFeedComponent.h"
+#include "HUDComponent.h"
 
 #include "OperatorPawn.generated.h"
 
@@ -22,6 +23,8 @@ public:
 	virtual void BeginPlay() override;
 	virtual void Tick(float DeltaTime) override;
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
+	void OnRightTriggerPressed();
+	void OnRightTriggerReleased();
 
 	FORCEINLINE UCameraComponent* GetVRCamera() const { return VRCamera; }
 	FORCEINLINE UMotionControllerComponent* GetLeftController() const { return LeftController; }
@@ -52,5 +55,8 @@ public:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "TeleOp")
 	TObjectPtr<UVideoFeedComponent> VideoFeed;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "TeleOp")
+	TObjectPtr<UHUDComponent> HUD;
 
 };

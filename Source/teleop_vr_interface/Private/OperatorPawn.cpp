@@ -44,6 +44,7 @@ AOperatorPawn::AOperatorPawn() {
 
 	ComLink = CreateDefaultSubobject<UComLink>(TEXT("ComLink"));
 	VideoFeed = CreateDefaultSubobject<UVideoFeedComponent>(TEXT("VideoFeed"));
+	HUD = CreateDefaultSubobject<UHUDComponent>(TEXT("HUD"));
 }
 
 void AOperatorPawn::BeginPlay()
@@ -56,6 +57,11 @@ void AOperatorPawn::BeginPlay()
 	VideoFeed->RegisterSource(TEXT("LiveStream"), MakeUnique<FGStreamerSource>(GstConfig));
 
 	Super::BeginPlay();
+
+	HUD->RegisterPanel(FName("Debug"), LoadClass<UHUDPanelBase>(nullptr, TEXT("/Game/UI/WBP_DebugPanel.WBP_DebugPanel_C")), 
+		EHUDPlacement::Center, FVector2D(1280.0f, 720.0f), true);
+	HUD->RegisterPanel(FName("Control"), LoadClass<UHUDPanelBase>(nullptr, TEXT("/Game/UI/WBP_ControlPanel.WBP_ControlPanel_C")),
+		EHUDPlacement::Center, FVector2D(1280.0f, 720.0f), true);
 
 	UHeadMountedDisplayFunctionLibrary::ResetOrientationAndPosition(0.0f, EOrientPositionSelector::OrientationAndPosition);
 	UE_LOG(LogTemp, Log, TEXT("TeleOpPawn::BeginPlay - VR pawn initialized"));
@@ -73,3 +79,10 @@ void AOperatorPawn::SetupPlayerInputComponent(UInputComponent* PlayerInputCompon
 
 }
 
+void AOperatorPawn::OnRightTriggerPressed(){
+	if (HUD) HUD->PressUI();
+}
+
+void AOperatorPawn::OnRightTriggerReleased(){
+	if (HUD) HUD->ReleaseUI();
+}

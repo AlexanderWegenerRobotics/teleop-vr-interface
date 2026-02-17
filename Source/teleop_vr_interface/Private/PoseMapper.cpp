@@ -198,10 +198,14 @@ void UPoseMapper::OnLeftTriggerCompleted(const FInputActionValue& Value){
 	bLeftTriggerHeld = false;
 }
 
-void UPoseMapper::OnRightTriggerStarted(const FInputActionValue& Value){
+void UPoseMapper::OnRightTriggerStarted(const FInputActionValue& Value)
+{
 	bRightTriggerHeld = true;
+	if (OwnerPawn) OwnerPawn->OnRightTriggerPressed();
 }
 
-void UPoseMapper::OnRightTriggerCompleted(const FInputActionValue& Value){
+void UPoseMapper::OnRightTriggerCompleted(const FInputActionValue& Value)
+{
 	bRightTriggerHeld = false;
+	if (OwnerPawn) OwnerPawn->OnRightTriggerReleased();
 }
