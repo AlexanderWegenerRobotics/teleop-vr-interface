@@ -188,9 +188,9 @@ void UVideoFeedComponent::CreateDisplayPlane()
 	DisplayPlane->AttachToComponent(CameraRef, FAttachmentTransformRules::KeepRelativeTransform);
 
 	// Position in front of camera, rotated to face the viewer
-	// Unreal's default plane is XY, facing +Z. We need it facing -X (toward camera).
 	DisplayPlane->SetRelativeLocation(FVector(PlaneDistance, 0.0f, 0.0f));
-	DisplayPlane->SetRelativeRotation(FRotator(90.0f, 0.0f, 0.0f));
+	//DisplayPlane->SetRelativeRotation(FRotator(90.0f, 0.0f, 0.0f));
+	DisplayPlane->SetRelativeRotation(FRotator(0.0f, 90.0f, 90.0f));
 
 	DisplayPlane->RegisterComponent();
 
@@ -240,7 +240,7 @@ void UVideoFeedComponent::UpdatePlaneScale(int32 Width, int32 Height)
 	float ScaleX = PlaneHalfWidth * 2.0f / 100.0f;
 	float ScaleY = PlaneHalfHeight * 2.0f / 100.0f;
 
-	DisplayPlane->SetRelativeScale3D(FVector(ScaleY, ScaleX, 1.0f));
+	DisplayPlane->SetRelativeScale3D(FVector(ScaleX, ScaleY, 1.0f));
 }
 
 void UVideoFeedComponent::EnsureTextureSize(int32 Width, int32 Height)
