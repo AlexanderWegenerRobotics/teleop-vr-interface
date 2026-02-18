@@ -257,8 +257,23 @@ FRotator UHUDComponent::GetPlacementRotation(EHUDPlacement Placement) const
 	return FRotator(0.0f, 180.0f, 0.0f);
 }
 
+/* 
 void UHUDComponent::PressUI(){
+	UE_LOG(LogTemp, Log, TEXT("Signal moved to Press UI"));
 	if (RightHandInteraction){
+		UE_LOG(LogTemp, Log, TEXT("We have an hand itneraction"));
+		RightHandInteraction->PressPointerKey(EKeys::LeftMouseButton);
+	}
+}
+*/
+
+void UHUDComponent::PressUI() {
+	if (RightHandInteraction) {
+		AActor* HitActor = RightHandInteraction->GetHoveredWidgetComponent()
+			? RightHandInteraction->GetHoveredWidgetComponent()->GetOwner()
+			: nullptr;
+		UE_LOG(LogTemp, Warning, TEXT("PressUI | Hovering: %s"),
+			HitActor ? *HitActor->GetName() : TEXT("NOTHING"));
 		RightHandInteraction->PressPointerKey(EKeys::LeftMouseButton);
 	}
 }

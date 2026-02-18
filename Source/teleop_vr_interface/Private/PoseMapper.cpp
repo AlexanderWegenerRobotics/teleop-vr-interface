@@ -94,7 +94,7 @@ void UPoseMapper::TickComponent(float DeltaTime, ELevelTick TickType, FActorComp
 	PrintTimer += DeltaTime;
 	if (PrintTimer >= PrintInterval)
 	{
-		PrintPoses();
+		//PrintPoses();
 		PrintTimer = 0.0f;
 	}
 }
@@ -192,6 +192,7 @@ void UPoseMapper::PrintPoses(){
 
 void UPoseMapper::OnLeftTriggerStarted(const FInputActionValue& Value){
 	bLeftTriggerHeld = true;
+	UE_LOG(LogTemp, Log, TEXT("Left triggered"));
 }
 
 void UPoseMapper::OnLeftTriggerCompleted(const FInputActionValue& Value){
@@ -201,6 +202,7 @@ void UPoseMapper::OnLeftTriggerCompleted(const FInputActionValue& Value){
 void UPoseMapper::OnRightTriggerStarted(const FInputActionValue& Value)
 {
 	bRightTriggerHeld = true;
+	UE_LOG(LogTemp, Log, TEXT("Right triggered"));
 	if (OwnerPawn) OwnerPawn->OnRightTriggerPressed();
 }
 

@@ -47,9 +47,7 @@ AOperatorPawn::AOperatorPawn() {
 	HUD = CreateDefaultSubobject<UHUDComponent>(TEXT("HUD"));
 }
 
-void AOperatorPawn::BeginPlay()
-{
-	// Register sources BEFORE Super::BeginPlay triggers component BeginPlay
+void AOperatorPawn::BeginPlay() {
 	FGStreamerSource::FConfig GstConfig;
 	GstConfig.Port = 5000;
 	GstConfig.bUseHardwareDecoder = false;
@@ -58,9 +56,10 @@ void AOperatorPawn::BeginPlay()
 
 	Super::BeginPlay();
 
-	HUD->RegisterPanel(FName("Debug"), LoadClass<UHUDPanelBase>(nullptr, TEXT("/Game/UI/WBP_DebugPanel.WBP_DebugPanel_C")), 
-		EHUDPlacement::Center, FVector2D(1280.0f, 720.0f), true);
 	HUD->RegisterPanel(FName("Control"), LoadClass<UHUDPanelBase>(nullptr, TEXT("/Game/UI/WBP_ControlPanel.WBP_ControlPanel_C")),
+		EHUDPlacement::Center, FVector2D(1280.0f, 720.0f), true);
+
+	HUD->RegisterPanel(FName("Debug"), LoadClass<UHUDPanelBase>(nullptr, TEXT("/Game/UI/WBP_DebugPanel.WBP_DebugPanel_C")),
 		EHUDPlacement::Center, FVector2D(1280.0f, 720.0f), true);
 
 	UHeadMountedDisplayFunctionLibrary::ResetOrientationAndPosition(0.0f, EOrientPositionSelector::OrientationAndPosition);
