@@ -3,10 +3,7 @@
 #include "CoreMinimal.h"
 #include "Engine/Texture2D.h"
 
-/**
- * Video source health / statistics.
- * Backends populate what they can, leave defaults for unsupported fields.
- */
+
 struct FVideoSourceStats
 {
 	int32 CurrentFPS = 0;
@@ -17,16 +14,7 @@ struct FVideoSourceStats
 	bool bIsReceiving = false;
 };
 
-/**
- * IVideoSource
- *
- * Abstract interface for a video streaming backend.
- * Any source that provides video frames (GStreamer, NDI, simulation render, etc.)
- * implements this interface.
- *
- * The VideoFeedComponent consumes this interface without knowing what backend
- * provides the frames.
- */
+
 class IVideoSource
 {
 public:

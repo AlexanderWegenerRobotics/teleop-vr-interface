@@ -95,10 +95,10 @@ void UPoseMapper::TickComponent(float DeltaTime, ELevelTick TickType, FActorComp
 	UpdatePoses();
 
 	// Throttled debug printing
-	PrintTimer += DeltaTime;
+	//PrintTimer += DeltaTime;
 	if (PrintTimer >= PrintInterval)
 	{
-		//PrintPoses();
+		PrintPoses();
 		PrintTimer = 0.0f;
 	}
 }

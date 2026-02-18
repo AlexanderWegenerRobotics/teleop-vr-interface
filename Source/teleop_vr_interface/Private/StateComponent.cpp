@@ -80,12 +80,10 @@ void UStateComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActor
 
 void UStateComponent::RequestEngage()
 {
-	if (CurrentState == ETeleOpState::Idle)
-	{
+	if (CurrentState == ETeleOpState::Idle || CurrentState == ETeleOpState::Stopped){
 		TransitionTo(ETeleOpState::Anchoring);
 	}
-	else
-	{
+	else{
 		UE_LOG(LogTemp, Warning, TEXT("StateComponent: Cannot engage from state %s"), *GetStateText().ToString());
 	}
 }

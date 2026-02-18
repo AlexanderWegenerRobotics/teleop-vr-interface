@@ -268,21 +268,15 @@ void FGStreamerVideoReceiver::Stop()
 
 bool FGStreamerVideoReceiver::UpdateTexture(UTexture2D* Texture)
 {
-    if (!Texture || !AppSink)
-    {
-        return false;
-    }
+    if (!Texture || !AppSink) { return false; }
 
     FVideoFrame Frame;
     bool bHasNewFrame = false;
     
-    if (bUseBackgroundThread && FramePullRunnable)
-    {
-        // Get frame from background thread (non-blocking)
+    if (bUseBackgroundThread && FramePullRunnable) {
         bHasNewFrame = FramePullRunnable->PopFrame(Frame);
     }
-    else
-    {
+    else {
         // Direct pull on game thread (blocking) - use timeout version
         void* sample = GStreamerTryPullSample(AppSink, 0.001); // 1ms timeout max
         if (sample)
@@ -340,13 +334,24 @@ bool FGStreamerVideoReceiver::UpdateTexture(UTexture2D* Texture)
 
     bUpdateInFlight = true;
 
-    FUpdateTextureRegion2D* Region = new FUpdateTextureRegion2D(0, 0, 0, 0, Frame.Width, Frame.Height);
+    // Guard: frame must match texture dimensions exactly
+    if (Frame.Width != Texture->GetSizeX() || Frame.Height != Texture->GetSizeY()) {
+        UE_LOG(LogTemp, Warning, TEXT("Frame/texture size mismatch: frame=%dx%d tex=%dx%d"), Frame.Width, Frame.Height, Texture->GetSizeX(), Texture->GetSizeY());
+        bUpdateInFlight = false;
+        return false;
+    }
 
-    TSharedPtr<TArray<uint8>, ESPMode::ThreadSafe> ImageDataPtr =
-        MakeShared<TArray<uint8>, ESPMode::ThreadSafe>(MoveTemp(Frame.Data));
+    // Guard: data size must be exactly width*height*4
+    if (Frame.Data.Num() != Frame.Width * Frame.Height * 4) {
+        UE_LOG(LogTemp, Warning, TEXT("Frame data size unexpected: %d vs expected %d"), Frame.Data.Num(), Frame.Width * Frame.Height * 4);
+        bUpdateInFlight = false;
+        return false;
+    }
+
+    FUpdateTextureRegion2D* Region = new FUpdateTextureRegion2D(0, 0, 0, 0, Frame.Width, Frame.Height);
+    TSharedPtr<TArray<uint8>, ESPMode::ThreadSafe> ImageDataPtr = MakeShared<TArray<uint8>, ESPMode::ThreadSafe>(MoveTemp(Frame.Data));
 
     TAtomic<bool>* FlagPtr = &bUpdateInFlight;
-
     Texture->UpdateTextureRegions(
         0,
         1,

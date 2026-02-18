@@ -3,47 +3,33 @@
 #include "IVideoSource.h"
 #include "GStreamerVideoReceiver.h"
 
-/**
- * GStreamerSource
- *
- * Wraps FGStreamerVideoReceiver behind the IVideoSource interface.
- * Configurable for port, decoder type, and transport protocol.
- */
 class FGStreamerSource : public IVideoSource
 {
 public:
 
-	struct FConfig
-	{
+	struct FConfig {
 		int32 Port = 5000;
 		int32 SRTLatencyMs = 125;
 		bool bUseHardwareDecoder = true;
 	};
 
-	FGStreamerSource(const FConfig& InConfig)
-		: Config(InConfig)
-	{
-	}
+	FGStreamerSource(const FConfig& InConfig) : Config(InConfig){ }
 
-	virtual ~FGStreamerSource() override
-	{
+	virtual ~FGStreamerSource() override {
 		Stop();
 	}
 
-	virtual bool Initialize() override
-	{
+	virtual bool Initialize() override {
 		Receiver = MakeUnique<FGStreamerVideoReceiver>();
 		return Receiver->Initialize(Config.Port, Config.SRTLatencyMs, Config.bUseHardwareDecoder);
 	}
 
-	virtual bool Start() override
-	{
+	virtual bool Start() override {
 		if (!Receiver) return false;
 		return Receiver->Start();
 	}
 
-	virtual void Stop() override
-	{
+	virtual void Stop() override {
 		if (Receiver)
 		{
 			Receiver->Stop();
