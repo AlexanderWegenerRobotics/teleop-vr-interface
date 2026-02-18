@@ -4,19 +4,7 @@
 #include "Blueprint/UserWidget.h"
 #include "HUDPanelBase.generated.h"
 
-/**
- * HUDPanelBase
- *
- * Base class for all HUD panels in the teleop system.
- * Provides common interface for visibility control, opacity animation,
- * and data access. Blueprint widget subclasses override the visual layout.
- *
- * Usage:
- *   - Create Blueprint widgets that inherit from this class
- *   - Override visual layout in Blueprint
- *   - Bind text/values to the UFUNCTION getters below
- *   - HUDComponent manages lifecycle and visibility
- */
+
 UCLASS(Abstract, Blueprintable)
 class TELEOP_VR_INTERFACE_API UHUDPanelBase : public UUserWidget
 {
@@ -99,6 +87,8 @@ public:
 	/** Cache references so panels can pull live data without knowing about components directly */
 	void SetDataContext(class UVideoFeedComponent* VideoFeed, class UComLink* ComLink);
 
+	void SetStateContext(class UStateComponent* StateComp);
+
 protected:
 
 	UPROPERTY()
@@ -106,6 +96,9 @@ protected:
 
 	UPROPERTY()
 	TObjectPtr<class UComLink> ComLinkRef;
+
+	UPROPERTY()
+	TObjectPtr<class UStateComponent> StateRef;
 
 	float TargetOpacity = 1.0f;
 };

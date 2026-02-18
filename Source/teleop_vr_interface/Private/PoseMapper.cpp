@@ -30,7 +30,6 @@ void UPoseMapper::BeginPlay(){
 		SetComponentTickEnabled(false);
 		return;
 	}
-	ComLinkRef = OwnerPawn->ComLink;
 
 	SetupInput();
 
@@ -74,21 +73,26 @@ void UPoseMapper::SetupInput(){
 		EIC->BindAction(RightTriggerAction, ETriggerEvent::Completed, this, &UPoseMapper::OnRightTriggerCompleted);
 		UE_LOG(LogTemp, Log, TEXT("PoseMapper: Right trigger action bound."));
 	}
+
+	if (RightGripAction)
+	{
+		EIC->BindAction(RightGripAction, ETriggerEvent::Started, this, &UPoseMapper::OnRightGripStarted);
+		EIC->BindAction(RightGripAction, ETriggerEvent::Completed, this, &UPoseMapper::OnRightGripCompleted);
+		UE_LOG(LogTemp, Log, TEXT("PoseMapper: Right grip action bound."));
+	}
+
+	if (LeftGripAction)
+	{
+		EIC->BindAction(LeftGripAction, ETriggerEvent::Started, this, &UPoseMapper::OnLeftGripStarted);
+		EIC->BindAction(LeftGripAction, ETriggerEvent::Completed, this, &UPoseMapper::OnLeftGripCompleted);
+		UE_LOG(LogTemp, Log, TEXT("PoseMapper: Left grip action bound."));
+	}
 }
 
 void UPoseMapper::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction){
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
 	UpdatePoses();
-
-	if (ComLinkRef)
-	{
-		ComLinkRef->SendHeadPose(HeadPose);
-		if (RightHandPose.bIsValid)
-			ComLinkRef->SendHandPose(RightHandPose, bRightTriggerHeld ? 1.0f : 0.0f, false);
-		if (LeftHandPose.bIsValid)
-			ComLinkRef->SendHandPose(LeftHandPose, bLeftTriggerHeld ? 1.0f : 0.0f, true);
-	}
 
 	// Throttled debug printing
 	PrintTimer += DeltaTime;
@@ -192,22 +196,33 @@ void UPoseMapper::PrintPoses(){
 
 void UPoseMapper::OnLeftTriggerStarted(const FInputActionValue& Value){
 	bLeftTriggerHeld = true;
-	UE_LOG(LogTemp, Log, TEXT("Left triggered"));
 }
 
 void UPoseMapper::OnLeftTriggerCompleted(const FInputActionValue& Value){
 	bLeftTriggerHeld = false;
 }
 
-void UPoseMapper::OnRightTriggerStarted(const FInputActionValue& Value)
-{
+void UPoseMapper::OnRightTriggerStarted(const FInputActionValue& Value) {
 	bRightTriggerHeld = true;
-	UE_LOG(LogTemp, Log, TEXT("Right triggered"));
 	if (OwnerPawn) OwnerPawn->OnRightTriggerPressed();
 }
 
-void UPoseMapper::OnRightTriggerCompleted(const FInputActionValue& Value)
-{
+void UPoseMapper::OnRightTriggerCompleted(const FInputActionValue& Value){
 	bRightTriggerHeld = false;
 	if (OwnerPawn) OwnerPawn->OnRightTriggerReleased();
+}
+
+void UPoseMapper::OnRightGripStarted(const FInputActionValue& Value){
+	if (OwnerPawn) OwnerPawn->OnGripPressed();
+}
+
+void UPoseMapper::OnRightGripCompleted(const FInputActionValue& Value){
+	if (OwnerPawn) OwnerPawn->OnGripReleased();
+}
+
+void UPoseMapper::OnLeftGripStarted(const FInputActionValue& Value){
+	// Left grip can mirror right grip or be used for something else later
+}
+
+void UPoseMapper::OnLeftGripCompleted(const FInputActionValue& Value){
 }

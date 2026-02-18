@@ -3,6 +3,7 @@
 #include "ComLink.h"
 #include "Components/PanelWidget.h"
 #include "Animation/UMGSequencePlayer.h"
+#include "StateComponent.h"
 
 void UHUDPanelBase::SetDataContext(UVideoFeedComponent* VideoFeed, UComLink* ComLink)
 {
@@ -36,10 +37,15 @@ void UHUDPanelBase::SetPanelOpacity(float Opacity)
 // Data access — panels call these to get live system data
 // ============================================================================
 
-FText UHUDPanelBase::GetModeText() const
-{
-	// TODO: Wire to StateComponent when implemented
-	return FText::FromString(TEXT("IDLE"));
+FText UHUDPanelBase::GetModeText() const {
+	if (StateRef) {
+		return StateRef->GetStateText();
+	}
+	return FText::FromString(TEXT("NO STATE"));
+}
+
+void UHUDPanelBase::SetStateContext(UStateComponent* StateComp) {
+	StateRef = StateComp;
 }
 
 int32 UHUDPanelBase::GetStreamFPS() const

@@ -35,16 +35,23 @@ AOperatorPawn::AOperatorPawn() {
 
 	// Load input assets for PoseMapper
 	static ConstructorHelpers::FObjectFinder<UInputMappingContext> IMC(TEXT("/Game/Input/IMC_PoseMapper.IMC_PoseMapper"));
+	// Trigger
 	static ConstructorHelpers::FObjectFinder<UInputAction> LeftTrig(TEXT("/Game/Input/IA_LeftTrigger.IA_LeftTrigger"));
 	static ConstructorHelpers::FObjectFinder<UInputAction> RightTrig(TEXT("/Game/Input/IA_RightTrigger.IA_RightTrigger"));
+	// Grip
+	static ConstructorHelpers::FObjectFinder<UInputAction> LeftGrip(TEXT("/Game/Input/IA_LeftGrip.IA_LeftGrip"));
+	static ConstructorHelpers::FObjectFinder<UInputAction> RightGrip(TEXT("/Game/Input/IA_RightGrip.IA_RightGrip"));
 
 	if (IMC.Succeeded()) PoseMapper->PoseMappingContext = IMC.Object;
 	if (LeftTrig.Succeeded()) PoseMapper->LeftTriggerAction = LeftTrig.Object;
 	if (RightTrig.Succeeded()) PoseMapper->RightTriggerAction = RightTrig.Object;
+	if (LeftGrip.Succeeded()) PoseMapper->LeftGripAction = LeftGrip.Object;
+	if (RightGrip.Succeeded()) PoseMapper->RightGripAction = RightGrip.Object;
 
 	ComLink = CreateDefaultSubobject<UComLink>(TEXT("ComLink"));
 	VideoFeed = CreateDefaultSubobject<UVideoFeedComponent>(TEXT("VideoFeed"));
 	HUD = CreateDefaultSubobject<UHUDComponent>(TEXT("HUD"));
+	State = CreateDefaultSubobject<UStateComponent>(TEXT("State"));
 }
 
 void AOperatorPawn::BeginPlay() {
@@ -66,22 +73,18 @@ void AOperatorPawn::BeginPlay() {
 	UE_LOG(LogTemp, Log, TEXT("TeleOpPawn::BeginPlay - VR pawn initialized"));
 }
 
-void AOperatorPawn::Tick(float DeltaTime)
-{
+void AOperatorPawn::Tick(float DeltaTime) {
 	Super::Tick(DeltaTime);
-
 }
 
-void AOperatorPawn::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
-{
+void AOperatorPawn::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) {
 	Super::SetupPlayerInputComponent(PlayerInputComponent);
 
 }
 
-void AOperatorPawn::OnRightTriggerPressed(){
-	if (HUD) HUD->PressUI();
-}
-
-void AOperatorPawn::OnRightTriggerReleased(){
-	if (HUD) HUD->ReleaseUI();
-}
+void AOperatorPawn::OnRightTriggerPressed(){ if (HUD) HUD->PressUI(); }
+void AOperatorPawn::OnRightTriggerReleased(){ if (HUD) HUD->ReleaseUI(); }
+void AOperatorPawn::OnGripPressed(){ if (State) State->OnGripPressed(); }
+void AOperatorPawn::OnGripReleased(){ if (State) State->OnGripReleased(); }
+void AOperatorPawn::UIEngage() { if (State) State->RequestEngage(); }
+void AOperatorPawn::UIStop() { if (State) State->RequestStop(); }

@@ -107,7 +107,7 @@ public:
 
 	/** Distance from camera to HUD panels in cm (should be slightly less than video plane) */
 	UPROPERTY(EditAnywhere, Category = "HUD")
-	float HUDDistance = 250.0f;
+	float HUDDistance = 400.0f;
 
 	/** Scale factor for widget components in world space */
 	UPROPERTY(EditAnywhere, Category = "HUD")

@@ -105,6 +105,11 @@ UHUDPanelBase* UHUDComponent::RegisterPanel(
 		WidgetInstance->PanelID = PanelID;
 		WidgetInstance->SetDataContext(VideoFeedRef, ComLinkRef);
 
+		AOperatorPawn* Pawn = Cast<AOperatorPawn>(GetOwner());
+		if (Pawn && Pawn->State) {
+			WidgetInstance->SetStateContext(Pawn->State);
+		}
+
 		if (!bStartVisible)
 		{
 			WidgetInstance->HidePanel();
@@ -122,9 +127,7 @@ UHUDPanelBase* UHUDComponent::RegisterPanel(
 	Entry.bStartVisible = bStartVisible;
 	Panels.Add(Entry);
 
-	UE_LOG(LogTemp, Log, TEXT("HUDComponent: Registered panel '%s' at %s"),
-		*PanelID.ToString(),
-		*UEnum::GetValueAsString(Placement));
+	UE_LOG(LogTemp, Log, TEXT("HUDComponent: Registered panel '%s' at %s"), *PanelID.ToString(), *UEnum::GetValueAsString(Placement));
 
 	return WidgetInstance;
 }

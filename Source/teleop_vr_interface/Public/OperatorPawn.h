@@ -10,6 +10,7 @@
 #include "ComLink.h"
 #include "VideoFeedComponent.h"
 #include "HUDComponent.h"
+#include "StateComponent.h"
 
 #include "OperatorPawn.generated.h"
 
@@ -25,10 +26,17 @@ public:
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
 	void OnRightTriggerPressed();
 	void OnRightTriggerReleased();
+	void OnGripPressed();
+	void OnGripReleased();
 
 	FORCEINLINE UCameraComponent* GetVRCamera() const { return VRCamera; }
 	FORCEINLINE UMotionControllerComponent* GetLeftController() const { return LeftController; }
 	FORCEINLINE UMotionControllerComponent* GetRightController() const { return RightController; }
+
+	UFUNCTION(BlueprintCallable)
+	void UIEngage();
+	UFUNCTION(BlueprintCallable)
+	void UIStop();
 
 protected:
 	// Scene root for VR origin
@@ -46,10 +54,10 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "VR")
 	UMotionControllerComponent* RightController;
 
+public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "TeleOp")
 	TObjectPtr<UPoseMapper> PoseMapper;
 
-public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "TeleOp")
 	TObjectPtr<UComLink> ComLink;
 
@@ -58,5 +66,8 @@ public:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "TeleOp")
 	TObjectPtr<UHUDComponent> HUD;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "TeleOp")
+	TObjectPtr<UStateComponent> State;
 
 };

@@ -41,7 +41,7 @@ public:
 
 	/** Distance from camera to display plane in cm. */
 	UPROPERTY(EditAnywhere, Category = "VideoFeed")
-	float PlaneDistance = 300.0f;
+	float PlaneDistance = 500.0f;
 
 	/** Horizontal FOV coverage (0.0 to 1.0, where 1.0 = full HMD FOV). */
 	UPROPERTY(EditAnywhere, Category = "VideoFeed", meta = (ClampMin = "0.5", ClampMax = "1.0"))

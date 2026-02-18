@@ -45,10 +45,13 @@ public:
 	TObjectPtr<UInputAction> RightTriggerAction;
 
 	UPROPERTY(EditAnywhere, Category = "Input")
-	TObjectPtr<UInputMappingContext> PoseMappingContext;
+	TObjectPtr<UInputAction> LeftGripAction;
 
-	UPROPERTY()
-	TObjectPtr<UComLink> ComLinkRef;
+	UPROPERTY(EditAnywhere, Category = "Input")
+	TObjectPtr<UInputAction> RightGripAction;
+
+	UPROPERTY(EditAnywhere, Category = "Input")
+	TObjectPtr<UInputMappingContext> PoseMappingContext;
 
 private:
 
@@ -61,6 +64,10 @@ private:
 	void OnLeftTriggerCompleted(const FInputActionValue& Value);
 	void OnRightTriggerStarted(const FInputActionValue& Value);
 	void OnRightTriggerCompleted(const FInputActionValue& Value);
+	void OnRightGripStarted(const FInputActionValue& Value);
+	void OnRightGripCompleted(const FInputActionValue& Value);
+	void OnLeftGripStarted(const FInputActionValue& Value);
+	void OnLeftGripCompleted(const FInputActionValue& Value);
 
 	// Checks if a motion controller is actively tracked
 	bool IsControllerTracked(const UMotionControllerComponent* Controller) const;
