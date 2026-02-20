@@ -61,10 +61,12 @@ void UVideoFeedComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	{
 		Pair.Value->Stop();
 	}
-
+	FlushRenderingCommands();
 	Super::EndPlay(EndPlayReason);
 }
 
+// use this if you dont want to have auto resizing. But may lead to issues, so you should rather use this to isolate errors
+/*
 void UVideoFeedComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
@@ -74,8 +76,9 @@ void UVideoFeedComponent::TickComponent(float DeltaTime, ELevelTick TickType, FA
 	// Just update texture, skip auto-resize for now
 	ActiveSource->UpdateTexture(VideoTexture);
 }
+*/
 
-/*
+
 void UVideoFeedComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
@@ -96,7 +99,7 @@ void UVideoFeedComponent::TickComponent(float DeltaTime, ELevelTick TickType, FA
 	// Pull latest frame into texture
 	ActiveSource->UpdateTexture(VideoTexture);
 }
-*/
+
 
 // ============================================================================
 // Source Management
@@ -237,18 +240,12 @@ void UVideoFeedComponent::CreateDisplayPlane()
 
 void UVideoFeedComponent::UpdatePlaneScale(int32 Width, int32 Height)
 {
-	if (!DisplayPlane || Width <= 0 || Height <= 0) return;
+	if (!DisplayPlane) return;
 
-	// Calculate plane size to cover FOVCoverage of the HMD FOV at PlaneDistance
-	// Vive Pro Eye: ~110 degrees horizontal FOV
 	float HalfFOVRad = FMath::DegreesToRadians(110.0f * 0.5f * FOVCoverage);
 	float PlaneHalfWidth = PlaneDistance * FMath::Tan(HalfFOVRad);
+	float PlaneHalfHeight = PlaneHalfWidth / (16.0f / 9.0f);  // always 16:9
 
-	// Maintain aspect ratio
-	float AspectRatio = static_cast<float>(Width) / static_cast<float>(Height);
-	float PlaneHalfHeight = PlaneHalfWidth / AspectRatio;
-
-	// Unreal's default plane is 100x100 units (1m x 1m), so scale accordingly
 	float ScaleX = PlaneHalfWidth * 2.0f / 100.0f;
 	float ScaleY = PlaneHalfHeight * 2.0f / 100.0f;
 
