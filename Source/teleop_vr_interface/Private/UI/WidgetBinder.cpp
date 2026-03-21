@@ -147,6 +147,12 @@ FName UWidgetBinder::ConsumePress() {
 	return Result;
 }
 
+FName UWidgetBinder::ConsumeRejection() {
+	FName Result = RejectedButton_;
+	RejectedButton_ = FName();
+	return Result;
+}
+
 void UWidgetBinder::SetText(FName WidgetName, const FString& Text) {
 	if (auto* Found = CachedTextBlocks_.Find(WidgetName)) {
 		if (*Found) (*Found)->SetText(FText::FromString(Text));
@@ -167,6 +173,31 @@ void UWidgetBinder::PushMessage(const FString& Text, float Duration) {
 	bMessagesDirty_ = true;
 }
 
+void UWidgetBinder::SetButtonLocked(FName ButtonName, bool bLocked) {
+	if (bLocked) {
+		LockedButtons_.Add(ButtonName);
+		SetButtonToLocked(ButtonName);
+	}
+	else {
+		LockedButtons_.Remove(ButtonName);
+		SetButtonToNormal(ButtonName);
+	}
+}
+
+bool UWidgetBinder::IsButtonLocked(FName ButtonName) const {
+	return LockedButtons_.Contains(ButtonName);
+}
+
+void UWidgetBinder::SetButtonToLocked(FName Name) {
+	if (Name == FName()) return;
+	if (auto* Found = CachedButtons_.Find(Name)) {
+		if (*Found) {
+			FLinearColor DisabledColor = (*Found)->WidgetStyle.Disabled.TintColor.GetSpecifiedColor();
+			(*Found)->SetBackgroundColor(DisabledColor);
+		}
+	}
+}
+
 void UWidgetBinder::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 	if (!bIsBound_) return;
@@ -179,18 +210,28 @@ void UWidgetBinder::TickComponent(float DeltaTime, ELevelTick TickType, FActorCo
 
 	if (NewHovered != HoveredButton_) {
 		SetButtonToNormal(HoveredButton_);
-		SetButtonToHovered(NewHovered);
+		if (LockedButtons_.Contains(NewHovered)) {
+			SetButtonToLocked(NewHovered);
+		}
+		else {
+			SetButtonToHovered(NewHovered);
+		}
 		HoveredButton_ = NewHovered;
 	}
 
 	if (bPressed && HoveredButton_ != FName()) {
-		PressedButton_ = HoveredButton_;
-		if (auto* Found = CachedButtons_.Find(HoveredButton_)) {
-			if (*Found) {
-				FLinearColor PressFlashColor = (*Found)->WidgetStyle.Pressed.TintColor.GetSpecifiedColor();
-				(*Found)->SetBackgroundColor(PressFlashColor);
-				FlashingButton_ = HoveredButton_;
-				FlashRemaining_ = PressFlashDuration_;
+		if (LockedButtons_.Contains(HoveredButton_)) {
+			RejectedButton_ = HoveredButton_;
+		}
+		else {
+			PressedButton_ = HoveredButton_;
+			if (auto* Found = CachedButtons_.Find(HoveredButton_)) {
+				if (*Found) {
+					FLinearColor PressFlashColor = (*Found)->WidgetStyle.Pressed.TintColor.GetSpecifiedColor();
+					(*Found)->SetBackgroundColor(PressFlashColor);
+					FlashingButton_ = HoveredButton_;
+					FlashRemaining_ = PressFlashDuration_;
+				}
 			}
 		}
 	}
@@ -244,6 +285,10 @@ FName UWidgetBinder::FindButtonAtUV(const FVector2D& UV) const {
 
 void UWidgetBinder::SetButtonToNormal(FName Name) {
 	if (Name == FName() || Name == FlashingButton_) return;
+	if (LockedButtons_.Contains(Name)) {
+		SetButtonToLocked(Name);
+		return;
+	}
 	if (auto* Found = CachedButtons_.Find(Name)) {
 		if (*Found) {
 			FLinearColor NormalColor = (*Found)->WidgetStyle.Normal.TintColor.GetSpecifiedColor();
@@ -270,7 +315,11 @@ void UWidgetBinder::UpdatePressFlash(float DeltaTime) {
 
 	if (auto* Found = CachedButtons_.Find(FlashingButton_)) {
 		if (*Found) {
-			if (FlashingButton_ == HoveredButton_) {
+			if (LockedButtons_.Contains(FlashingButton_)) {
+				FLinearColor LockedColor = (*Found)->WidgetStyle.Disabled.TintColor.GetSpecifiedColor();
+				(*Found)->SetBackgroundColor(LockedColor);
+			}
+			else if (FlashingButton_ == HoveredButton_) {
 				FLinearColor HoverColor = (*Found)->WidgetStyle.Hovered.TintColor.GetSpecifiedColor();
 				(*Found)->SetBackgroundColor(HoverColor);
 			}

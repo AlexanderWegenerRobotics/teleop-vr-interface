@@ -13,6 +13,7 @@
 #include "UI/GazeComponent.h"
 #include "UI/WidgetBinder.h"
 #include "UI/TMetricHistory.h"
+#include "UI/SoundFeedback.h"
 
 #include "OperatorPawn.generated.h"
 
@@ -49,11 +50,23 @@ protected:
 	UPROPERTY() TObjectPtr<UGazeComponent> Gaze;
 	UPROPERTY() TObjectPtr<UWidgetBinder> UIBinder;
 	UPROPERTY() TSubclassOf<UUserWidget> UIWidgetClass;
+	UPROPERTY() TObjectPtr<USoundFeedback> SoundFeedback;
 
 	TMetricHistory<128> LatencyHistory;
 	TMetricHistory<128> JitterHistory;
 	TMetricHistory<128> LossHistory;
 
 private:
-	void updateStateMachine();
+	ESysState OperatorState_ = ESysState::Offline;
+
+	void UpdateStateMachine();
+	void TransitionTo(ESysState NewState);
+	void UpdateButtonStates();
+	void CaptureControllerOrigins();
+	void SendArmCommands();
+	void SendHeadCommand();
+	bool CheckEmergencyStop();
+
+	FTransform HMDOrigin_;
+	bool bHMDOriginValid_ = false;
 };

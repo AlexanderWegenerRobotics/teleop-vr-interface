@@ -49,8 +49,12 @@ public:
 	void PushMessage(const FString& Text, float Duration);
 	void BindPlot(FName WidgetName, const float* Samples, const float* Envelope, int32 Capacity, const int32* Head, float RangeMin, float RangeMax);
 
+	void SetButtonLocked(FName ButtonName, bool bLocked);
+	bool IsButtonLocked(FName ButtonName) const;
+
 	FName GetHoveredButton() const { return HoveredButton_; }
 	FName ConsumePress();
+	FName ConsumeRejection();
 	bool IsWinkActive() const;
 
 	UPROPERTY(EditAnywhere, Category = "Gaze")
@@ -67,6 +71,7 @@ private:
 	FName FindButtonAtUV(const FVector2D& UV) const;
 	void SetButtonToNormal(FName Name);
 	void SetButtonToHovered(FName Name);
+	void SetButtonToLocked(FName Name);
 	void UpdatePressFlash(float DeltaTime);
 	void UpdateMessages(float DeltaTime);
 	void RebuildMessageLog();
@@ -100,8 +105,11 @@ private:
 	TMap<FName, FWidgetRect> ButtonRects_;
 	UVerticalBox* MessageLog_ = nullptr;
 
+	TSet<FName> LockedButtons_;
+
 	FName HoveredButton_ = FName();
 	FName PressedButton_ = FName();
+	FName RejectedButton_ = FName();
 
 	FName FlashingButton_ = FName();
 	float FlashRemaining_ = 0.0f;

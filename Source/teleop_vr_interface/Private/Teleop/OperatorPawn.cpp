@@ -28,6 +28,7 @@ AOperatorPawn::AOperatorPawn() {
 	VideoFeed = CreateDefaultSubobject<UVideoFeedComponent>(TEXT("VideoFeed"));
 	ComLink = CreateDefaultSubobject<UComLink>(TEXT("ComLink"));
 	Gaze = CreateDefaultSubobject<UGazeComponent>(TEXT("Gaze"));
+	SoundFeedback = CreateDefaultSubobject<USoundFeedback>(TEXT("SoundFeedback"));
 	UIBinder = CreateDefaultSubobject<UWidgetBinder>(TEXT("UIBinder"));
 	LeftTracked = CreateDefaultSubobject<UTrackedControllerComponent>(TEXT("LeftTracked"));
 	RightTracked = CreateDefaultSubobject<UTrackedControllerComponent>(TEXT("RightTracked"));
@@ -101,10 +102,13 @@ void AOperatorPawn::BeginPlay() {
 	UIBinder->Initialize(UIWidgetClass, VRCamera, FVector2D(1280.0f, 720.0f), 690.0f, 1);
 	UIBinder->BindPlot(FName("latencyPlot"), LatencyHistory.GetSamplesPtr(), nullptr, LatencyHistory.Capacity(), LatencyHistory.GetHeadPtr(), 0.0f, 200.0f);
 	UIBinder->BindPlot(FName("jitterPlot"), JitterHistory.GetSamplesPtr(), nullptr, JitterHistory.Capacity(), JitterHistory.GetHeadPtr(), 0.0f, 50.0f);
+	UpdateButtonStates();
 }
 
 void AOperatorPawn::Tick(float DeltaTime) {
 	Super::Tick(DeltaTime);
+
+	UpdateStateMachine();
 
 	FVideoSourceStats Stats = VideoFeed->GetStreamStats();
 	LatencyHistory.Push(Stats.OneWayLatencyMs);
@@ -121,6 +125,8 @@ void AOperatorPawn::Tick(float DeltaTime) {
 	bool bGazeConnected = Gaze->IsTrackerConnected();
 	UIBinder->SetText(FName("input_value"), bGazeConnected ? TEXT("CONNECTED") : TEXT("NOT FOUND"));
 	UIBinder->SetTextColor(FName("input_value"), bGazeConnected ? FLinearColor::Green : FLinearColor::Red);
+
+	UIBinder->SetText(FName("state_value"), StateToString(OperatorState_));
 
 	FString InputStatus = FString::Printf(TEXT("LT:%.1f LG:%d LS:%d RT:%.1f RG:%d RS:%d"),
 		LeftTracked->GetTriggerValue(),
@@ -141,6 +147,219 @@ void AOperatorPawn::SetupPlayerInputComponent(UInputComponent* PlayerInputCompon
 	Super::SetupPlayerInputComponent(PlayerInputComponent);
 }
 
-void AOperatorPawn::updateStateMachine() {
 
+// ============================================================
+// State machine
+// ============================================================
+
+void AOperatorPawn::UpdateStateMachine() {
+
+	if (CheckEmergencyStop()) {
+		TransitionTo(ESysState::Idle);
+		ComLink->SendAvatarCommand(ESysState::Idle);
+		return;
+	}
+
+	FName ButtonPressed = UIBinder->ConsumePress();
+	FName ButtonRejected = UIBinder->ConsumeRejection();
+	if (ButtonRejected != FName()) {
+		SoundFeedback->Play(ESoundType::Reject);
+	}
+	ESysState AvatarState = ComLink->GetAvatarState();
+
+	switch (OperatorState_) {
+
+	case ESysState::Offline:
+		if (ComLink->IsAvatarAlive() && Gaze->IsTrackerConnected()) {
+			TransitionTo(ESysState::Idle);
+		}
+		break;
+
+	case ESysState::Idle:
+		if (!ComLink->IsAvatarAlive()) {
+			TransitionTo(ESysState::Offline);
+		}
+		else if (ButtonPressed == FName("startButton")) {
+			ComLink->SendAvatarCommand(ESysState::Homing);
+			TransitionTo(ESysState::Homing);
+		}
+		break;
+
+	case ESysState::Homing:
+		if (ButtonPressed == FName("startButton")) {
+			ComLink->SendAvatarCommand(ESysState::Idle);
+			TransitionTo(ESysState::Idle);
+		}
+		else if (AvatarState == ESysState::Awaiting) {
+			CaptureControllerOrigins();
+			TransitionTo(ESysState::Awaiting);
+		}
+		break;
+
+	case ESysState::Awaiting:
+		if (ButtonPressed == FName("startButton")) {
+			ComLink->SendAvatarCommand(ESysState::Idle);
+			TransitionTo(ESysState::Idle);
+		}
+		else if (ButtonPressed == FName("engageButton")) {
+			CaptureControllerOrigins();
+			ComLink->SendAvatarCommand(ESysState::Engaged);
+			TransitionTo(ESysState::Engaged);
+		}
+		break;
+
+	case ESysState::Engaged:
+		if (ButtonPressed == FName("startButton")) {
+			ComLink->SendAvatarCommand(ESysState::Idle);
+			TransitionTo(ESysState::Idle);
+		}
+		else if (ButtonPressed == FName("engageButton")) {
+			ComLink->SendAvatarCommand(ESysState::Paused);
+			TransitionTo(ESysState::Paused);
+		}
+		else {
+			SendArmCommands();
+			SendHeadCommand();
+		}
+		break;
+
+	case ESysState::Paused:
+		if (ButtonPressed == FName("startButton")) {
+			ComLink->SendAvatarCommand(ESysState::Idle);
+			TransitionTo(ESysState::Idle);
+		}
+		else if (ButtonPressed == FName("engageButton")) {
+			CaptureControllerOrigins();
+			ComLink->SendAvatarCommand(ESysState::Engaged);
+			TransitionTo(ESysState::Engaged);
+		}
+		break;
+
+	default:
+		break;
+	}
+}
+
+void AOperatorPawn::TransitionTo(ESysState NewState) {
+	UE_LOG(LogTemp, Log, TEXT("OperatorPawn: %d -> %d"), static_cast<int>(OperatorState_), static_cast<int>(NewState));
+	SoundFeedback->Play(ESoundType::Transition);
+	OperatorState_ = NewState;
+	UpdateButtonStates();
+}
+
+void AOperatorPawn::UpdateButtonStates() {
+	switch (OperatorState_) {
+
+	case ESysState::Offline:
+		UIBinder->SetButtonLocked(FName("startButton"), true);
+		UIBinder->SetButtonLocked(FName("engageButton"), true);
+		UIBinder->SetText(FName("startLabel"), TEXT("Start"));
+		UIBinder->SetText(FName("engageLabel"), TEXT("Engage"));
+		break;
+
+	case ESysState::Idle:
+		UIBinder->SetButtonLocked(FName("startButton"), false);
+		UIBinder->SetButtonLocked(FName("engageButton"), true);
+		UIBinder->SetText(FName("startLabel"), TEXT("Start"));
+		UIBinder->SetText(FName("engageLabel"), TEXT("Engage"));
+		break;
+
+	case ESysState::Homing:
+		UIBinder->SetButtonLocked(FName("startButton"), false);
+		UIBinder->SetButtonLocked(FName("engageButton"), true);
+		UIBinder->SetText(FName("startLabel"), TEXT("Stop"));
+		UIBinder->SetText(FName("engageLabel"), TEXT("Engage"));
+		break;
+
+	case ESysState::Awaiting:
+		UIBinder->SetButtonLocked(FName("startButton"), false);
+		UIBinder->SetButtonLocked(FName("engageButton"), false);
+		UIBinder->SetText(FName("startLabel"), TEXT("Stop"));
+		UIBinder->SetText(FName("engageLabel"), TEXT("Engage"));
+		break;
+
+	case ESysState::Engaged:
+		UIBinder->SetButtonLocked(FName("startButton"), false);
+		UIBinder->SetButtonLocked(FName("engageButton"), false);
+		UIBinder->SetText(FName("startLabel"), TEXT("Stop"));
+		UIBinder->SetText(FName("engageLabel"), TEXT("Pause"));
+		break;
+
+	case ESysState::Paused:
+		UIBinder->SetButtonLocked(FName("startButton"), false);
+		UIBinder->SetButtonLocked(FName("engageButton"), false);
+		UIBinder->SetText(FName("startLabel"), TEXT("Stop"));
+		UIBinder->SetText(FName("engageLabel"), TEXT("Engage"));
+		break;
+
+	default:
+		break;
+	}
+}
+
+bool AOperatorPawn::CheckEmergencyStop() {
+	if (OperatorState_ == ESysState::Offline || OperatorState_ == ESysState::Idle) {
+		return false;
+	}
+	bool bStop = LeftTracked->IsMenuPressed() || RightTracked->IsMenuPressed();
+	if (bStop) {
+		SoundFeedback->Play(ESoundType::Warning);
+		LeftTracked->ConsumeMenuPress();
+		RightTracked->ConsumeMenuPress();
+	}
+	return bStop;
+}
+
+void AOperatorPawn::CaptureControllerOrigins() {
+	LeftTracked->CaptureOrigin();
+	RightTracked->CaptureOrigin();
+
+	if (VRCamera) {
+		HMDOrigin_ = VRCamera->GetComponentTransform();
+		bHMDOriginValid_ = true;
+	}
+}
+
+void AOperatorPawn::SendArmCommands() {
+	if (LeftTracked->IsTracking() && !LeftTracked->IsClutching()) {
+		FControllerDeltaPose Delta = LeftTracked->GetDeltaPose();
+		FArmCommandMsg Msg{};
+		Msg.DeviceId = 0;
+		Msg.State = static_cast<uint8>(ESysState::Engaged);
+		CoordConvert::UnrealToProtocolFloat(Delta.Translation, Msg.Position[0], Msg.Position[1], Msg.Position[2]);
+		FRotator DeltaRot = Delta.Rotation.Rotator();
+		CoordConvert::UnrealToProtocolQuatFloat(DeltaRot, Msg.Quaternion[0], Msg.Quaternion[1], Msg.Quaternion[2], Msg.Quaternion[3]);
+		Msg.Gripper = LeftTracked->GetTriggerValue();
+		Msg.TimestampNs = static_cast<uint64>(FPlatformTime::Seconds() * 1e9);
+		ComLink->SendArmCommand(Msg);
+	}
+
+	if (RightTracked->IsTracking() && !RightTracked->IsClutching()) {
+		FControllerDeltaPose Delta = RightTracked->GetDeltaPose();
+		FArmCommandMsg Msg{};
+		Msg.DeviceId = 1;
+		Msg.State = static_cast<uint8>(ESysState::Engaged);
+		CoordConvert::UnrealToProtocolFloat(Delta.Translation, Msg.Position[0], Msg.Position[1], Msg.Position[2]);
+		FRotator DeltaRot = Delta.Rotation.Rotator();
+		CoordConvert::UnrealToProtocolQuatFloat(DeltaRot, Msg.Quaternion[0], Msg.Quaternion[1], Msg.Quaternion[2], Msg.Quaternion[3]);
+		Msg.Gripper = RightTracked->GetTriggerValue();
+		Msg.TimestampNs = static_cast<uint64>(FPlatformTime::Seconds() * 1e9);
+		ComLink->SendArmCommand(Msg);
+	}
+}
+
+void AOperatorPawn::SendHeadCommand() {
+	if (!bHMDOriginValid_ || !VRCamera) return;
+
+	FTransform CurrentHMD = VRCamera->GetComponentTransform();
+	FQuat DeltaQuat = HMDOrigin_.GetRotation().Inverse() * CurrentHMD.GetRotation();
+	FRotator DeltaRot = DeltaQuat.Rotator();
+
+	FHeadCommandMsg Msg{};
+	Msg.DeviceId = 0;
+	Msg.State = static_cast<uint8>(ESysState::Engaged);
+	Msg.Pan = static_cast<float>(FMath::DegreesToRadians(DeltaRot.Yaw));
+	Msg.Tilt = static_cast<float>(FMath::DegreesToRadians(DeltaRot.Pitch));
+	Msg.TimestampNs = static_cast<uint64>(FPlatformTime::Seconds() * 1e9);
+	ComLink->SendHeadCommand(Msg);
 }

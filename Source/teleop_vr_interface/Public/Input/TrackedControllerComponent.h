@@ -41,6 +41,7 @@ public:
     bool IsMenuPressed() const { return bMenuPressed; }
     float GetTriggerValue() const { return TriggerValue; }
     bool IsClutching() const { return bIsClutching; }
+    void ConsumeMenuPress() { bMenuPressed = false; }
 
     UPROPERTY(EditAnywhere, Category = "Controller")
     UMotionControllerComponent* MotionController = nullptr;

@@ -21,6 +21,20 @@ enum class ESysState : uint8
     Stop = 7
 };
 
+inline FString StateToString(ESysState S) {
+    switch (S) {
+    case ESysState::Offline:  return TEXT("OFFLINE");
+    case ESysState::Idle:     return TEXT("IDLE");
+    case ESysState::Homing:   return TEXT("HOMING");
+    case ESysState::Awaiting: return TEXT("AWAITING");
+    case ESysState::Engaged:  return TEXT("ENGAGED");
+    case ESysState::Paused:   return TEXT("PAUSED");
+    case ESysState::Fault:    return TEXT("FAULT");
+    case ESysState::Stop:     return TEXT("STOP");
+    default:                  return TEXT("UNKNOWN");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Wire structs — binary layout must match common.hpp #pragma pack(push,1).
 // Never add UE reflection macros inside these structs.
