@@ -29,6 +29,29 @@ AOperatorPawn::AOperatorPawn() {
 	ComLink = CreateDefaultSubobject<UComLink>(TEXT("ComLink"));
 	Gaze = CreateDefaultSubobject<UGazeComponent>(TEXT("Gaze"));
 	UIBinder = CreateDefaultSubobject<UWidgetBinder>(TEXT("UIBinder"));
+	LeftTracked = CreateDefaultSubobject<UTrackedControllerComponent>(TEXT("LeftTracked"));
+	RightTracked = CreateDefaultSubobject<UTrackedControllerComponent>(TEXT("RightTracked"));
+
+	static ConstructorHelpers::FObjectFinder<UInputMappingContext> IMC(TEXT("/Game/Input/IMC_PoseMapper.IMC_PoseMapper"));
+	if (IMC.Succeeded()) InputMappingContext = IMC.Object;
+
+	static ConstructorHelpers::FObjectFinder<UInputAction> LeftTrig(TEXT("/Game/Input/IA_LeftTrigger.IA_LeftTrigger"));
+	static ConstructorHelpers::FObjectFinder<UInputAction> LeftGrip(TEXT("/Game/Input/IA_LeftGrip.IA_LeftGrip"));
+	static ConstructorHelpers::FObjectFinder<UInputAction> LeftStop(TEXT("/Game/Input/IA_LeftStop.IA_LeftStop"));
+	static ConstructorHelpers::FObjectFinder<UInputAction> RightTrig(TEXT("/Game/Input/IA_RightTrigger.IA_RightTrigger"));
+	static ConstructorHelpers::FObjectFinder<UInputAction> RightGrip(TEXT("/Game/Input/IA_RightGrip.IA_RightGrip"));
+	static ConstructorHelpers::FObjectFinder<UInputAction> RightStop(TEXT("/Game/Input/IA_RightStop.IA_RightStop"));
+
+	LeftTracked->MotionController = LeftController;
+	RightTracked->MotionController = RightController;
+
+	LeftTracked->IA_Trigger = LeftTrig.Object;
+	LeftTracked->IA_Grip = LeftGrip.Object;
+	LeftTracked->IA_Stop = LeftStop.Object;
+	RightTracked->IA_Trigger = RightTrig.Object;
+	RightTracked->IA_Grip = RightGrip.Object;
+	RightTracked->IA_Stop = RightStop.Object;
+
 
 	static ConstructorHelpers::FClassFinder<UUserWidget> UIClass(TEXT("/Game/UI/WBP_DebugPanel.WBP_DebugPanel_C"));
 	if (UIClass.Succeeded()) {
@@ -66,6 +89,15 @@ void AOperatorPawn::BeginPlay() {
 
 	Super::BeginPlay();
 
+	if (APlayerController* PC = Cast<APlayerController>(GetController())) {
+		if (UEnhancedInputLocalPlayerSubsystem* Subsystem = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(PC->GetLocalPlayer())) {
+			Subsystem->AddMappingContext(InputMappingContext, 0);
+		}
+	}
+
+	LeftTracked->bDrawDebugRay = true;
+	RightTracked->bDrawDebugRay = true;
+
 	UIBinder->Initialize(UIWidgetClass, VRCamera, FVector2D(1280.0f, 720.0f), 690.0f, 1);
 	UIBinder->BindPlot(FName("latencyPlot"), LatencyHistory.GetSamplesPtr(), nullptr, LatencyHistory.Capacity(), LatencyHistory.GetHeadPtr(), 0.0f, 200.0f);
 	UIBinder->BindPlot(FName("jitterPlot"), JitterHistory.GetSamplesPtr(), nullptr, JitterHistory.Capacity(), JitterHistory.GetHeadPtr(), 0.0f, 50.0f);
@@ -90,8 +122,19 @@ void AOperatorPawn::Tick(float DeltaTime) {
 	UIBinder->SetText(FName("input_value"), bGazeConnected ? TEXT("CONNECTED") : TEXT("NOT FOUND"));
 	UIBinder->SetTextColor(FName("input_value"), bGazeConnected ? FLinearColor::Green : FLinearColor::Red);
 
-	UIBinder->SetText(FName("testInput"), UIBinder->IsWinkActive() ? TEXT("INPUT") : TEXT("NO INPUT"));
-	UIBinder->SetTextColor(FName("testInput"), UIBinder->IsWinkActive() ? FLinearColor::Green : FLinearColor::Red);
+	FString InputStatus = FString::Printf(TEXT("LT:%.1f LG:%d LS:%d RT:%.1f RG:%d RS:%d"),
+		LeftTracked->GetTriggerValue(),
+		LeftTracked->IsGripHeld(),
+		LeftTracked->IsMenuPressed(),
+		RightTracked->GetTriggerValue(),
+		RightTracked->IsGripHeld(),
+		RightTracked->IsMenuPressed());
+	UIBinder->SetText(FName("testInput"), InputStatus);
+
+	bool bAnyActive = LeftTracked->GetTriggerValue() > 0.1f || RightTracked->GetTriggerValue() > 0.1f
+		|| LeftTracked->IsGripHeld() || RightTracked->IsGripHeld()
+		|| LeftTracked->IsMenuPressed() || RightTracked->IsMenuPressed();
+	UIBinder->SetTextColor(FName("testInput"), bAnyActive ? FLinearColor::Green : FLinearColor::Red);
 }
 
 void AOperatorPawn::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) {

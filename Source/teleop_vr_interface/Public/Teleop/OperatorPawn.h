@@ -5,7 +5,9 @@
 #include "Camera/CameraComponent.h"
 #include "Components/SceneComponent.h"
 #include "MotionControllerComponent.h"
-
+#include "InputMappingContext.h"
+#include "EnhancedInputSubsystems.h"
+#include "Input/TrackedControllerComponent.h"
 #include "Video/VideoFeedComponent.h"
 #include "Networking/ComLink.h"
 #include "UI/GazeComponent.h"
@@ -31,6 +33,17 @@ protected:
 	UPROPERTY() TObjectPtr<UCameraComponent> VRCamera;
 	UPROPERTY()TObjectPtr<UMotionControllerComponent> LeftController;
 	UPROPERTY() TObjectPtr<UMotionControllerComponent> RightController;
+
+	UPROPERTY() UTrackedControllerComponent* LeftTracked = nullptr;
+	UPROPERTY() UTrackedControllerComponent* RightTracked = nullptr;
+	UPROPERTY() UInputMappingContext* InputMappingContext = nullptr;
+	UPROPERTY() UInputAction* IA_LeftTrigger = nullptr;
+	UPROPERTY() UInputAction* IA_LeftGrip = nullptr;
+	UPROPERTY() UInputAction* IA_LeftStop = nullptr;
+	UPROPERTY() UInputAction* IA_RightTrigger = nullptr;
+	UPROPERTY() UInputAction* IA_RightGrip = nullptr;
+	UPROPERTY() UInputAction* IA_RightStop = nullptr;
+
 	UPROPERTY() TObjectPtr<UVideoFeedComponent> VideoFeed;
 	UPROPERTY()TObjectPtr<UComLink> ComLink;
 	UPROPERTY() TObjectPtr<UGazeComponent> Gaze;
