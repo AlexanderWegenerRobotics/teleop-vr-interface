@@ -1,0 +1,24 @@
+using UnrealBuildTool;
+using System.IO;
+
+public class teleop_vr_interface : ModuleRules
+{
+	public teleop_vr_interface(ReadOnlyTargetRules Target) : base(Target)
+	{
+		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
+
+        bEnableExceptions = true;
+
+        // Eigen use system include to suppress warnings
+        PublicSystemIncludePaths.Add(Path.Combine(ModuleDirectory, "../../ThirdParty/Eigen"));
+
+        PublicDependencyModuleNames.AddRange(new string[] {
+            "Core", "CoreUObject", "Engine", "InputCore", "RenderCore", "EnhancedInput", "UMG", "Slate", "SlateCore", "SlateRHIRenderer",
+            "MediaAssets", "Renderer", "RHI", "Sockets", "Networking", "EyeTracker", "ViveOpenXREyeTracker",
+            "HeadMountedDisplay", "OpenXRHMD", "Json", "JsonUtilities", "ImageWrapper", "GStreamerPlugin"
+        });
+  
+        PrivateDependencyModuleNames.AddRange(new string[] {  });
+
+	}
+}

@@ -1,0 +1,11 @@
+prefix=${pcfiledir}/../..
+includedir=${prefix}/include
+libdir=${prefix}/lib
+
+Name: dvdnav
+Description: DVD Navigation library
+Version: 6.1.1
+Requires.private: dvdread >=  6.0.0
+Libs: -L${libdir} -ldvdnav
+Cflags: -I${includedir}
+

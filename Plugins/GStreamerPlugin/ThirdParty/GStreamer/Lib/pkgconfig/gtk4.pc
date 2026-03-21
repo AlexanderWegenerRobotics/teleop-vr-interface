@@ -1,0 +1,15 @@
+prefix=${pcfiledir}/../..
+includedir=${prefix}/include
+libdir=${prefix}/lib
+
+targets=win32
+gtk_binary_version=4.0.0
+gtk_host=x86_64-windows
+
+Name: GTK
+Description: GTK Graphical UI Library
+Version: 4.20.3
+Requires: pangowin32 >=  1.56, pangocairo >=  1.56, gdk-pixbuf-2.0 >=  2.30.0, cairo >=  1.18.2, cairo-gobject >=  1.18.2, graphene-gobject-1.0 >=  1.10.0, gio-2.0 >=  2.82
+Libs: -L${libdir} -lgtk-4
+Cflags: -I${includedir}/gtk-4.0
+

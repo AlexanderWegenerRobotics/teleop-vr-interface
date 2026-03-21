@@ -1,0 +1,5 @@
+{
+    "network": "network.json",
+    "stream":  "stream.json",
+    "hud":     "hud.json"
+}
