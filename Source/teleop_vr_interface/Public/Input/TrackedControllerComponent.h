@@ -97,6 +97,9 @@ private:
     FTransform LastTrackedTransform;
     double LastTrackingTimestamp = 0.0;
     EControllerTrackingState TrackingState = EControllerTrackingState::Lost;
+    FVector BankedTranslation = FVector::ZeroVector;
+    FQuat BankedRotation = FQuat::Identity;
 
     double LastLogTime = 0.0;
+
 };

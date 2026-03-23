@@ -100,8 +100,8 @@ void AOperatorPawn::BeginPlay() {
 	RightTracked->bDrawDebugRay = true;
 
 	UIBinder->Initialize(UIWidgetClass, VRCamera, FVector2D(1280.0f, 720.0f), 690.0f, 1);
-	UIBinder->BindPlot(FName("latencyPlot"), LatencyHistory.GetSamplesPtr(), nullptr, LatencyHistory.Capacity(), LatencyHistory.GetHeadPtr(), 0.0f, 200.0f);
-	UIBinder->BindPlot(FName("jitterPlot"), JitterHistory.GetSamplesPtr(), nullptr, JitterHistory.Capacity(), JitterHistory.GetHeadPtr(), 0.0f, 50.0f);
+	UIBinder->BindPlot(FName("latencyPlot"), LatencyHistory.GetSamplesPtr(), nullptr, LatencyHistory.Capacity(), LatencyHistory.GetHeadPtr(), 0.0f, 40.0f);
+	UIBinder->BindPlot(FName("jitterPlot"), JitterHistory.GetSamplesPtr(), nullptr, JitterHistory.Capacity(), JitterHistory.GetHeadPtr(), 0.0f, 20.0f);
 	UpdateButtonStates();
 }
 
@@ -126,21 +126,8 @@ void AOperatorPawn::Tick(float DeltaTime) {
 	UIBinder->SetText(FName("input_value"), bGazeConnected ? TEXT("CONNECTED") : TEXT("NOT FOUND"));
 	UIBinder->SetTextColor(FName("input_value"), bGazeConnected ? FLinearColor::Green : FLinearColor::Red);
 
-	UIBinder->SetText(FName("state_value"), StateToString(OperatorState_));
-
-	FString InputStatus = FString::Printf(TEXT("LT:%.1f LG:%d LS:%d RT:%.1f RG:%d RS:%d"),
-		LeftTracked->GetTriggerValue(),
-		LeftTracked->IsGripHeld(),
-		LeftTracked->IsMenuPressed(),
-		RightTracked->GetTriggerValue(),
-		RightTracked->IsGripHeld(),
-		RightTracked->IsMenuPressed());
-	UIBinder->SetText(FName("testInput"), InputStatus);
-
-	bool bAnyActive = LeftTracked->GetTriggerValue() > 0.1f || RightTracked->GetTriggerValue() > 0.1f
-		|| LeftTracked->IsGripHeld() || RightTracked->IsGripHeld()
-		|| LeftTracked->IsMenuPressed() || RightTracked->IsMenuPressed();
-	UIBinder->SetTextColor(FName("testInput"), bAnyActive ? FLinearColor::Green : FLinearColor::Red);
+	UIBinder->SetText(FName("operator_state_value"), StateToString(OperatorState_));
+	UIBinder->SetText(FName("avatar_state_value"), StateToString(ComLink->GetAvatarState()));
 }
 
 void AOperatorPawn::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) {
@@ -358,7 +345,7 @@ void AOperatorPawn::SendHeadCommand() {
 	FHeadCommandMsg Msg{};
 	Msg.DeviceId = 0;
 	Msg.State = static_cast<uint8>(ESysState::Engaged);
-	Msg.Pan = static_cast<float>(FMath::DegreesToRadians(DeltaRot.Yaw));
+	Msg.Pan = static_cast<float>(FMath::DegreesToRadians(-DeltaRot.Yaw));
 	Msg.Tilt = static_cast<float>(FMath::DegreesToRadians(DeltaRot.Pitch));
 	Msg.TimestampNs = static_cast<uint64>(FPlatformTime::Seconds() * 1e9);
 	ComLink->SendHeadCommand(Msg);

@@ -131,7 +131,7 @@ void UVideoFeedComponent::CreateStereoLayer()
     VideoTexture = UTexture2D::CreateTransient(1280, 720, PF_B8G8R8A8);
     if (VideoTexture)
     {
-        VideoTexture->SRGB = true;
+        VideoTexture->SRGB = false;
         VideoTexture->Filter = TF_Bilinear;
         VideoTexture->LODGroup = TEXTUREGROUP_UI;
         VideoTexture->NeverStream = true;

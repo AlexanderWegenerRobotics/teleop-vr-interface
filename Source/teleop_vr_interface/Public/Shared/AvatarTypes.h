@@ -3,14 +3,8 @@
 #include "CoreMinimal.h"
 #include "AvatarTypes.generated.h"
 
-// ---------------------------------------------------------------------------
-// ESysState — mirrors SysState enum in common.hpp exactly.
-// Values must not change without matching the avatar side.
-// ---------------------------------------------------------------------------
-
 UENUM(BlueprintType)
-enum class ESysState : uint8
-{
+enum class ESysState : uint8 {
     Offline = 0,
     Idle = 1,
     Homing = 2,
@@ -35,28 +29,21 @@ inline FString StateToString(ESysState S) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Wire structs — binary layout must match common.hpp #pragma pack(push,1).
-// Never add UE reflection macros inside these structs.
-// ---------------------------------------------------------------------------
 
 #pragma pack(push, 1)
 
-struct FAvatarStateMsg
-{
+struct FAvatarStateMsg{
     uint8    SystemState;
     uint64   TimestampNs;
 };
 
-struct FAvatarCommandMsg
-{
+struct FAvatarCommandMsg{
     uint8    RequestedState;
     uint8    SessionId;
     uint64   TimestampNs;
 };
 
-struct FArmStateMsg
-{
+struct FArmStateMsg{
     uint8    DeviceId;
     uint8    State;
     float    Position[3];
@@ -65,8 +52,7 @@ struct FArmStateMsg
     uint64   TimestampNs;
 };
 
-struct FArmCommandMsg
-{
+struct FArmCommandMsg{
     uint8    DeviceId;
     uint8    State;
     float    Position[3];
@@ -75,8 +61,7 @@ struct FArmCommandMsg
     uint64   TimestampNs;
 };
 
-struct FHeadStateMsg
-{
+struct FHeadStateMsg{
     uint8    DeviceId;
     uint8    State;
     float    Pan;
@@ -84,8 +69,7 @@ struct FHeadStateMsg
     uint64   TimestampNs;
 };
 
-struct FHeadCommandMsg
-{
+struct FHeadCommandMsg{
     uint8    DeviceId;
     uint8    State;
     float    Pan;
@@ -95,10 +79,6 @@ struct FHeadCommandMsg
 
 #pragma pack(pop)
 
-// ---------------------------------------------------------------------------
-// Size assertions — catch layout drift at compile time.
-// ---------------------------------------------------------------------------
-
 static_assert(sizeof(FAvatarStateMsg) == 9, "FAvatarStateMsg size mismatch");
 static_assert(sizeof(FAvatarCommandMsg) == 10, "FAvatarCommandMsg size mismatch");
 static_assert(sizeof(FArmStateMsg) == 66, "FArmStateMsg size mismatch");
@@ -106,14 +86,8 @@ static_assert(sizeof(FArmCommandMsg) == 42, "FArmCommandMsg size mismatch");
 static_assert(sizeof(FHeadStateMsg) == 18, "FHeadStateMsg size mismatch");
 static_assert(sizeof(FHeadCommandMsg) == 18, "FHeadCommandMsg size mismatch");
 
-// ---------------------------------------------------------------------------
-// FTrackedPose — internal Unreal representation (cm, left-handed).
-// Used by PoseMapper to hold controller and head poses.
-// ---------------------------------------------------------------------------
-
 USTRUCT(BlueprintType)
-struct FTrackedPose
-{
+struct FTrackedPose{
     GENERATED_BODY()
 
     UPROPERTY()
@@ -129,30 +103,15 @@ struct FTrackedPose
     double Timestamp = 0.0;
 };
 
-// ---------------------------------------------------------------------------
-// CoordConvert
-// Protocol convention: meters, right-handed Z-up (MuJoCo)
-// Unreal convention:   centimeters, left-handed Z-up
-//
-//   Unreal->Protocol:  X_p =  X_ue/100,  Y_p = -Y_ue/100,  Z_p = Z_ue/100
-//   Protocol->Unreal:  X_ue = X_p*100,   Y_ue = -Y_p*100,  Z_ue = Z_p*100
-//   Quaternion Y negates due to handedness flip.
-// ---------------------------------------------------------------------------
-
-namespace CoordConvert
-{
-    // Double variants — general use
+namespace CoordConvert{
     inline void UnrealToProtocol(const FVector& In,
-        double& OutX, double& OutY, double& OutZ)
-    {
+        double& OutX, double& OutY, double& OutZ){
         OutX = In.X / 100.0;
         OutY = -In.Y / 100.0;
         OutZ = In.Z / 100.0;
     }
 
-    inline void UnrealToProtocolQuat(const FRotator& In,
-        double& QX, double& QY, double& QZ, double& QW)
-    {
+    inline void UnrealToProtocolQuat(const FRotator& In, double& QX, double& QY, double& QZ, double& QW){
         FQuat Q = In.Quaternion();
         QX = Q.X;
         QY = -Q.Y;
@@ -160,33 +119,26 @@ namespace CoordConvert
         QW = Q.W;
     }
 
-    inline FVector ProtocolToUnreal(double X, double Y, double Z)
-    {
+    inline FVector ProtocolToUnreal(double X, double Y, double Z){
         return FVector(X * 100.0, -Y * 100.0, Z * 100.0);
     }
 
-    inline FRotator ProtocolToUnrealRot(double QX, double QY, double QZ, double QW)
-    {
-        FQuat Q(QX, -QY, QZ, QW);
+    inline FRotator ProtocolToUnrealRot(double Q0, double Q1, double Q2, double Q3) {
+        FQuat Q(Q1, -Q2, Q3, Q0);
         return Q.Rotator();
     }
 
-    // Float variants — for wire struct fields (FArmCommandMsg, FHeadCommandMsg)
-    inline void UnrealToProtocolFloat(const FVector& In,
-        float& OutX, float& OutY, float& OutZ)
-    {
+    inline void UnrealToProtocolFloat(const FVector& In, float& OutX, float& OutY, float& OutZ) {
         OutX = static_cast<float>(In.X / 100.0);
         OutY = -static_cast<float>(In.Y / 100.0);
         OutZ = static_cast<float>(In.Z / 100.0);
     }
 
-    inline void UnrealToProtocolQuatFloat(const FRotator& In,
-        float& QX, float& QY, float& QZ, float& QW)
-    {
+    inline void UnrealToProtocolQuatFloat(const FRotator& In, float& Q0, float& Q1, float& Q2, float& Q3) {
         FQuat Q = In.Quaternion();
-        QX = static_cast<float>(Q.X);
-        QY = -static_cast<float>(Q.Y);
-        QZ = static_cast<float>(Q.Z);
-        QW = static_cast<float>(Q.W);
+        Q0 = static_cast<float>(Q.W);
+        Q1 = static_cast<float>(Q.X);
+        Q2 = -static_cast<float>(Q.Y);
+        Q3 = static_cast<float>(Q.Z);
     }
 }
