@@ -6,28 +6,36 @@ UComLink::UComLink() {
     PrimaryComponentTick.TickGroup = TG_PrePhysics;
 }
 
-void UComLink::BeginPlay(){
+void UComLink::BeginPlay() {
     Super::BeginPlay();
 
-    AvatarSocket_ = MakeUnique<udpClient>(RemoteIP, true, AvatarSendPort, true, AvatarReceivePort);
-    ArmLeftSocket_ = MakeUnique<udpClient>(RemoteIP, true, ArmLeftSendPort, true, ArmLeftReceivePort);
-    ArmRightSocket_ = MakeUnique<udpClient>(RemoteIP, true, ArmRightSendPort, true, ArmRightReceivePort);
-    HeadSocket_ = MakeUnique<udpClient>(RemoteIP, true, HeadSendPort, true, HeadReceivePort);
+    int32 ArmSendPorts[]  = { ArmLeftSendPort, ArmRightSendPort };
+    int32 ArmRecvPorts[]  = { ArmLeftReceivePort, ArmRightReceivePort };
 
-    UE_LOG(LogTemp, Log, TEXT("ComLink: initialized — remote %s | "
-        "avatar %d/%d | armL %d/%d | armR %d/%d | head %d/%d"),
-        *RemoteIP,
-        AvatarSendPort, AvatarReceivePort,
-        ArmLeftSendPort, ArmLeftReceivePort,
-        ArmRightSendPort, ArmRightReceivePort,
-        HeadSendPort, HeadReceivePort);
+    for (int32 i = 0; i < 2; ++i) {
+        ArmStreams_[i] = MakeUnique<ArmStream>();
+        ArmStreams_[i]->Open(RemoteIP, ArmSendPorts[i], ArmRecvPorts[i]);
+    }
+
+    HeadStream_ = MakeUnique<HeadStream>();
+    HeadStream_->Open(RemoteIP, HeadSendPort, HeadReceivePort);
+
+    CommandLink::Config CmdCfg;
+    CmdCfg.RemoteIP    = RemoteIP;
+    CmdCfg.SendPort    = AvatarSendPort;
+    CmdCfg.ReceivePort = AvatarReceivePort;
+    CmdLink_ = MakeUnique<CommandLink>();
+    CmdLink_->Open(CmdCfg);
+
+    UE_LOG(LogTemp, Log, TEXT("ComLink: initialized -> %s"), *RemoteIP);
 }
 
 void UComLink::EndPlay(const EEndPlayReason::Type EndPlayReason) {
-    if (AvatarSocket_) { AvatarSocket_->stop();   AvatarSocket_.Reset(); }
-    if (ArmLeftSocket_) { ArmLeftSocket_->stop();  ArmLeftSocket_.Reset(); }
-    if (ArmRightSocket_) { ArmRightSocket_->stop(); ArmRightSocket_.Reset(); }
-    if (HeadSocket_) { HeadSocket_->stop();     HeadSocket_.Reset(); }
+    for (int32 i = 0; i < 2; ++i) {
+        if (ArmStreams_[i]) { ArmStreams_[i]->Close(); ArmStreams_[i].Reset(); }
+    }
+    if (HeadStream_) { HeadStream_->Close(); HeadStream_.Reset(); }
+    if (CmdLink_) { CmdLink_->Close(); CmdLink_.Reset(); }
 
     UE_LOG(LogTemp, Log, TEXT("ComLink: stopped"));
     Super::EndPlay(EndPlayReason);
@@ -36,88 +44,107 @@ void UComLink::EndPlay(const EEndPlayReason::Type EndPlayReason) {
 void UComLink::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) {
     Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
-    DrainAvatar();
-    DrainArmLeft();
-    DrainArmRight();
-    DrainHead();
+    if (CmdLink_) CmdLink_->Tick();
+
+    bool bAlive = IsAvatarAlive();
+    if (bAlive != bWasAvatarAlive_) {
+        OnAvatarConnectionChanged.Broadcast(bAlive);
+        bWasAvatarAlive_ = bAlive;
+    }
 }
 
-void UComLink::SendAvatarCommand(ESysState RequestedState, uint8 SessionId) {
-    if (!AvatarSocket_) return;
-
-    FAvatarCommandMsg Msg{};
-    Msg.RequestedState = static_cast<uint8>(RequestedState);
-    Msg.SessionId = SessionId;
-    Msg.TimestampNs = NowNs();
-
-    AvatarSocket_->send_raw(reinterpret_cast<const uint8*>(&Msg), sizeof(Msg));
+void UComLink::SendArmCommand(ArmCommandMsg& Msg, uint8 DeviceIndex) {
+    if (DeviceIndex < 2 && ArmStreams_[DeviceIndex]) {
+        Msg.header.device_id = static_cast<DeviceId>(DeviceIndex + 1);
+        ArmStreams_[DeviceIndex]->Send(Msg);
+    }
 }
 
-void UComLink::SendArmCommand(const FArmCommandMsg& Msg){
-    udpClient* Socket = (Msg.DeviceId == 0) ? ArmLeftSocket_.Get() : ArmRightSocket_.Get();
-    if (!Socket) return;
-    Socket->send_raw(reinterpret_cast<const uint8*>(&Msg), sizeof(Msg));
+void UComLink::SendHeadCommand(HeadCommandMsg& Msg) {
+    if (HeadStream_) {
+        Msg.header.device_id = DeviceId::HEAD;
+        HeadStream_->Send(Msg);
+    }
 }
 
-void UComLink::SendHeadCommand(const FHeadCommandMsg& Msg){
-    if (!HeadSocket_) return;
-    HeadSocket_->send_raw(reinterpret_cast<const uint8*>(&Msg), sizeof(Msg));
+bool UComLink::HasNewArmState(uint8 DeviceIndex) const {
+    return DeviceIndex < 2 && ArmStreams_[DeviceIndex] && ArmStreams_[DeviceIndex]->HasNew();
 }
 
-void UComLink::DrainAvatar() {
-    if (!AvatarSocket_ || !AvatarSocket_->has_new_data()) return;
-
-    TArray<uint8> Raw = AvatarSocket_->get_raw_data();
-    if (Raw.Num() != sizeof(FAvatarStateMsg)) return;
-
-    FAvatarStateMsg Msg{};
-    FMemory::Memcpy(&Msg, Raw.GetData(), sizeof(Msg));
-
-    LastAvatarState_ = static_cast<ESysState>(Msg.SystemState);
-    OnAvatarStateReceived.Broadcast(Msg);
+bool UComLink::HasNewHeadState() const {
+    return HeadStream_ && HeadStream_->HasNew();
 }
 
-void UComLink::DrainArmLeft() {
-    if (!ArmLeftSocket_ || !ArmLeftSocket_->has_new_data()) return;
-
-    TArray<uint8> Raw = ArmLeftSocket_->get_raw_data();
-    if (Raw.Num() != sizeof(FArmStateMsg)) return;
-
-    FArmStateMsg Msg{};
-    FMemory::Memcpy(&Msg, Raw.GetData(), sizeof(Msg));
-
-    OnArmStateReceived.Broadcast(Msg);
+ArmStateMsg UComLink::ReadArmState(uint8 DeviceIndex) {
+    if (DeviceIndex < 2 && ArmStreams_[DeviceIndex]) {
+        return ArmStreams_[DeviceIndex]->Read();
+    }
+    return ArmStateMsg{};
 }
 
-void UComLink::DrainArmRight() {
-    if (!ArmRightSocket_ || !ArmRightSocket_->has_new_data()) return;
-
-    TArray<uint8> Raw = ArmRightSocket_->get_raw_data();
-    if (Raw.Num() != sizeof(FArmStateMsg)) return;
-
-    FArmStateMsg Msg{};
-    FMemory::Memcpy(&Msg, Raw.GetData(), sizeof(Msg));
-
-    OnArmStateReceived.Broadcast(Msg);
+HeadStateMsg UComLink::ReadHeadState() {
+    if (HeadStream_) return HeadStream_->Read();
+    return HeadStateMsg{};
 }
 
-void UComLink::DrainHead() {
-    if (!HeadSocket_ || !HeadSocket_->has_new_data()) return;
+void UComLink::SendStateRequest(SysState RequestedState) {
+    if (!CmdLink_) return;
 
-    TArray<uint8> Raw = HeadSocket_->get_raw_data();
-    if (Raw.Num() != sizeof(FHeadStateMsg)) return;
-
-    FHeadStateMsg Msg{};
-    FMemory::Memcpy(&Msg, Raw.GetData(), sizeof(Msg));
-
-    OnHeadStateReceived.Broadcast(Msg);
+    msgpack::sbuffer Buf;
+    msgpack::pack(Buf, std::map<std::string, uint8_t>{
+        {"requested_state", static_cast<uint8_t>(RequestedState)}
+    });
+    CmdLink_->Send("state_change", Buf, true);
 }
 
-bool UComLink::IsAvatarAlive()   const { return AvatarSocket_ && AvatarSocket_->isConnectionAlive(); }
-bool UComLink::IsArmLeftAlive()  const { return ArmLeftSocket_ && ArmLeftSocket_->isConnectionAlive(); }
-bool UComLink::IsArmRightAlive() const { return ArmRightSocket_ && ArmRightSocket_->isConnectionAlive(); }
-bool UComLink::IsHeadAlive()     const { return HeadSocket_ && HeadSocket_->isConnectionAlive(); }
+void UComLink::SendReliable(const std::string& MsgType,
+                             const msgpack::sbuffer& Payload,
+                             bool AckRequested) {
+    if (CmdLink_) CmdLink_->Send(MsgType, Payload, AckRequested);
+}
 
-uint64 UComLink::NowNs() {
-    return static_cast<uint64>(FPlatformTime::Seconds() * 1e9);
+void UComLink::RegisterHandler(const std::string& MsgType, FMsgHandler Handler) {
+    if (CmdLink_) CmdLink_->RegisterHandler(MsgType, MoveTemp(Handler));
+}
+
+bool UComLink::IsAvatarAlive() const {
+    return CmdLink_ && CmdLink_->IsAlive();
+}
+
+bool UComLink::IsArmAlive(uint8 DeviceIndex) const {
+    return DeviceIndex < 2 && ArmStreams_[DeviceIndex] && ArmStreams_[DeviceIndex]->IsAlive();
+}
+
+bool UComLink::IsHeadAlive() const {
+    return HeadStream_ && HeadStream_->IsAlive();
+}
+
+ESysState UComLink::GetAvatarState() const {
+    if (!CmdLink_) return ESysState::Offline;
+    return static_cast<ESysState>(CmdLink_->GetRemoteState());
+}
+
+uint8 UComLink::GetAvatarFaultCode() const {
+    if (!CmdLink_) return 0;
+    return CmdLink_->GetRemoteFaultCode();
+}
+
+SysState UComLink::GetArmRemoteState(uint8 DeviceIndex) const {
+    if (DeviceIndex < 2 && ArmStreams_[DeviceIndex]) return ArmStreams_[DeviceIndex]->GetRemoteState();
+    return SysState::OFFLINE;
+}
+
+FaultCode UComLink::GetArmRemoteFault(uint8 DeviceIndex) const {
+    if (DeviceIndex < 2 && ArmStreams_[DeviceIndex]) return ArmStreams_[DeviceIndex]->GetRemoteFault();
+    return FaultCode::NONE;
+}
+
+SysState UComLink::GetHeadRemoteState() const {
+    if (HeadStream_) return HeadStream_->GetRemoteState();
+    return SysState::OFFLINE;
+}
+
+FaultCode UComLink::GetHeadRemoteFault() const {
+    if (HeadStream_) return HeadStream_->GetRemoteFault();
+    return FaultCode::NONE;
 }

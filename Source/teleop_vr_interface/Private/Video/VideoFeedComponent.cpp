@@ -4,6 +4,10 @@
 #include "Engine/Texture2D.h"
 #include "RenderingThread.h"
 
+#ifdef UpdateResource
+#undef UpdateResource
+#endif
+
 UVideoFeedComponent::UVideoFeedComponent()
 {
     PrimaryComponentTick.bCanEverTick = true;

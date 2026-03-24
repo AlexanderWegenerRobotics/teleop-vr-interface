@@ -138,12 +138,16 @@ void AOperatorPawn::SetupPlayerInputComponent(UInputComponent* PlayerInputCompon
 // ============================================================
 // State machine
 // ============================================================
-
 void AOperatorPawn::UpdateStateMachine() {
-
 	if (CheckEmergencyStop()) {
 		TransitionTo(ESysState::Idle);
-		ComLink->SendAvatarCommand(ESysState::Idle);
+		ComLink->SendStateRequest(SysState::IDLE);
+		return;
+	}
+
+	if (OperatorState_ != ESysState::Offline && !ComLink->IsAvatarAlive()) {
+		TransitionTo(ESysState::Offline);
+		SoundFeedback->Play(ESoundType::Warning);
 		return;
 	}
 
@@ -155,7 +159,6 @@ void AOperatorPawn::UpdateStateMachine() {
 	ESysState AvatarState = ComLink->GetAvatarState();
 
 	switch (OperatorState_) {
-
 	case ESysState::Offline:
 		if (ComLink->IsAvatarAlive() && Gaze->IsTrackerConnected()) {
 			TransitionTo(ESysState::Idle);
@@ -167,14 +170,14 @@ void AOperatorPawn::UpdateStateMachine() {
 			TransitionTo(ESysState::Offline);
 		}
 		else if (ButtonPressed == FName("startButton")) {
-			ComLink->SendAvatarCommand(ESysState::Homing);
+			ComLink->SendStateRequest(SysState::HOMING);
 			TransitionTo(ESysState::Homing);
 		}
 		break;
 
 	case ESysState::Homing:
 		if (ButtonPressed == FName("startButton")) {
-			ComLink->SendAvatarCommand(ESysState::Idle);
+			ComLink->SendStateRequest(SysState::IDLE);
 			TransitionTo(ESysState::Idle);
 		}
 		else if (AvatarState == ESysState::Awaiting) {
@@ -185,23 +188,23 @@ void AOperatorPawn::UpdateStateMachine() {
 
 	case ESysState::Awaiting:
 		if (ButtonPressed == FName("startButton")) {
-			ComLink->SendAvatarCommand(ESysState::Idle);
+			ComLink->SendStateRequest(SysState::IDLE);
 			TransitionTo(ESysState::Idle);
 		}
 		else if (ButtonPressed == FName("engageButton")) {
 			CaptureControllerOrigins();
-			ComLink->SendAvatarCommand(ESysState::Engaged);
+			ComLink->SendStateRequest(SysState::ENGAGED);
 			TransitionTo(ESysState::Engaged);
 		}
 		break;
 
 	case ESysState::Engaged:
 		if (ButtonPressed == FName("startButton")) {
-			ComLink->SendAvatarCommand(ESysState::Idle);
+			ComLink->SendStateRequest(SysState::IDLE);
 			TransitionTo(ESysState::Idle);
 		}
 		else if (ButtonPressed == FName("engageButton")) {
-			ComLink->SendAvatarCommand(ESysState::Paused);
+			ComLink->SendStateRequest(SysState::PAUSED);
 			TransitionTo(ESysState::Paused);
 		}
 		else {
@@ -212,12 +215,12 @@ void AOperatorPawn::UpdateStateMachine() {
 
 	case ESysState::Paused:
 		if (ButtonPressed == FName("startButton")) {
-			ComLink->SendAvatarCommand(ESysState::Idle);
+			ComLink->SendStateRequest(SysState::IDLE);
 			TransitionTo(ESysState::Idle);
 		}
 		else if (ButtonPressed == FName("engageButton")) {
 			CaptureControllerOrigins();
-			ComLink->SendAvatarCommand(ESysState::Engaged);
+			ComLink->SendStateRequest(SysState::ENGAGED);
 			TransitionTo(ESysState::Engaged);
 		}
 		break;
@@ -310,28 +313,22 @@ void AOperatorPawn::CaptureControllerOrigins() {
 void AOperatorPawn::SendArmCommands() {
 	if (LeftTracked->IsTracking() && !LeftTracked->IsClutching()) {
 		FControllerDeltaPose Delta = LeftTracked->GetDeltaPose();
-		FArmCommandMsg Msg{};
-		Msg.DeviceId = 0;
-		Msg.State = static_cast<uint8>(ESysState::Engaged);
-		CoordConvert::UnrealToProtocolFloat(Delta.Translation, Msg.Position[0], Msg.Position[1], Msg.Position[2]);
+		ArmCommandMsg Msg{};
+		CoordConvert::UnrealToProtocolFloat(Delta.Translation, Msg.position[0], Msg.position[1], Msg.position[2]);
 		FRotator DeltaRot = Delta.Rotation.Rotator();
-		CoordConvert::UnrealToProtocolQuatFloat(DeltaRot, Msg.Quaternion[0], Msg.Quaternion[1], Msg.Quaternion[2], Msg.Quaternion[3]);
-		Msg.Gripper = LeftTracked->GetTriggerValue();
-		Msg.TimestampNs = static_cast<uint64>(FPlatformTime::Seconds() * 1e9);
-		ComLink->SendArmCommand(Msg);
+		CoordConvert::UnrealToProtocolQuatFloat(DeltaRot, Msg.quaternion[0], Msg.quaternion[1], Msg.quaternion[2], Msg.quaternion[3]);
+		Msg.gripper = LeftTracked->GetTriggerValue();
+		ComLink->SendArmCommand(Msg, 0);
 	}
 
 	if (RightTracked->IsTracking() && !RightTracked->IsClutching()) {
 		FControllerDeltaPose Delta = RightTracked->GetDeltaPose();
-		FArmCommandMsg Msg{};
-		Msg.DeviceId = 1;
-		Msg.State = static_cast<uint8>(ESysState::Engaged);
-		CoordConvert::UnrealToProtocolFloat(Delta.Translation, Msg.Position[0], Msg.Position[1], Msg.Position[2]);
+		ArmCommandMsg Msg{};
+		CoordConvert::UnrealToProtocolFloat(Delta.Translation, Msg.position[0], Msg.position[1], Msg.position[2]);
 		FRotator DeltaRot = Delta.Rotation.Rotator();
-		CoordConvert::UnrealToProtocolQuatFloat(DeltaRot, Msg.Quaternion[0], Msg.Quaternion[1], Msg.Quaternion[2], Msg.Quaternion[3]);
-		Msg.Gripper = RightTracked->GetTriggerValue();
-		Msg.TimestampNs = static_cast<uint64>(FPlatformTime::Seconds() * 1e9);
-		ComLink->SendArmCommand(Msg);
+		CoordConvert::UnrealToProtocolQuatFloat(DeltaRot, Msg.quaternion[0], Msg.quaternion[1], Msg.quaternion[2], Msg.quaternion[3]);
+		Msg.gripper = RightTracked->GetTriggerValue();
+		ComLink->SendArmCommand(Msg, 1);
 	}
 }
 
@@ -342,11 +339,8 @@ void AOperatorPawn::SendHeadCommand() {
 	FQuat DeltaQuat = HMDOrigin_.GetRotation().Inverse() * CurrentHMD.GetRotation();
 	FRotator DeltaRot = DeltaQuat.Rotator();
 
-	FHeadCommandMsg Msg{};
-	Msg.DeviceId = 0;
-	Msg.State = static_cast<uint8>(ESysState::Engaged);
-	Msg.Pan = static_cast<float>(FMath::DegreesToRadians(-DeltaRot.Yaw));
-	Msg.Tilt = static_cast<float>(FMath::DegreesToRadians(DeltaRot.Pitch));
-	Msg.TimestampNs = static_cast<uint64>(FPlatformTime::Seconds() * 1e9);
+	HeadCommandMsg Msg{};
+	Msg.pan = static_cast<float>(FMath::DegreesToRadians(-DeltaRot.Yaw));
+	Msg.tilt = static_cast<float>(FMath::DegreesToRadians(DeltaRot.Pitch));
 	ComLink->SendHeadCommand(Msg);
 }
