@@ -9,6 +9,10 @@ public class teleop_vr_interface : ModuleRules
 
         bEnableExceptions = true;
 
+        // Msgpack
+        PublicIncludePaths.Add(Path.Combine(ModuleDirectory, "../../ThirdParty/msgpack/include"));
+        PublicDefinitions.Add("MSGPACK_NO_BOOST");
+
         // Eigen use system include to suppress warnings
         PublicSystemIncludePaths.Add(Path.Combine(ModuleDirectory, "../../ThirdParty/Eigen"));
 
