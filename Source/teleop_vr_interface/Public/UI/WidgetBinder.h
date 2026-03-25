@@ -41,7 +41,8 @@ public:
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 
-	void Initialize(TSubclassOf<UUserWidget> WidgetClass, UCameraComponent* Camera, FVector2D RenderSize, float Distance, int32 Priority);
+	void Initialize(TSubclassOf<UUserWidget> WidgetClass, UCameraComponent* Camera, FVector2D RenderSize, float Distance, int32 Priority,
+		float CollapsedWidth = 0.0f, float ExpandedWidth = 0.0f, float VerticalOffset = 0.0f);
 
 	void SetGazeInput(const FGazeData& GazeData);
 	void SetText(FName WidgetName, const FString& Text);
@@ -56,6 +57,8 @@ public:
 	FName ConsumePress();
 	FName ConsumeRejection();
 	bool IsWinkActive() const;
+	void SetExpansion(float Alpha);
+	void SetLayerOpacity(float Opacity);
 
 	UPROPERTY(EditAnywhere, Category = "Gaze")
 	float PressFlashDuration_ = 0.5f;
@@ -80,6 +83,9 @@ private:
 	float LayerDistance_ = 0.0f;
 	FVector2D RenderSize_ = FVector2D::ZeroVector;
 	FVector2D QuadSize_ = FVector2D::ZeroVector;
+	float CollapsedWidth_ = 0.0f;
+	float ExpandedWidth_ = 0.0f;
+	float LayerVerticalOffset_ = 0.0f;
 
 	FVector GazeLocalOrigin_ = FVector::ZeroVector;
 	FVector GazeLocalDirection_ = FVector::ForwardVector;

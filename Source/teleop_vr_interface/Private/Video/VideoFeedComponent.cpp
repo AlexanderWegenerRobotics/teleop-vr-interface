@@ -43,17 +43,17 @@ void UVideoFeedComponent::BeginPlay()
     UE_LOG(LogTemp, Log, TEXT("VideoFeed: BeginPlay complete, %d source(s)"), Sources_.Num());
 }
 
-void UVideoFeedComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
-{
+void UVideoFeedComponent::EndPlay(const EEndPlayReason::Type EndPlayReason) {
     for (auto& Pair : Sources_)
         Pair.Value->Stop();
 
-    FlushRenderingCommands();
+    if (VideoTexture || StereoLayer)
+        FlushRenderingCommands();
+
     Super::EndPlay(EndPlayReason);
 }
 
-void UVideoFeedComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
-{
+void UVideoFeedComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) {
     Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
     if (!ActiveSource_ || !VideoTexture) return;

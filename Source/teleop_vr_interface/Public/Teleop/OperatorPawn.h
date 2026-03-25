@@ -14,6 +14,7 @@
 #include "UI/WidgetBinder.h"
 #include "UI/TMetricHistory.h"
 #include "UI/SoundFeedback.h"
+#include "UI/TrayController.h"
 
 #include "OperatorPawn.generated.h"
 
@@ -30,9 +31,9 @@ public:
 	UCameraComponent* GetVRCamera() const { return VRCamera; }
 
 protected:
-	UPROPERTY()TObjectPtr<USceneComponent> VROrigin;
+	UPROPERTY() TObjectPtr<USceneComponent> VROrigin;
 	UPROPERTY() TObjectPtr<UCameraComponent> VRCamera;
-	UPROPERTY()TObjectPtr<UMotionControllerComponent> LeftController;
+	UPROPERTY() TObjectPtr<UMotionControllerComponent> LeftController;
 	UPROPERTY() TObjectPtr<UMotionControllerComponent> RightController;
 
 	UPROPERTY() UTrackedControllerComponent* LeftTracked = nullptr;
@@ -46,11 +47,17 @@ protected:
 	UPROPERTY() UInputAction* IA_RightStop = nullptr;
 
 	UPROPERTY() TObjectPtr<UVideoFeedComponent> VideoFeed;
-	UPROPERTY()TObjectPtr<UComLink> ComLink;
+	UPROPERTY() TObjectPtr<UComLink> ComLink;
 	UPROPERTY() TObjectPtr<UGazeComponent> Gaze;
 	UPROPERTY() TObjectPtr<UWidgetBinder> UIBinder;
 	UPROPERTY() TSubclassOf<UUserWidget> UIWidgetClass;
 	UPROPERTY() TObjectPtr<USoundFeedback> SoundFeedback;
+
+	UPROPERTY() TObjectPtr<UWidgetBinder> TrayBinder;
+	UPROPERTY() TSubclassOf<UUserWidget> TrayWidgetClass;
+
+	UPROPERTY(EditAnywhere, Category = "Tray")
+	FTrayController Tray;
 
 	TMetricHistory<128> LatencyHistory;
 	TMetricHistory<128> JitterHistory;
@@ -66,6 +73,8 @@ private:
 	void SendArmCommands();
 	void SendHeadCommand();
 	bool CheckEmergencyStop();
+	void UpdateTray(float DeltaTime, const FGazeData& GazeData);
+	void HandleTrayPress(FName ButtonPressed);
 
 	FTransform HMDOrigin_;
 	bool bHMDOriginValid_ = false;

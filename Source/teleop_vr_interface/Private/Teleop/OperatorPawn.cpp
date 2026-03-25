@@ -30,6 +30,7 @@ AOperatorPawn::AOperatorPawn() {
 	Gaze = CreateDefaultSubobject<UGazeComponent>(TEXT("Gaze"));
 	SoundFeedback = CreateDefaultSubobject<USoundFeedback>(TEXT("SoundFeedback"));
 	UIBinder = CreateDefaultSubobject<UWidgetBinder>(TEXT("UIBinder"));
+	TrayBinder = CreateDefaultSubobject<UWidgetBinder>(TEXT("TrayBinder"));
 	LeftTracked = CreateDefaultSubobject<UTrackedControllerComponent>(TEXT("LeftTracked"));
 	RightTracked = CreateDefaultSubobject<UTrackedControllerComponent>(TEXT("RightTracked"));
 
@@ -53,13 +54,20 @@ AOperatorPawn::AOperatorPawn() {
 	RightTracked->IA_Grip = RightGrip.Object;
 	RightTracked->IA_Stop = RightStop.Object;
 
-
 	static ConstructorHelpers::FClassFinder<UUserWidget> UIClass(TEXT("/Game/UI/WBP_DebugPanel.WBP_DebugPanel_C"));
 	if (UIClass.Succeeded()) {
 		UIWidgetClass = UIClass.Class;
 	}
 	else {
-		UE_LOG(LogTemp, Warning, TEXT("Did not find debug panel"));
+		UE_LOG(LogTemp, Warning, TEXT("OperatorPawn: WBP_DebugPanel not found"));
+	}
+
+	static ConstructorHelpers::FClassFinder<UUserWidget> TrayClass(TEXT("/Game/UI/WBP_TrayPanel.WBP_TrayPanel_C"));
+	if (TrayClass.Succeeded()) {
+		TrayWidgetClass = TrayClass.Class;
+	}
+	else {
+		UE_LOG(LogTemp, Warning, TEXT("OperatorPawn: WBP_TrayPanel not found"));
 	}
 }
 
@@ -102,6 +110,13 @@ void AOperatorPawn::BeginPlay() {
 	UIBinder->Initialize(UIWidgetClass, VRCamera, FVector2D(1280.0f, 720.0f), 690.0f, 1);
 	UIBinder->BindPlot(FName("latencyPlot"), LatencyHistory.GetSamplesPtr(), nullptr, LatencyHistory.Capacity(), LatencyHistory.GetHeadPtr(), 0.0f, 40.0f);
 	UIBinder->BindPlot(FName("jitterPlot"), JitterHistory.GetSamplesPtr(), nullptr, JitterHistory.Capacity(), JitterHistory.GetHeadPtr(), 0.0f, 20.0f);
+
+	if (TrayWidgetClass) {
+		TrayBinder->Initialize(TrayWidgetClass, VRCamera, FVector2D(1280.0f, 720.0f), Tray.LayerDistance, 2, Tray.CollapsedWidth, Tray.ExpandedWidth, Tray.VerticalOffset);
+		TrayBinder->SetExpansion(0.0f);
+		TrayBinder->SetLayerOpacity(Tray.CollapsedOpacity);
+	}
+
 	UpdateButtonStates();
 }
 
@@ -117,6 +132,7 @@ void AOperatorPawn::Tick(float DeltaTime) {
 
 	const FGazeData& GazeData = Gaze->GetGazeData();
 	UIBinder->SetGazeInput(GazeData);
+	UpdateTray(DeltaTime, GazeData);
 
 	bool bVideoLive = VideoFeed->IsReceiving();
 	UIBinder->SetText(FName("video_value"), bVideoLive ? TEXT("LIVE") : TEXT("OFFLINE"));
@@ -132,6 +148,24 @@ void AOperatorPawn::Tick(float DeltaTime) {
 
 void AOperatorPawn::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) {
 	Super::SetupPlayerInputComponent(PlayerInputComponent);
+}
+
+
+// ============================================================
+// Tray
+// ============================================================
+void AOperatorPawn::UpdateTray(float DeltaTime, const FGazeData& GazeData) {
+	if (!TrayBinder) return;
+	Tray.Update(DeltaTime, GazeData, TrayBinder);
+	TrayBinder->SetGazeInput(GazeData);
+	FName TrayPressed = TrayBinder->ConsumePress();
+	if (TrayPressed != FName()) {
+		HandleTrayPress(TrayPressed);
+	}
+}
+
+void AOperatorPawn::HandleTrayPress(FName ButtonPressed) {
+	UE_LOG(LogTemp, Log, TEXT("TrayBinder: press=%s"), *ButtonPressed.ToString());
 }
 
 
@@ -329,6 +363,9 @@ void AOperatorPawn::SendArmCommands() {
 		CoordConvert::UnrealToProtocolQuatFloat(DeltaRot, Msg.quaternion[0], Msg.quaternion[1], Msg.quaternion[2], Msg.quaternion[3]);
 		Msg.gripper = RightTracked->GetTriggerValue();
 		ComLink->SendArmCommand(Msg, 1);
+
+		UIBinder->SetText(FName("testInput"), FString::Printf(TEXT("dx=%.3f dy=%.3f dz=%.3f"),
+			Msg.position[0], Msg.position[1], Msg.position[2]));
 	}
 }
 

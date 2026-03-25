@@ -25,7 +25,9 @@ void UWidgetBinder::EndPlay(const EEndPlayReason::Type EndPlayReason) {
 	Super::EndPlay(EndPlayReason);
 }
 
-void UWidgetBinder::Initialize(TSubclassOf<UUserWidget> WidgetClass, UCameraComponent* Camera, FVector2D RenderSize, float Distance, int32 Priority) {
+void UWidgetBinder::Initialize(TSubclassOf<UUserWidget> WidgetClass, UCameraComponent* Camera, FVector2D RenderSize, float Distance, int32 Priority,
+								float CollapsedWidth, float ExpandedWidth, float VerticalOffset) {
+
 	if (!WidgetClass || !Camera) {
 		UE_LOG(LogTemp, Error, TEXT("WidgetBinder: null widget class or camera"));
 		return;
@@ -50,7 +52,8 @@ void UWidgetBinder::Initialize(TSubclassOf<UUserWidget> WidgetClass, UCameraComp
 	Widget_->AddToViewport(0);
 	Widget_->SetVisibility(ESlateVisibility::HitTestInvisible);
 
-	Layer_ = NewObject<UStereoLayerComponent>(GetOwner(), TEXT("UILayer"));
+	FName LayerName = FName(*FString::Printf(TEXT("UILayer_%s"), *GetName()));
+	Layer_ = NewObject<UStereoLayerComponent>(GetOwner(), LayerName);
 	Layer_->SetTexture(RenderTarget_);
 	Layer_->bLiveTexture = true;
 	Layer_->bSupportsDepth = false;
@@ -58,6 +61,9 @@ void UWidgetBinder::Initialize(TSubclassOf<UUserWidget> WidgetClass, UCameraComp
 	Layer_->AttachToComponent(Camera, FAttachmentTransformRules::KeepRelativeTransform);
 	Layer_->SetRelativeLocation(FVector(Distance, 0.0f, 0.0f));
 	QuadSize_ = RenderSize;
+	CollapsedWidth_ = CollapsedWidth > 0.0f ? CollapsedWidth : RenderSize.X;
+	ExpandedWidth_ = ExpandedWidth > CollapsedWidth_ ? ExpandedWidth : CollapsedWidth_;
+	LayerVerticalOffset_ = VerticalOffset;
 	Layer_->SetQuadSize(QuadSize_);
 	Layer_->RegisterComponent();
 
@@ -265,8 +271,8 @@ bool UWidgetBinder::ProjectGazeToUV(FVector2D& OutUV) const {
 	float HitY = GazeLocalOrigin_.Y + GazeLocalDirection_.Y * T;
 	float HitZ = GazeLocalOrigin_.Z + GazeLocalDirection_.Z * T;
 
-	OutUV.X = (HitY / QuadSize_.X) + 0.5f;
-	OutUV.Y = (-HitZ / QuadSize_.Y) + 0.5f;
+	OutUV.X = (HitY / ExpandedWidth_) + 0.5f;
+	OutUV.Y = (-HitZ / RenderSize_.Y) + 0.5f;
 
 	return OutUV.X >= 0.0f && OutUV.X <= 1.0f && OutUV.Y >= 0.0f && OutUV.Y <= 1.0f;
 }
@@ -363,4 +369,25 @@ void UWidgetBinder::BindPlot(FName WidgetName, const float* Samples, const float
 	if (auto* Found = CachedPlots_.Find(WidgetName)) {
 		if (*Found) (*Found)->BindHistory(Samples, Envelope, Capacity, Head, RangeMin, RangeMax);
 	}
+}
+
+void UWidgetBinder::SetExpansion(float Alpha) {
+	if (!Layer_ || !bIsBound_) return;
+	if (CollapsedWidth_ <= 0.0f || ExpandedWidth_ <= CollapsedWidth_) return;
+
+	float CurrentWidth = FMath::Lerp(CollapsedWidth_, ExpandedWidth_, Alpha);
+	if (FMath::IsNearlyEqual(CurrentWidth, QuadSize_.X, 0.5f)) return;
+
+	QuadSize_.X = CurrentWidth;
+	Layer_->SetQuadSize(QuadSize_);
+
+	float RightEdgeY = (ExpandedWidth_ * 0.5f) + LayerVerticalOffset_;
+	float CenterY = RightEdgeY - (CurrentWidth * 0.5f);
+	FVector CurrentLocal = Layer_->GetRelativeLocation();
+	Layer_->SetRelativeLocation(FVector(CurrentLocal.X, CenterY, CurrentLocal.Z));
+}
+
+void UWidgetBinder::SetLayerOpacity(float Opacity) {
+	if (!Layer_ || !bIsBound_) return;
+	//Layer_->SetLayerOpacity(FMath::Clamp(Opacity, 0.0f, 1.0f));
 }
