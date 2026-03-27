@@ -143,15 +143,15 @@ FControllerDeltaPose UTrackedControllerComponent::GetDeltaPose() const {
     if (!bOriginValid || !MotionController) return Delta;
 
     FTransform Current = MotionController->GetComponentTransform();
-    FVector LiveTranslation = Current.GetLocation() - Origin.GetLocation();
-    FQuat LiveRotation = Current.GetRotation() * Origin.GetRotation().Inverse();
+    FVector WorldTranslation = Current.GetLocation() - Origin.GetLocation();
+    FVector LiveTranslation = Origin.GetRotation().UnrotateVector(WorldTranslation);
+    FQuat LiveRotation = Origin.GetRotation().Inverse() * Current.GetRotation();
 
     Delta.Translation = BankedTranslation + LiveTranslation;
-    Delta.Rotation = LiveRotation * BankedRotation;
+    Delta.Rotation = BankedRotation * LiveRotation;
 
     return Delta;
 }
-
 
 bool UTrackedControllerComponent::IsTracking() const {
     return TrackingState == EControllerTrackingState::Tracking;
@@ -165,11 +165,12 @@ void UTrackedControllerComponent::UpdateClutch() {
     if (bGripHeld && bOriginValid && TrackingState == EControllerTrackingState::Tracking) {
         if (!bIsClutching) {
             FTransform Current = MotionController->GetComponentTransform();
-            FVector LiveTranslation = Current.GetLocation() - Origin.GetLocation();
-            FQuat LiveRotation = Current.GetRotation() * Origin.GetRotation().Inverse();
+            FVector WorldTranslation = Current.GetLocation() - Origin.GetLocation();
+            FVector LiveTranslation = Origin.GetRotation().UnrotateVector(WorldTranslation);
+            FQuat LiveRotation = Origin.GetRotation().Inverse() * Current.GetRotation();
 
             BankedTranslation += LiveTranslation;
-            BankedRotation = LiveRotation * BankedRotation;
+            BankedRotation = BankedRotation * LiveRotation;
             BankedRotation.Normalize();
 
             Origin = Current;

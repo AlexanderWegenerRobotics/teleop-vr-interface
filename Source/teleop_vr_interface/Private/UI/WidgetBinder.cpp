@@ -21,12 +21,33 @@ void UWidgetBinder::BeginPlay() {
 }
 
 void UWidgetBinder::EndPlay(const EEndPlayReason::Type EndPlayReason) {
-	WidgetRenderer_.Reset();
+	bIsBound_ = false;
+
+	if (Widget_) {
+		Widget_->RemoveFromParent();
+		Widget_ = nullptr;
+	}
+
+	if (WidgetRenderer_) {
+		FlushRenderingCommands();
+		WidgetRenderer_.Reset();
+	}
+
+	if (RenderTarget_) {
+		RenderTarget_->ReleaseResource();
+		RenderTarget_ = nullptr;
+	}
+
+	if (Layer_) {
+		Layer_->DestroyComponent();
+		Layer_ = nullptr;
+	}
+
 	Super::EndPlay(EndPlayReason);
 }
 
 void UWidgetBinder::Initialize(TSubclassOf<UUserWidget> WidgetClass, UCameraComponent* Camera, FVector2D RenderSize, float Distance, int32 Priority,
-								float CollapsedWidth, float ExpandedWidth, float VerticalOffset) {
+	float CollapsedWidth, float ExpandedWidth, float VerticalOffset) {
 
 	if (!WidgetClass || !Camera) {
 		UE_LOG(LogTemp, Error, TEXT("WidgetBinder: null widget class or camera"));
@@ -127,7 +148,8 @@ void UWidgetBinder::CacheWidgetRects() {
 }
 
 void UWidgetBinder::RenderWidget() {
-	if (!Widget_ || !RenderTarget_ || !WidgetRenderer_) return;
+	if (!bIsBound_ || !Widget_ || !RenderTarget_ || !WidgetRenderer_) return;
+	if (!RenderTarget_->IsValidLowLevel()) return;
 	WidgetRenderer_->DrawWidget(RenderTarget_, Widget_->TakeWidget(), RenderSize_, 0.0f, true);
 }
 

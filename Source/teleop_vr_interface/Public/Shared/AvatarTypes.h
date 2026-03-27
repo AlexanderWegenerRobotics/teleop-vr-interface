@@ -73,12 +73,11 @@ namespace CoordConvert {
         OutZ = static_cast<float>(In.Z / 100.0);
     }
 
-    inline void UnrealToProtocolQuatFloat(const FRotator& In, float& Q0, float& Q1, float& Q2, float& Q3) {
-        FQuat Q = In.Quaternion();
+    inline void UnrealToProtocolQuatFloat(const FQuat& Q, float& Q0, float& Q1, float& Q2, float& Q3) {
         Q0 = static_cast<float>(Q.W);
-        Q1 = static_cast<float>(Q.X);
-        Q2 = -static_cast<float>(Q.Y);
-        Q3 = static_cast<float>(Q.Z);
+        Q1 = -static_cast<float>(Q.X);
+        Q2 = static_cast<float>(Q.Y);
+        Q3 = -static_cast<float>(Q.Z);
     }
 
     inline FVector ProtocolToUnreal(float X, float Y, float Z) {
