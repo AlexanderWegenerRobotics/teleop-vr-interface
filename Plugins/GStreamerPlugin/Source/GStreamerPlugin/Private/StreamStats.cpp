@@ -27,7 +27,7 @@ static uint64 WallTimeNs()
 // ---------------------------------------------------------------------------
 
 uint32 FReportRunnable::Run() {
-    //UE_LOG(LogTemp, Log, TEXT("StreamStats: report thread started"));
+    UE_LOG(LogTemp, Log, TEXT("StreamStats: report thread started"));
     const double PeriodSec = Owner->Config.ReportIntervalMs / 1000.0;
     double NextSec = WallTimeSec() + PeriodSec;
 
@@ -57,6 +57,19 @@ FStreamStats::FStreamStats(const FStreamStatsConfig& InConfig)
 
     SendSocket = SS->CreateSocket(NAME_DGram, TEXT("StreamStatsFeedback"), false);
     if (SendSocket) SendSocket->SetNonBlocking(true);
+
+    StatusSocket = SS->CreateSocket(NAME_DGram, TEXT("StreamStatusReceive"), false);
+    if (StatusSocket)
+    {
+        StatusSocket->SetNonBlocking(true);
+
+        TSharedRef<FInternetAddr> BindAddr = SS->CreateInternetAddr();
+        BindAddr->SetAnyAddress();
+        BindAddr->SetPort(Config.StatusPort);
+        bool bBound = StatusSocket->Bind(*BindAddr);
+        UE_LOG(LogTemp, Log, TEXT("StreamStats: status socket bind on port %d: %s"),
+            Config.StatusPort, bBound ? TEXT("OK") : TEXT("FAILED"));
+    }
 }
 
 FStreamStats::~FStreamStats()
@@ -64,10 +77,8 @@ FStreamStats::~FStreamStats()
     Stop();
 
     ISocketSubsystem* SS = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
-    if (SS)
-    {
-        if (SendSocket) { SS->DestroySocket(SendSocket); SendSocket = nullptr; }
-    }
+    if (SS) { if (SendSocket) { SS->DestroySocket(SendSocket); SendSocket = nullptr; } }
+    if (StatusSocket) { SS->DestroySocket(StatusSocket); StatusSocket = nullptr; }
 }
 
 void FStreamStats::Start()
@@ -217,6 +228,7 @@ FRtpStats FStreamStats::GetStats() const
     Out.PostFecLossRate    = CurrentPostFecLoss;
     Out.JitterMs           = CurrentJitter;
     Out.OneWayLatencyMs    = static_cast<float>(CurrentLatencyMs.Load());
+    Out.StreamHealthState = LastStreamHealthState.Load();
     return Out;
 }
 
@@ -289,18 +301,26 @@ void FStreamStats::SendFeedback()
 
 void FStreamStats::TickReport()
 {
+    PollStatusSocket();
     ComputeIntervalStats();
-    /*
-    UE_LOG(LogTemp, Log, TEXT("[StreamStats] latency=%.1fms  jitter=%.2fms  preFEC_loss=%.1f%%  postFEC_loss=%.1f%%  rx=%u  lost=%u  recovered=%u"),
-        CurrentLatencyMs.Load(),
-        static_cast<double>(CurrentJitter),
-        static_cast<double>(CurrentLoss) * 100.0,
-        static_cast<double>(CurrentPostFecLoss) * 100.0,
-        TotalReceived,
-        TotalLost,
-        (TotalLost > TotalLostPostFec ? TotalLost - TotalLostPostFec : 0)
-    );
-    */
-
     SendFeedback();
+}
+
+void FStreamStats::PollStatusSocket()
+{
+    if (!StatusSocket) return;
+
+    FStreamStatusMsg Msg{};
+    int32 BytesRead = 0;
+    TSharedRef<FInternetAddr> Sender = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->CreateInternetAddr();
+
+    while (StatusSocket->RecvFrom(
+        reinterpret_cast<uint8*>(&Msg), sizeof(Msg), BytesRead, *Sender))
+    {
+        if (BytesRead == sizeof(FStreamStatusMsg) && Msg.Magic == kStreamStatusMagic)
+        {
+            UE_LOG(LogTemp, Log, TEXT("StreamStats: received health state %d"), Msg.State);
+            LastStreamHealthState.Store(Msg.State);
+        }
+    }
 }

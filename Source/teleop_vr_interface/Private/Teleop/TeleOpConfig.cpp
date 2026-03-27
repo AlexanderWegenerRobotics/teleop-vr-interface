@@ -31,7 +31,7 @@ bool UTeleOpConfig::Load(const FString& RootConfigPath) {
 
     UE_LOG(LogTemp, Log, TEXT("TeleOpConfig: Loaded successfully"));
     UE_LOG(LogTemp, Log, TEXT("  Network  — remote: %s  avatar: %d/%d"), *Network.RemoteIP, Network.Avatar.Send, Network.Avatar.Receive);
-    UE_LOG(LogTemp, Log, TEXT("  Stream   — %s:%d  feedback: %d  timestamp: %d"), *Stream.RemoteIP, Stream.Port, Stream.FeedbackPort, Stream.TimestampPort);
+    UE_LOG(LogTemp, Log, TEXT("  Stream   — %s:%d  feedback: %d  timestamp: %d  status: %d"), *Stream.RemoteIP, Stream.Port, Stream.FeedbackPort, Stream.TimestampPort, Stream.StatusPort);
     UE_LOG(LogTemp, Log, TEXT("  HUD      — latency: %.0fms  loss: %.3f%%  fps: %.0f"), Hud.LatencyWarningMs, Hud.LossWarningPercent, Hud.FpsWarningFloor);
 
     return true;
@@ -69,6 +69,7 @@ bool UTeleOpConfig::LoadStream(const FString& Path) {
     if (!RequireInt(Obj, TEXT("feedback_port"), Stream.FeedbackPort, Context)) return false;
     if (!RequireInt(Obj, TEXT("timestamp_port"), Stream.TimestampPort, Context)) return false;
     if (!RequireInt(Obj, TEXT("report_interval_ms"), Stream.ReportIntervalMs, Context)) return false;
+    if (!RequireInt(Obj, TEXT("status_port"), Stream.StatusPort, Context)) return false;
 
     return true;
 }

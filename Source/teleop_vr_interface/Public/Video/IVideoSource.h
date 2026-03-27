@@ -44,6 +44,8 @@ struct TELEOP_VR_INTERFACE_API FVideoSourceStats
 
     UPROPERTY(BlueprintReadOnly, Category = "Video Stats")
     bool bIsReceiving = false;
+    UPROPERTY(BlueprintReadOnly, Category = "Video Stats")
+    uint8 StreamHealthState = 0;
 };
 
 class IVideoSource

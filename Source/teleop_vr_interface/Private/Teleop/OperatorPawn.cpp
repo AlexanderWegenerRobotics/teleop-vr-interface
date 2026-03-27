@@ -94,6 +94,7 @@ void AOperatorPawn::BeginPlay() {
 	GstConfig.FeedbackPort = Config->Stream.FeedbackPort;
 	GstConfig.SenderIP = Config->Stream.RemoteIP;
 	GstConfig.ReportIntervalMs = Config->Stream.ReportIntervalMs;
+	GstConfig.StatusPort = Config->Stream.StatusPort;
 	VideoFeed->RegisterSource(TEXT("AvatarStream"), MakeUnique<FGStreamerSource>(GstConfig));
 
 	Super::BeginPlay();
@@ -137,6 +138,7 @@ void AOperatorPawn::Tick(float DeltaTime) {
 	bool bVideoLive = VideoFeed->IsReceiving();
 	UIBinder->SetText(FName("video_value"), bVideoLive ? TEXT("LIVE") : TEXT("OFFLINE"));
 	UIBinder->SetTextColor(FName("video_value"), bVideoLive ? FLinearColor::Green : FLinearColor::Red);
+	UIBinder->SetVisibility(FName("videoLost"), !bVideoLive);
 
 	bool bGazeConnected = Gaze->IsTrackerConnected();
 	UIBinder->SetText(FName("input_value"), bGazeConnected ? TEXT("CONNECTED") : TEXT("NOT FOUND"));
@@ -145,15 +147,16 @@ void AOperatorPawn::Tick(float DeltaTime) {
 	UIBinder->SetText(FName("operator_state_value"), StateToString(OperatorState_));
 	UIBinder->SetText(FName("avatar_state_value"), StateToString(ComLink->GetAvatarState()));
 
-	/* 
-	if (RightTracked->GetTriggerValue()) {
-		RightTracked->CaptureOrigin();
+	static const TArray<FString> HealthLabels = { TEXT("NO SIGNAL"), TEXT("NORMAL"), TEXT("DEGRADED"), TEXT("CRITICAL"), TEXT("STALE") };
+	static const TArray<FLinearColor> HealthColors = { FLinearColor::Gray, FLinearColor::Green, FLinearColor::Yellow, FLinearColor::Red, FLinearColor::Gray };
+
+	uint8 HealthIdx = Stats.StreamHealthState;
+	if (HealthIdx < HealthLabels.Num())
+	{
+		UIBinder->SetText(FName("stream_health_value"), *HealthLabels[HealthIdx]);
+		UIBinder->SetTextColor(FName("stream_health_value"), HealthColors[HealthIdx]);
 	}
-	FControllerDeltaPose Delta = RightTracked->GetDeltaPose();
-	float x, y, z;
-	CoordConvert::UnrealToProtocolFloat(Delta.Translation, x, y, z);
-	UIBinder->SetText(FName("testInput"), FString::Printf(TEXT("dx=%.3f dy=%.3f dz=%.3f"), x, y, z));
-	*/
+
 }
 
 void AOperatorPawn::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) {
@@ -371,12 +374,6 @@ void AOperatorPawn::SendArmCommands() {
 		CoordConvert::UnrealToProtocolQuatFloat(Delta.Rotation, Msg.quaternion[0], Msg.quaternion[1], Msg.quaternion[2], Msg.quaternion[3]);
 		Msg.gripper = RightTracked->GetTriggerValue();
 		ComLink->SendArmCommand(Msg, 1);
-
-		//UIBinder->SetText(FName("testInput"), FString::Printf(TEXT("dx=%.3f dy=%.3f dz=%.3f"), Msg.position[0], Msg.position[1], Msg.position[2]));
-		FRotator DeltaRot = Delta.Rotation.Rotator();
-		UIBinder->SetText(FName("testInput"), FString::Printf(TEXT("dx=%.3f dy=%.3f dz=%.3f  r=%.1f p=%.1f y=%.1f"),
-			Msg.position[0], Msg.position[1], Msg.position[2],
-			DeltaRot.Roll, DeltaRot.Pitch, DeltaRot.Yaw));
 	}
 }
 

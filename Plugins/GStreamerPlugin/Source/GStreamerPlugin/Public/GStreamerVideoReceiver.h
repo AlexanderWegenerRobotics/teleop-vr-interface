@@ -47,26 +47,28 @@ extern "C" bool GStreamerAddFecProbe(void* pipeline, const char* element_name,
 
 struct FReceiverConfig
 {
-    int32   Port             = 5004;
-    int32   FeedbackPort     = 5005;
-    FString SenderIP         = TEXT("127.0.0.1");
+    int32   Port = 5004;
+    int32   FeedbackPort = 5005;
+    int32   StatusPort = 5007;
+    FString SenderIP = TEXT("127.0.0.1");
     int32   ReportIntervalMs = 500;
 };
 
 struct FReceiverStats
 {
-    int32  CurrentFPS                = 0;
-    float  PacketLossPercent         = 0.0f;
-    float  PostFecLossPercent        = 0.0f;
-    float  OneWayLatencyMs           = 0.0f;
-    float  JitterMs                  = 0.0f;
-    float  FrameIntervalVarianceMs   = 0.0f;
-    uint32 PacketsReceived           = 0;
-    uint32 PacketsLost               = 0;
-    uint32 PacketsRecovered          = 0;
-    uint32 PacketsLostPostFec        = 0;
-    uint32 FramesDecoded             = 0;
-    bool   bIsReceiving              = false;
+    int32  CurrentFPS = 0;
+    float  PacketLossPercent = 0.0f;
+    float  PostFecLossPercent = 0.0f;
+    float  OneWayLatencyMs = 0.0f;
+    float  JitterMs = 0.0f;
+    float  FrameIntervalVarianceMs = 0.0f;
+    uint32 PacketsReceived = 0;
+    uint32 PacketsLost = 0;
+    uint32 PacketsRecovered = 0;
+    uint32 PacketsLostPostFec = 0;
+    uint32 FramesDecoded = 0;
+    bool   bIsReceiving = false;
+    uint8  StreamHealthState = 0;
 };
 
 // ---------------------------------------------------------------------------

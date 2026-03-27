@@ -43,4 +43,6 @@ struct GSTREAMERPLUGIN_API FGStreamerStats
 
     UPROPERTY(BlueprintReadOnly, Category = "GStreamer Stats")
     bool bIsReceiving = false;
+    UPROPERTY(BlueprintReadOnly, Category = "GStreamer Stats")
+    int32 StreamHealthState = 0;
 };

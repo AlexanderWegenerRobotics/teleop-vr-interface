@@ -52,6 +52,7 @@ public:
         Out.PacketsLostPostFec  = static_cast<int64>(S.PacketsLostPostFec);
         Out.FramesDecoded       = static_cast<int64>(S.FramesDecoded);
         Out.bIsReceiving        = S.bIsReceiving;
+        Out.StreamHealthState = S.StreamHealthState;
         return Out;
     }
 

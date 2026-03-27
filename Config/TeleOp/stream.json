@@ -3,5 +3,6 @@
     "port":                5004,
     "feedback_port":       5005,
     "timestamp_port":      5006,
+    "status_port":         5007,
     "report_interval_ms":  500
 }

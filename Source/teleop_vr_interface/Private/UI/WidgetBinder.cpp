@@ -413,3 +413,12 @@ void UWidgetBinder::SetLayerOpacity(float Opacity) {
 	if (!Layer_ || !bIsBound_) return;
 	//Layer_->SetLayerOpacity(FMath::Clamp(Opacity, 0.0f, 1.0f));
 }
+
+void UWidgetBinder::SetVisibility(FName WidgetName, bool bVisible)
+{
+	if (auto* Found = CachedTextBlocks_.Find(WidgetName))
+	{
+		if (*Found)
+			(*Found)->SetVisibility(bVisible ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
+	}
+}

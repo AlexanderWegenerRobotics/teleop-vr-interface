@@ -209,6 +209,7 @@ bool FGStreamerVideoReceiver::Initialize(const FReceiverConfig& Config)
     StatsConfig.SenderIP         = Config.SenderIP;
     StatsConfig.FeedbackPort     = Config.FeedbackPort;
     StatsConfig.ReportIntervalMs = Config.ReportIntervalMs;
+    StatsConfig.StatusPort = Config.StatusPort;
     Stats_ = MakeUnique<FStreamStats>(StatsConfig);
 
     ProbeCtx_ = MakeUnique<FProbeContext>();
@@ -287,19 +288,20 @@ bool FGStreamerVideoReceiver::UpdateTexture(UTexture2D*& OutTexture)
 {
     if (!AppSink || !FramePullRunnable_) return false;
 
+    double Now = FPlatformTime::Seconds();
+    double thr = 0.5;
+    if (Now - LastFPSUpdateTime >= thr)
+    {
+        CurrentFPS = FrameCount * 1.0 / thr;
+        FrameCount = 0;
+        LastFPSUpdateTime = Now;
+    }
+
     FVideoFrame Frame;
     if (!FramePullRunnable_->PopFrame(Frame)) return false;
 
     FrameCount++;
-    double Now = FPlatformTime::Seconds();
-    if (Now - LastFPSUpdateTime >= 1.0)
-    {
-        CurrentFPS        = FrameCount;
-        FrameCount        = 0;
-        LastFPSUpdateTime = Now;
-    }
-
-    VideoWidth  = Frame.Width;
+    VideoWidth = Frame.Width;
     VideoHeight = Frame.Height;
 
     if (!OutTexture
@@ -361,6 +363,9 @@ FReceiverStats FGStreamerVideoReceiver::GetStats() const
     Out.bIsReceiving = (CurrentFPS > 0);
 
     if (Stats_)
+        Out.StreamHealthState = Stats_->GetStats().StreamHealthState;
+
+    if (Stats_ && Out.bIsReceiving)
     {
         FRtpStats S = Stats_->GetStats();
         Out.PacketLossPercent  = S.LossRate * 100.0f;

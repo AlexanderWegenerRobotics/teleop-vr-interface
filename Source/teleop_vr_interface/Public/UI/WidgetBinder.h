@@ -52,6 +52,7 @@ public:
 
 	void SetButtonLocked(FName ButtonName, bool bLocked);
 	bool IsButtonLocked(FName ButtonName) const;
+	void SetVisibility(FName WidgetName, bool bVisible);
 
 	FName GetHoveredButton() const { return HoveredButton_; }
 	FName ConsumePress();

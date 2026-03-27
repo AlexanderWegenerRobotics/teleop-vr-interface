@@ -31,6 +31,7 @@ struct FStreamConfig
     int32   Port = 5004;
     int32   FeedbackPort = 5005;
     int32   TimestampPort = 5006;
+    int32   StatusPort = 5007;
     int32   ReportIntervalMs = 500;
 };
 
