@@ -66,7 +66,6 @@ struct FTrackedPose {
 };
 
 namespace CoordConvert {
-
     inline void UnrealToProtocolFloat(const FVector& In, float& OutX, float& OutY, float& OutZ) {
         OutX = static_cast<float>(In.X / 100.0);
         OutY = -static_cast<float>(In.Y / 100.0);
@@ -74,10 +73,10 @@ namespace CoordConvert {
     }
 
     inline void UnrealToProtocolQuatFloat(const FQuat& Q, float& Q0, float& Q1, float& Q2, float& Q3) {
-        Q0 = static_cast<float>(Q.W);
-        Q1 = -static_cast<float>(Q.X);
-        Q2 = static_cast<float>(Q.Y);
-        Q3 = -static_cast<float>(Q.Z);
+        Q0 = static_cast<float>(Q.W);   // w
+        Q1 = static_cast<float>(Q.X);   // x
+        Q2 = static_cast<float>(Q.Y);   // y
+        Q3 = static_cast<float>(Q.Z);   // z
     }
 
     inline FVector ProtocolToUnreal(float X, float Y, float Z) {
@@ -85,7 +84,7 @@ namespace CoordConvert {
     }
 
     inline FRotator ProtocolToUnrealRot(float Q0, float Q1, float Q2, float Q3) {
-        FQuat Q(Q1, -Q2, Q3, Q0);
+        FQuat Q(Q1, Q2, Q3, Q0);  // FQuat constructor is (x, y, z, w)
         return Q.Rotator();
     }
 }

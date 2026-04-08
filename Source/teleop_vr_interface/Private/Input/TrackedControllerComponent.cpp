@@ -143,11 +143,11 @@ FControllerDeltaPose UTrackedControllerComponent::GetDeltaPose() const {
     if (!bOriginValid || !MotionController) return Delta;
 
     FTransform Current = MotionController->GetComponentTransform();
-    FVector WorldTranslation = Current.GetLocation() - Origin.GetLocation();
-    FVector LiveTranslation = Origin.GetRotation().UnrotateVector(WorldTranslation);
-    FQuat LiveRotation = Origin.GetRotation().Inverse() * Current.GetRotation();
 
-    Delta.Translation = BankedTranslation + LiveTranslation;
+    FVector WorldTranslation = Current.GetLocation() - Origin.GetLocation();
+    Delta.Translation = BankedTranslation + WorldTranslation;
+
+    FQuat LiveRotation = Origin.GetRotation().Inverse() * Current.GetRotation();
     Delta.Rotation = BankedRotation * LiveRotation;
 
     return Delta;
@@ -166,10 +166,8 @@ void UTrackedControllerComponent::UpdateClutch() {
         if (!bIsClutching) {
             FTransform Current = MotionController->GetComponentTransform();
             FVector WorldTranslation = Current.GetLocation() - Origin.GetLocation();
-            FVector LiveTranslation = Origin.GetRotation().UnrotateVector(WorldTranslation);
+            BankedTranslation += WorldTranslation;
             FQuat LiveRotation = Origin.GetRotation().Inverse() * Current.GetRotation();
-
-            BankedTranslation += LiveTranslation;
             BankedRotation = BankedRotation * LiveRotation;
             BankedRotation.Normalize();
 

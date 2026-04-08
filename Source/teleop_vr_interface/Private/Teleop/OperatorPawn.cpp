@@ -374,6 +374,9 @@ void AOperatorPawn::SendArmCommands() {
 		CoordConvert::UnrealToProtocolQuatFloat(Delta.Rotation, Msg.quaternion[0], Msg.quaternion[1], Msg.quaternion[2], Msg.quaternion[3]);
 		Msg.gripper = RightTracked->GetTriggerValue();
 		ComLink->SendArmCommand(Msg, 1);
+
+		const FString QuatText = FString::Printf(TEXT("w:%.3f x:%.3f y:%.3f z:%.3f"), Msg.quaternion[0], Msg.quaternion[1], Msg.quaternion[2], Msg.quaternion[3]);
+		UIBinder->SetText(FName("angleDelta"), QuatText);
 	}
 }
 
