@@ -319,7 +319,6 @@ void FStreamStats::PollStatusSocket()
     {
         if (BytesRead == sizeof(FStreamStatusMsg) && Msg.Magic == kStreamStatusMagic)
         {
-            UE_LOG(LogTemp, Log, TEXT("StreamStats: received health state %d"), Msg.State);
             LastStreamHealthState.Store(Msg.State);
         }
     }

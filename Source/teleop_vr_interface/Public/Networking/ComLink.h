@@ -73,4 +73,5 @@ private:
     TUniquePtr<CommandLink>  CmdLink_;
 
     bool bWasAvatarAlive_ = false;
+    float HeartbeatAccum_ = 0.0f;
 };

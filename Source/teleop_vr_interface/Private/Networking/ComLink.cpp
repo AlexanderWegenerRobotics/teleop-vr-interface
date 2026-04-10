@@ -46,6 +46,14 @@ void UComLink::TickComponent(float DeltaTime, ELevelTick TickType, FActorCompone
 
     if (CmdLink_) CmdLink_->Tick();
 
+    HeartbeatAccum_ += DeltaTime;
+    if (HeartbeatAccum_ >= 0.5f) {
+        HeartbeatAccum_ = 0.0f;
+        msgpack::sbuffer Buf;
+        msgpack::pack(Buf, std::map<std::string, uint8_t>{{}});  // empty payload
+        CmdLink_->Send("heartbeat", Buf, false);
+    }
+
     bool bAlive = IsAvatarAlive();
     if (bAlive != bWasAvatarAlive_) {
         OnAvatarConnectionChanged.Broadcast(bAlive);
