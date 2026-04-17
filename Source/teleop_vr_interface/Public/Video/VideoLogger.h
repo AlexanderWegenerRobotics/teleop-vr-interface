@@ -44,11 +44,15 @@ public:
     TArray<FLayerSource> LayerSources;
     void AddLayerSource(TFunction<UTexture* ()> Getter, int32 Priority);
 
+    // Output control — set before StartLogging.
+    UPROPERTY(EditAnywhere, Category = "VideoLogger") bool bEnableRawVideo = true;
+    UPROPERTY(EditAnywhere, Category = "VideoLogger") bool bEnableAttentionVideo = true;
+
     UPROPERTY(EditAnywhere, Category = "VideoLogger") float CaptureFPS = 30.0f;
     UPROPERTY(EditAnywhere, Category = "VideoLogger") int32 LogW = 1280;
     UPROPERTY(EditAnywhere, Category = "VideoLogger") int32 LogH = 720;
 
-    UPROPERTY(EditAnywhere, Category = "VideoLogger|Gaze") float GazeRadiusFraction = 0.15f;
+    UPROPERTY(EditAnywhere, Category = "VideoLogger|Gaze") float GazeRadiusFraction = 0.10f;
     UPROPERTY(EditAnywhere, Category = "VideoLogger|Gaze") float PeripheralBrightness = 0.20f;
     UPROPERTY(EditAnywhere, Category = "VideoLogger|Gaze") bool  bDrawGazeDot = true;
     UPROPERTY(EditAnywhere, Category = "VideoLogger|Gaze") int32 GazeDotRadiusPx = 6;
@@ -71,13 +75,14 @@ protected:
 private:
     void CaptureFrame(const FFrameBundle& Bundle);
     void ApplyGazeSpotlight(TArray<FColor>& Pixels, FVector2D GazeUV, bool bValid, float Confidence) const;
+    void ConvertBGRAtoYUV420P(const TArray<FColor>& Pixels, TArray<uint8>& OutI420) const;
 
     void InitSessionDirectory();
     void WriteInitialMetadata();
     void UpdateFinalMetadata(const FString& Notes);
     void AppendFrameJsonl(const FFrameBundle& Bundle);
 
-    void FinalizeEncoder();
+    void FinalizeEncoders();
 
     bool   bIsLogging = false;
     int64  FrameIndex = 0;
@@ -87,7 +92,8 @@ private:
     FString   SessionDir;
     FString   FramesJsonlPath;
     FString   MetaJsonPath;
-    FString   VideoPath;
+    FString   RawVideoPath;
+    FString   AttentionVideoPath;
     FDateTime StartTimeUtc;
 
     UPROPERTY() UTextureRenderTarget2D* LoggingRT = nullptr;
@@ -96,5 +102,6 @@ private:
     FThreadSafeBool EncoderRunning = false;
     TFuture<void>   EncoderFuture;
 
-    void* EncoderState = nullptr;
+    void* EncoderRaw = nullptr;
+    void* EncoderAttention = nullptr;
 };

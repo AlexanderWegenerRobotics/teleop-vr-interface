@@ -21,10 +21,7 @@ AVideoLogger::AVideoLogger()
     PrimaryActorTick.bCanEverTick = true;
 }
 
-AVideoLogger::~AVideoLogger()
-{
-    // EncoderState is a raw void* — cleaned up in FinalizeEncoder().
-}
+AVideoLogger::~AVideoLogger() {}
 
 void AVideoLogger::BeginPlay() { Super::BeginPlay(); }
 void AVideoLogger::Tick(float DeltaTime) { Super::Tick(DeltaTime); }
@@ -47,10 +44,15 @@ void AVideoLogger::StartLogging()
         return;
     }
 
-    FrameIndex      = 0;
+    if (!bEnableRawVideo && !bEnableAttentionVideo) {
+        UE_LOG(LogTemp, Warning, TEXT("VideoLogger: both outputs disabled, nothing to do"));
+        return;
+    }
+
+    FrameIndex = 0;
     AccumulatedTime = 0.0;
     SecondsPerFrame = CaptureFPS > 0.f ? 1.0 / CaptureFPS : 0.0;
-    StartTimeUtc    = FDateTime::UtcNow();
+    StartTimeUtc = FDateTime::UtcNow();
 
     if (!LoggingRT)
     {
@@ -62,57 +64,84 @@ void AVideoLogger::StartLogging()
     InitSessionDirectory();
     WriteInitialMetadata();
 
-    // Create ffmpeg-based H.264 encoder — output written to session.mp4 in real time.
-    EncoderState = VideoEncoder_Create(LogW, LogH, FMath::RoundToInt(CaptureFPS), VideoPath);
-    if (!EncoderState)
+    const int32 FPS = FMath::RoundToInt(CaptureFPS);
+
+    if (bEnableRawVideo)
     {
-        UE_LOG(LogTemp, Error, TEXT("VideoLogger: encoder init failed"));
+        EncoderRaw = VideoEncoder_Create(LogW, LogH, FPS, RawVideoPath);
+        if (!EncoderRaw) {
+            UE_LOG(LogTemp, Error, TEXT("VideoLogger: raw encoder init failed"));
+        }
+        else {
+            UE_LOG(LogTemp, Log, TEXT("VideoLogger: raw encoder ready"));
+        }
+    }
+
+    if (bEnableAttentionVideo)
+    {
+        EncoderAttention = VideoEncoder_Create(LogW, LogH, FPS, AttentionVideoPath);
+        if (!EncoderAttention) {
+            UE_LOG(LogTemp, Error, TEXT("VideoLogger: attention encoder init failed"));
+        }
+        else {
+            UE_LOG(LogTemp, Log, TEXT("VideoLogger: attention encoder ready"));
+        }
+    }
+
+    if (!EncoderRaw && !EncoderAttention)
+    {
+        UE_LOG(LogTemp, Error, TEXT("VideoLogger: no encoders initialized"));
         return;
     }
 
     EncoderRunning = true;
-    EncoderFuture  = Async(EAsyncExecution::ThreadPool, [this]()
-    {
-        while (EncoderRunning || !EncodeQueue.IsEmpty())
+    EncoderFuture = Async(EAsyncExecution::ThreadPool, [this]()
         {
-            FLogFrame Frame;
-            if (!EncodeQueue.Dequeue(Frame)) { FPlatformProcess::Sleep(0.001f); continue; }
-
-            ApplyGazeSpotlight(Frame.Pixels, Frame.Bundle.GazeUV,
-                               Frame.Bundle.bGazeValid, Frame.Bundle.GazeConfidence);
-
-            // BGRA → YUV420P
-            const int32 NumPx = LogW * LogH;
-            TArray<uint8> I420;
-            I420.SetNumUninitialized(NumPx + NumPx / 2);
-            uint8* Yp = I420.GetData();
-            uint8* Up = Yp + NumPx;
-            uint8* Vp = Up + NumPx / 4;
-
-            for (int32 Row = 0; Row < LogH; ++Row)
-            for (int32 Col = 0; Col < LogW; ++Col)
+            while (EncoderRunning || !EncodeQueue.IsEmpty())
             {
-                const FColor& C = Frame.Pixels[Row * LogW + Col];
-                Yp[Row * LogW + Col] = (uint8)FMath::Clamp(
-                    0.257f*C.R + 0.504f*C.G + 0.098f*C.B + 16.f, 0.f, 255.f);
-                if (Row % 2 == 0 && Col % 2 == 0)
+                FLogFrame Frame;
+                if (!EncodeQueue.Dequeue(Frame)) { FPlatformProcess::Sleep(0.001f); continue; }
+
+                // --- Raw video: encode unmodified pixels ---
+                if (EncoderRaw)
                 {
-                    int32 UV = (Row/2)*(LogW/2) + Col/2;
-                    Up[UV] = (uint8)FMath::Clamp(-0.148f*C.R - 0.291f*C.G + 0.439f*C.B + 128.f, 0.f, 255.f);
-                    Vp[UV] = (uint8)FMath::Clamp( 0.439f*C.R - 0.368f*C.G - 0.071f*C.B + 128.f, 0.f, 255.f);
+                    TArray<uint8> RawI420;
+                    ConvertBGRAtoYUV420P(Frame.Pixels, RawI420);
+
+                    const int32 NumPx = LogW * LogH;
+                    VideoEncoder_SubmitYUV420P(
+                        static_cast<FEncoderHandle*>(EncoderRaw),
+                        RawI420.GetData(),
+                        RawI420.GetData() + NumPx,
+                        RawI420.GetData() + NumPx + NumPx / 4,
+                        LogW, LogH);
                 }
+
+                // --- Attention video: apply gaze spotlight, then encode ---
+                if (EncoderAttention)
+                {
+                    ApplyGazeSpotlight(Frame.Pixels, Frame.Bundle.GazeUV,
+                        Frame.Bundle.bGazeValid, Frame.Bundle.GazeConfidence);
+
+                    TArray<uint8> AttnI420;
+                    ConvertBGRAtoYUV420P(Frame.Pixels, AttnI420);
+
+                    const int32 NumPx = LogW * LogH;
+                    VideoEncoder_SubmitYUV420P(
+                        static_cast<FEncoderHandle*>(EncoderAttention),
+                        AttnI420.GetData(),
+                        AttnI420.GetData() + NumPx,
+                        AttnI420.GetData() + NumPx + NumPx / 4,
+                        LogW, LogH);
+                }
+
+                AppendFrameJsonl(Frame.Bundle);
             }
-
-            VideoEncoder_SubmitYUV420P(
-                static_cast<FEncoderHandle*>(EncoderState),
-                Yp, Up, Vp, LogW, LogH);
-
-            AppendFrameJsonl(Frame.Bundle);
-        }
-    });
+        });
 
     bIsLogging = true;
-    UE_LOG(LogTemp, Log, TEXT("VideoLogger: started → %s"), *SessionDir);
+    UE_LOG(LogTemp, Log, TEXT("VideoLogger: started (raw=%d attn=%d) -> %s"),
+        !!EncoderRaw, !!EncoderAttention, *SessionDir);
 }
 
 // ----------------------------------------------------------------
@@ -124,36 +153,29 @@ void AVideoLogger::StopLogging(const FString& Notes)
     if (!bIsLogging) return;
     bIsLogging = false;
 
-    // Signal the encode thread to stop FIRST.
     EncoderRunning = false;
 
-    // Drain with a timeout — if the thread is stuck in WritePipe,
-    // FinalizeEncoder (which closes the pipe) will unblock it.
     if (EncoderFuture.IsValid())
     {
-        // Give the thread a short window to drain naturally.
         const double Start = FPlatformTime::Seconds();
         while (!EncoderFuture.WaitFor(FTimespan::FromMilliseconds(100)))
         {
             if (FPlatformTime::Seconds() - Start > 2.0)
             {
-                // Thread is stuck (likely blocked on pipe write).
-                // Close the pipe to unblock it, then wait again.
                 UE_LOG(LogTemp, Warning,
-                    TEXT("VideoLogger: encode thread stuck, closing pipe to unblock"));
-                FinalizeEncoder();
+                    TEXT("VideoLogger: encode thread stuck, closing pipes to unblock"));
+                FinalizeEncoders();
                 EncoderFuture.Wait();
                 break;
             }
         }
     }
 
-    // FinalizeEncoder is safe to call twice (checks for nullptr).
-    FinalizeEncoder();
+    FinalizeEncoders();
     UpdateFinalMetadata(Notes);
 
-    UE_LOG(LogTemp, Log, TEXT("VideoLogger: stopped. Frames=%lld → %s"),
-        FrameIndex, *VideoPath);
+    UE_LOG(LogTemp, Log, TEXT("VideoLogger: stopped. Frames=%lld -> %s"),
+        FrameIndex, *SessionDir);
 }
 
 // ----------------------------------------------------------------
@@ -177,7 +199,7 @@ void AVideoLogger::SubmitFrame(const FFrameBundle& InBundle)
 }
 
 // ----------------------------------------------------------------
-// CaptureFrame
+// CaptureFrame — single GPU readback, shared by both encoders
 // ----------------------------------------------------------------
 
 void AVideoLogger::CaptureFrame(const FFrameBundle& Bundle)
@@ -195,8 +217,6 @@ void AVideoLogger::CaptureFrame(const FFrameBundle& Bundle)
             UTexture* Tex = Src.GetTexture ? Src.GetTexture() : nullptr;
             if (!Tex) continue;
 
-            // Draw each layer fullscreen with alpha blending.
-            // Video feed (priority 0) is opaque, UI layers blend on top.
             EBlendMode Blend = (Src.Priority == 0) ? BLEND_Opaque : BLEND_Translucent;
             Canvas->K2_DrawTexture(Tex, FVector2D::ZeroVector,
                 FVector2D((float)LogW, (float)LogH),
@@ -227,45 +247,72 @@ void AVideoLogger::CaptureFrame(const FFrameBundle& Bundle)
 }
 
 // ----------------------------------------------------------------
+// ConvertBGRAtoYUV420P
+// ----------------------------------------------------------------
+
+void AVideoLogger::ConvertBGRAtoYUV420P(const TArray<FColor>& Pixels, TArray<uint8>& OutI420) const
+{
+    const int32 NumPx = LogW * LogH;
+    OutI420.SetNumUninitialized(NumPx + NumPx / 2);
+    uint8* Yp = OutI420.GetData();
+    uint8* Up = Yp + NumPx;
+    uint8* Vp = Up + NumPx / 4;
+
+    for (int32 Row = 0; Row < LogH; ++Row)
+        for (int32 Col = 0; Col < LogW; ++Col)
+        {
+            const FColor& C = Pixels[Row * LogW + Col];
+            Yp[Row * LogW + Col] = (uint8)FMath::Clamp(
+                0.257f * C.R + 0.504f * C.G + 0.098f * C.B + 16.f, 0.f, 255.f);
+            if (Row % 2 == 0 && Col % 2 == 0)
+            {
+                int32 UV = (Row / 2) * (LogW / 2) + Col / 2;
+                Up[UV] = (uint8)FMath::Clamp(-0.148f * C.R - 0.291f * C.G + 0.439f * C.B + 128.f, 0.f, 255.f);
+                Vp[UV] = (uint8)FMath::Clamp(0.439f * C.R - 0.368f * C.G - 0.071f * C.B + 128.f, 0.f, 255.f);
+            }
+        }
+}
+
+// ----------------------------------------------------------------
 // ApplyGazeSpotlight
 // ----------------------------------------------------------------
 
 void AVideoLogger::ApplyGazeSpotlight(TArray<FColor>& Pixels,
     FVector2D GazeUV, bool bValid, float Confidence) const
 {
-    const float Dark  = FMath::Clamp(PeripheralBrightness, 0.f, 1.f);
+    const float Dark = FMath::Clamp(PeripheralBrightness, 0.f, 1.f);
     const float RadPx = GazeRadiusFraction * (float)LogW;
     const float SigSq = RadPx * RadPx;
-    const float GX    = GazeUV.X * (float)LogW;
-    const float GY    = GazeUV.Y * (float)LogH;
+    const float GX = GazeUV.X * (float)LogW;
+    const float GY = GazeUV.Y * (float)LogH;
 
     for (int32 Y = 0; Y < LogH; ++Y)
-    for (int32 X = 0; X < LogW; ++X)
-    {
-        FColor& P = Pixels[Y * LogW + X];
-        float W = Dark;
-        if (bValid && Confidence > 0.f)
+        for (int32 X = 0; X < LogW; ++X)
         {
-            float dx = (float)X - GX, dy = (float)Y - GY;
-            W = Dark + (1.f-Dark) * FMath::Pow(
-                FMath::Exp(-(dx*dx + dy*dy) / (2.f*SigSq)), 0.45f);
+            FColor& P = Pixels[Y * LogW + X];
+            float W = Dark;
+            if (bValid && Confidence > 0.f)
+            {
+                float dx = (float)X - GX, dy = (float)Y - GY;
+                W = Dark + (1.f - Dark) * FMath::Pow(
+                    FMath::Exp(-(dx * dx + dy * dy) / (2.f * SigSq)), 0.45f);
+            }
+            P.R = (uint8)FMath::Clamp((float)P.R * W, 0.f, 255.f);
+            P.G = (uint8)FMath::Clamp((float)P.G * W, 0.f, 255.f);
+            P.B = (uint8)FMath::Clamp((float)P.B * W, 0.f, 255.f);
         }
-        P.R = (uint8)FMath::Clamp((float)P.R * W, 0.f, 255.f);
-        P.G = (uint8)FMath::Clamp((float)P.G * W, 0.f, 255.f);
-        P.B = (uint8)FMath::Clamp((float)P.B * W, 0.f, 255.f);
-    }
 
     if (bValid && bDrawGazeDot)
     {
         const int32 CX = (int32)GX, CY = (int32)GY;
         const int32 R2 = GazeDotRadiusPx * GazeDotRadiusPx;
-        for (int32 Y = CY-GazeDotRadiusPx; Y <= CY+GazeDotRadiusPx; ++Y)
-        for (int32 X = CX-GazeDotRadiusPx; X <= CX+GazeDotRadiusPx; ++X)
-        {
-            if (X < 0 || X >= LogW || Y < 0 || Y >= LogH) continue;
-            if ((X-CX)*(X-CX)+(Y-CY)*(Y-CY) <= R2)
-                Pixels[Y*LogW+X] = FColor(255, 50, 50, 255);
-        }
+        for (int32 Y = CY - GazeDotRadiusPx; Y <= CY + GazeDotRadiusPx; ++Y)
+            for (int32 X = CX - GazeDotRadiusPx; X <= CX + GazeDotRadiusPx; ++X)
+            {
+                if (X < 0 || X >= LogW || Y < 0 || Y >= LogH) continue;
+                if ((X - CX) * (X - CX) + (Y - CY) * (Y - CY) <= R2)
+                    Pixels[Y * LogW + X] = FColor(255, 50, 50, 255);
+            }
     }
 }
 
@@ -273,12 +320,20 @@ void AVideoLogger::ApplyGazeSpotlight(TArray<FColor>& Pixels,
 // Encoder lifecycle
 // ----------------------------------------------------------------
 
-void AVideoLogger::FinalizeEncoder()
+void AVideoLogger::FinalizeEncoders()
 {
-    if (!EncoderState) return;
-    VideoEncoder_Destroy(static_cast<FEncoderHandle*>(EncoderState));
-    EncoderState = nullptr;
+    if (EncoderRaw)
+    {
+        VideoEncoder_Destroy(static_cast<FEncoderHandle*>(EncoderRaw));
+        EncoderRaw = nullptr;
+    }
+    if (EncoderAttention)
+    {
+        VideoEncoder_Destroy(static_cast<FEncoderHandle*>(EncoderAttention));
+        EncoderAttention = nullptr;
+    }
 }
+
 // ----------------------------------------------------------------
 // Session IO
 // ----------------------------------------------------------------
@@ -289,10 +344,11 @@ void AVideoLogger::InitSessionDirectory()
         FPaths::ProjectSavedDir() / TEXT("OperatorViewLogs"));
     IFileManager::Get().MakeDirectory(*Base, true);
 
-    SessionDir      = Base / FDateTime::Now().ToString(TEXT("%Y%m%d_%H%M%S"));
+    SessionDir = Base / FDateTime::Now().ToString(TEXT("%Y%m%d_%H%M%S"));
     FramesJsonlPath = SessionDir / TEXT("frames.jsonl");
-    MetaJsonPath    = SessionDir / TEXT("metadata.json");
-    VideoPath       = SessionDir / TEXT("session.mp4");
+    MetaJsonPath = SessionDir / TEXT("metadata.json");
+    RawVideoPath = SessionDir / TEXT("session.mp4");
+    AttentionVideoPath = SessionDir / TEXT("session_attention.mp4");
     IFileManager::Get().MakeDirectory(*SessionDir, true);
     UE_LOG(LogTemp, Log, TEXT("Video Logging: Writing to %s"), *SessionDir);
 }
@@ -301,14 +357,18 @@ void AVideoLogger::WriteInitialMetadata()
 {
     TSharedRef<FJsonObject> R = MakeShared<FJsonObject>();
     R->SetStringField(TEXT("start_time_utc"), StartTimeUtc.ToIso8601());
-    R->SetStringField(TEXT("end_time_utc"),   TEXT(""));
-    R->SetNumberField(TEXT("duration_sec"),   0.0);
-    R->SetNumberField(TEXT("width"),          LogW);
-    R->SetNumberField(TEXT("height"),         LogH);
-    R->SetNumberField(TEXT("target_fps"),     CaptureFPS);
-    R->SetNumberField(TEXT("quad_width_ue"),  QuadWidth);
+    R->SetStringField(TEXT("end_time_utc"), TEXT(""));
+    R->SetNumberField(TEXT("duration_sec"), 0.0);
+    R->SetNumberField(TEXT("width"), LogW);
+    R->SetNumberField(TEXT("height"), LogH);
+    R->SetNumberField(TEXT("target_fps"), CaptureFPS);
+    R->SetNumberField(TEXT("quad_width_ue"), QuadWidth);
     R->SetNumberField(TEXT("quad_height_ue"), QuadHeight);
-    R->SetNumberField(TEXT("plane_dist_ue"),  PlaneDistance);
+    R->SetNumberField(TEXT("plane_dist_ue"), PlaneDistance);
+    R->SetBoolField(TEXT("raw_video"), bEnableRawVideo);
+    R->SetBoolField(TEXT("attention_video"), bEnableAttentionVideo);
+    R->SetNumberField(TEXT("gaze_radius_frac"), GazeRadiusFraction);
+    R->SetNumberField(TEXT("peripheral_brightness"), PeripheralBrightness);
 
     FString Out; TSharedRef<TJsonWriter<>> W = TJsonWriterFactory<>::Create(&Out);
     FJsonSerializer::Serialize(R, W);
@@ -328,9 +388,10 @@ void AVideoLogger::UpdateFinalMetadata(const FString& Notes)
     FDateTime End = FDateTime::UtcNow();
     R->SetStringField(TEXT("end_time_utc"), End.ToIso8601());
     R->SetNumberField(TEXT("duration_sec"), (End - StartTimeUtc).GetTotalSeconds());
-    R->SetNumberField(TEXT("frame_count"),  (double)FrameIndex);
-    R->SetStringField(TEXT("notes"),        Notes);
-    R->SetStringField(TEXT("video_file"),   TEXT("session.mp4"));
+    R->SetNumberField(TEXT("frame_count"), (double)FrameIndex);
+    R->SetStringField(TEXT("notes"), Notes);
+    if (bEnableRawVideo)       R->SetStringField(TEXT("raw_video_file"), TEXT("session.mp4"));
+    if (bEnableAttentionVideo) R->SetStringField(TEXT("attention_video_file"), TEXT("session_attention.mp4"));
 
     FString Out; TSharedRef<TJsonWriter<>> W = TJsonWriterFactory<>::Create(&Out);
     FJsonSerializer::Serialize(R.ToSharedRef(), W);
@@ -340,13 +401,13 @@ void AVideoLogger::UpdateFinalMetadata(const FString& Notes)
 void AVideoLogger::AppendFrameJsonl(const FFrameBundle& B)
 {
     TSharedRef<FJsonObject> O = MakeShared<FJsonObject>();
-    O->SetNumberField(TEXT("frame_idx"),       (double)B.FrameIdx);
-    O->SetNumberField(TEXT("ts"),              B.UnixTime);
-    O->SetNumberField(TEXT("sender_time_ns"),  (double)B.SenderTimeNs);
-    O->SetNumberField(TEXT("gaze_u"),          B.GazeUV.X);
-    O->SetNumberField(TEXT("gaze_v"),          B.GazeUV.Y);
+    O->SetNumberField(TEXT("frame_idx"), (double)B.FrameIdx);
+    O->SetNumberField(TEXT("ts"), B.UnixTime);
+    O->SetNumberField(TEXT("sender_time_ns"), (double)B.SenderTimeNs);
+    O->SetNumberField(TEXT("gaze_u"), B.GazeUV.X);
+    O->SetNumberField(TEXT("gaze_v"), B.GazeUV.Y);
     O->SetNumberField(TEXT("gaze_confidence"), B.GazeConfidence);
-    O->SetBoolField  (TEXT("gaze_valid"),      B.bGazeValid);
+    O->SetBoolField(TEXT("gaze_valid"), B.bGazeValid);
 
     FString Line; TSharedRef<TJsonWriter<>> W = TJsonWriterFactory<>::Create(&Line);
     FJsonSerializer::Serialize(O, W);
