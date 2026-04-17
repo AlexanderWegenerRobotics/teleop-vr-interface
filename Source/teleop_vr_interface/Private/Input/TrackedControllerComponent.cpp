@@ -1,6 +1,10 @@
 #include "Input/TrackedControllerComponent.h"
 #include "EnhancedInputComponent.h"
 #include "DrawDebugHelpers.h"
+#include "GameFramework/PlayerController.h"
+#include "Kismet/GameplayStatics.h"
+#include "Framework/Application/SlateApplication.h"
+#include "GenericPlatform/IInputInterface.h"
 
 UTrackedControllerComponent::UTrackedControllerComponent() {
     PrimaryComponentTick.bCanEverTick = true;
@@ -23,11 +27,12 @@ void UTrackedControllerComponent::TickComponent(float DeltaTime, ELevelTick Tick
     }
 
     UpdateClutch();
+    UpdateScaledTranslation();
 
     if (bDrawDebugRay && MotionController && TrackingState == EControllerTrackingState::Tracking) {
         FVector Pos = MotionController->GetComponentLocation();
         FVector Fwd = MotionController->GetForwardVector();
-        FColor RayColor = bIsClutching ? FColor::Orange : (bOriginValid ? FColor::Green : FColor::Yellow);
+        FColor RayColor = bFullClutch ? FColor::Orange : (bOriginValid ? FColor::Green : FColor::Yellow);
         DrawDebugLine(GetWorld(), Pos, Pos + Fwd * DebugRayLength, RayColor, false, -1.0f, 0, 0.5f);
 
         DrawDebugLine(GetWorld(), Pos, Pos + MotionController->GetForwardVector() * 10.f, FColor::Red, false, -1.f, 0, 0.5f);
@@ -42,12 +47,15 @@ void UTrackedControllerComponent::TickComponent(float DeltaTime, ELevelTick Tick
     if (bPrintDebugInfo && FPlatformTime::Seconds() - LastLogTime > 0.5) {
         FString Hand = MotionController ? MotionController->GetName() : TEXT("Unknown");
         FControllerDeltaPose Delta = GetDeltaPose();
-        UE_LOG(LogTemp, Log, TEXT("Controller[%s]: tracking=%d clutch=%d trigger=%.2f grip=%d origin_valid=%d delta_t=(%.2f,%.2f,%.2f)"),
+        float ClutchScale = GetClutchFactor();
+        UE_LOG(LogTemp, Log, TEXT("Controller[%s]: tracking=%d fullclutch=%d clutch_scale=%.2f trigger=%.2f grasp=%d gear=%d origin_valid=%d delta_t=(%.2f,%.2f,%.2f)"),
             *Hand,
             static_cast<int>(TrackingState),
-            bIsClutching,
+            bFullClutch,
+            ClutchScale,
             TriggerValue,
             bGripHeld,
+            ScaleFactor,
             bOriginValid,
             Delta.Translation.X, Delta.Translation.Y, Delta.Translation.Z);
         LastLogTime = FPlatformTime::Seconds();
@@ -76,8 +84,12 @@ void UTrackedControllerComponent::BindInputActions() {
         EIC->BindAction(IA_Stop, ETriggerEvent::Started, this, &UTrackedControllerComponent::OnMenuPressed);
         EIC->BindAction(IA_Stop, ETriggerEvent::Completed, this, &UTrackedControllerComponent::OnMenuReleased);
     }
-
-
+    if (IA_PadUp) {
+        EIC->BindAction(IA_PadUp, ETriggerEvent::Started, this, &UTrackedControllerComponent::OnPadUp);
+    }
+    if (IA_PadDown) {
+        EIC->BindAction(IA_PadDown, ETriggerEvent::Started, this, &UTrackedControllerComponent::OnPadDown);
+    }
 }
 
 void UTrackedControllerComponent::OnTrigger(const FInputActionValue& Value) {
@@ -100,14 +112,71 @@ void UTrackedControllerComponent::OnMenuReleased(const FInputActionValue& Value)
     bMenuPressed = false;
 }
 
+void UTrackedControllerComponent::OnPadUp(const FInputActionValue& Value) {
+    if (ScaleFactor < MaxScale) {
+        ScaleFactor++;
+    }
+}
+
+void UTrackedControllerComponent::OnPadDown(const FInputActionValue& Value) {
+    if (ScaleFactor > MinScale) {
+        ScaleFactor--;
+    }
+}
+
+EControllerHand UTrackedControllerComponent::GetHand() const {
+    if (!MotionController) return EControllerHand::Left;
+    return MotionController->GetTrackingSource() == EControllerHand::Right
+        ? EControllerHand::Right
+        : EControllerHand::Left;
+}
+
+float UTrackedControllerComponent::ComputeClutchScale(float TriggerRaw) const {
+    if (TriggerRaw <= ClutchDeadZoneLow) return 1.0f;
+    if (TriggerRaw >= ClutchActiveRangeMax) return 0.0f;
+
+    float t = (TriggerRaw - ClutchDeadZoneLow) / (ClutchActiveRangeMax - ClutchDeadZoneLow);
+    //float Scale = 1.0f - (t * t);
+    float Scale = (1 - t) * (1 - t);
+    return FMath::Clamp(Scale, 0.0f, 1.0f);
+}
+
+float UTrackedControllerComponent::GetClutchFactor() const {
+    if (bFullClutch) return 0.0f;
+    return ComputeClutchScale(TriggerValue);
+}
+
+void UTrackedControllerComponent::UpdateScaledTranslation() {
+    if (!bOriginValid || !MotionController || TrackingState != EControllerTrackingState::Tracking || bFullClutch) {
+        return;
+    }
+
+    FVector CurrentLocation = MotionController->GetComponentLocation();
+
+    if (!bPrevLocationValid) {
+        PrevTrackedLocation = CurrentLocation;
+        bPrevLocationValid = true;
+        return;
+    }
+
+    FVector TickDelta = CurrentLocation - PrevTrackedLocation;
+    float ClutchScale = ComputeClutchScale(TriggerValue);
+    ScaledTranslation += TickDelta * ClutchScale * static_cast<float>(ScaleFactor);
+    PrevTrackedLocation = CurrentLocation;
+}
+
 void UTrackedControllerComponent::CaptureOrigin() {
-    BankedTranslation = FVector::ZeroVector;
+    ScaledTranslation = FVector::ZeroVector;
+    BankedScaledTranslation = FVector::ZeroVector;
     BankedRotation = FQuat::Identity;
+    bPrevLocationValid = false;
 
     if (SampleBuffer.Num() == 0) {
         if (MotionController) {
             Origin = MotionController->GetComponentTransform();
             bOriginValid = true;
+            PrevTrackedLocation = Origin.GetLocation();
+            bPrevLocationValid = true;
         }
         return;
     }
@@ -136,17 +205,17 @@ void UTrackedControllerComponent::CaptureOrigin() {
     Origin.SetRotation(AccumQuat);
     Origin.SetScale3D(FVector::OneVector);
     bOriginValid = true;
+    PrevTrackedLocation = AvgPos;
+    bPrevLocationValid = true;
 }
 
 FControllerDeltaPose UTrackedControllerComponent::GetDeltaPose() const {
     FControllerDeltaPose Delta;
     if (!bOriginValid || !MotionController) return Delta;
 
+    Delta.Translation = BankedScaledTranslation + ScaledTranslation;
+
     FTransform Current = MotionController->GetComponentTransform();
-
-    FVector WorldTranslation = Current.GetLocation() - Origin.GetLocation();
-    Delta.Translation = BankedTranslation + WorldTranslation;
-
     FQuat LiveRotation = Origin.GetRotation().Inverse() * Current.GetRotation();
     Delta.Rotation = BankedRotation * LiveRotation;
 
@@ -162,25 +231,36 @@ EControllerTrackingState UTrackedControllerComponent::GetTrackingState() const {
 }
 
 void UTrackedControllerComponent::UpdateClutch() {
-    if (bGripHeld && bOriginValid && TrackingState == EControllerTrackingState::Tracking) {
-        if (!bIsClutching) {
+    if (bFullClutch && TriggerValue < ClutchDisengageThreshold) {
+        bFullClutch = false;
+        PlayClutchHaptic(ClutchDisengageHapticIntensity, ClutchDisengageHapticDuration);
+        if (MotionController) {
+            Origin = MotionController->GetComponentTransform();
+            PrevTrackedLocation = Origin.GetLocation();
+        }
+    }
+    else if (!bFullClutch && TriggerValue >= ClutchEngageThreshold) {
+        if (bOriginValid && MotionController && TrackingState == EControllerTrackingState::Tracking) {
             FTransform Current = MotionController->GetComponentTransform();
-            FVector WorldTranslation = Current.GetLocation() - Origin.GetLocation();
-            BankedTranslation += WorldTranslation;
             FQuat LiveRotation = Origin.GetRotation().Inverse() * Current.GetRotation();
             BankedRotation = BankedRotation * LiveRotation;
             BankedRotation.Normalize();
-
-            Origin = Current;
+            BankedScaledTranslation += ScaledTranslation;
+            ScaledTranslation = FVector::ZeroVector;
         }
-        bIsClutching = true;
-        Origin = MotionController->GetComponentTransform();
+        bFullClutch = true;
+        PlayClutchHaptic(ClutchEngageHapticIntensity, ClutchEngageHapticDuration);
+        if (MotionController) {
+            Origin = MotionController->GetComponentTransform();
+        }
     }
-    else if (bWasClutching && !bGripHeld) {
-        bIsClutching = false;
+
+    if (bFullClutch && MotionController) {
         Origin = MotionController->GetComponentTransform();
+        PrevTrackedLocation = Origin.GetLocation();
     }
-    bWasClutching = bIsClutching;
+
+    bWasFullClutch = bFullClutch;
 }
 
 void UTrackedControllerComponent::UpdateTrackingState() {
@@ -210,4 +290,19 @@ void UTrackedControllerComponent::RecordSample() {
     if (SampleBuffer.Num() > CalibrationSamples * 2) {
         SampleBuffer.RemoveAt(0, SampleBuffer.Num() - CalibrationSamples);
     }
+}
+
+void UTrackedControllerComponent::PlayClutchHaptic(float Intensity, float Duration) {
+    APawn* Pawn = Cast<APawn>(GetOwner());
+    if (!Pawn) return;
+    APlayerController* PC = Cast<APlayerController>(Pawn->GetController());
+    if (!PC) return;
+
+    EControllerHand Hand = GetHand();
+    PC->SetHapticsByValue(Intensity, 1.0f, Hand);
+
+    FTimerHandle TimerHandle;
+    GetWorld()->GetTimerManager().SetTimer(TimerHandle, [PC, Hand]() {
+        PC->SetHapticsByValue(0.0f, 0.0f, Hand);
+        }, Duration, false);
 }

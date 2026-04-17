@@ -40,9 +40,13 @@ AOperatorPawn::AOperatorPawn() {
 	static ConstructorHelpers::FObjectFinder<UInputAction> LeftTrig(TEXT("/Game/Input/IA_LeftTrigger.IA_LeftTrigger"));
 	static ConstructorHelpers::FObjectFinder<UInputAction> LeftGrip(TEXT("/Game/Input/IA_LeftGrip.IA_LeftGrip"));
 	static ConstructorHelpers::FObjectFinder<UInputAction> LeftStop(TEXT("/Game/Input/IA_LeftStop.IA_LeftStop"));
+	static ConstructorHelpers::FObjectFinder<UInputAction> LeftPadUp(TEXT("/Game/Input/IA_LeftPadUp.IA_LeftPadUp"));
+	static ConstructorHelpers::FObjectFinder<UInputAction> LeftPadDown(TEXT("/Game/Input/IA_LeftPadDown.IA_LeftPadDown"));
 	static ConstructorHelpers::FObjectFinder<UInputAction> RightTrig(TEXT("/Game/Input/IA_RightTrigger.IA_RightTrigger"));
 	static ConstructorHelpers::FObjectFinder<UInputAction> RightGrip(TEXT("/Game/Input/IA_RightGrip.IA_RightGrip"));
 	static ConstructorHelpers::FObjectFinder<UInputAction> RightStop(TEXT("/Game/Input/IA_RightStop.IA_RightStop"));
+	static ConstructorHelpers::FObjectFinder<UInputAction> RightPadUp(TEXT("/Game/Input/IA_RightPadUp.IA_RightPadUp"));
+	static ConstructorHelpers::FObjectFinder<UInputAction> RightPadDown(TEXT("/Game/Input/IA_RightPadDown.IA_RightPadDown"));
 
 	LeftTracked->MotionController = LeftController;
 	RightTracked->MotionController = RightController;
@@ -50,9 +54,13 @@ AOperatorPawn::AOperatorPawn() {
 	LeftTracked->IA_Trigger = LeftTrig.Object;
 	LeftTracked->IA_Grip = LeftGrip.Object;
 	LeftTracked->IA_Stop = LeftStop.Object;
+	LeftTracked->IA_PadUp = LeftPadUp.Object;
+	LeftTracked->IA_PadDown = LeftPadDown.Object;
 	RightTracked->IA_Trigger = RightTrig.Object;
 	RightTracked->IA_Grip = RightGrip.Object;
 	RightTracked->IA_Stop = RightStop.Object;
+	RightTracked->IA_PadUp = RightPadUp.Object;
+	RightTracked->IA_PadDown = RightPadDown.Object;
 
 	static ConstructorHelpers::FClassFinder<UUserWidget> UIClass(TEXT("/Game/UI/WBP_DebugPanel.WBP_DebugPanel_C"));
 	if (UIClass.Succeeded()) {
@@ -147,6 +155,11 @@ void AOperatorPawn::Tick(float DeltaTime) {
 	UIBinder->SetText(FName("operator_state_value"), StateToString(OperatorState_));
 	UIBinder->SetText(FName("avatar_state_value"), StateToString(ComLink->GetAvatarState()));
 
+	UIBinder->SetText(FName("LeftGearValue"), FString::Printf(TEXT("%d"), LeftTracked->GetScaleFactor()));
+	UIBinder->SetText(FName("LeftClutchValue"), FString::Printf(TEXT("%.0f%%"), LeftTracked->GetClutchFactor() * 100.0f));
+	UIBinder->SetText(FName("RightGearValue"), FString::Printf(TEXT("%d"), RightTracked->GetScaleFactor()));
+	UIBinder->SetText(FName("RightClutchValue"), FString::Printf(TEXT("%.0f%%"), RightTracked->GetClutchFactor() * 100.0f));
+
 	static const TArray<FString> HealthLabels = { TEXT("NO SIGNAL"), TEXT("NORMAL"), TEXT("DEGRADED"), TEXT("CRITICAL"), TEXT("STALE") };
 	static const TArray<FLinearColor> HealthColors = { FLinearColor::Gray, FLinearColor::Green, FLinearColor::Yellow, FLinearColor::Red, FLinearColor::Gray };
 
@@ -157,6 +170,15 @@ void AOperatorPawn::Tick(float DeltaTime) {
 		UIBinder->SetTextColor(FName("stream_health_value"), HealthColors[HealthIdx]);
 	}
 
+	if (LeftTracked->IsGraspHeld() && !bLeftWasGrasping) {
+		SoundFeedback->PlayAtLocation(ESoundType::Confirm, LeftController->GetComponentLocation());
+	}
+	bLeftWasGrasping = LeftTracked->IsGraspHeld();
+
+	if (RightTracked->IsGraspHeld() && !bRightWasGrasping) {
+		SoundFeedback->PlayAtLocation(ESoundType::Confirm, RightController->GetComponentLocation());
+	}
+	bRightWasGrasping = RightTracked->IsGraspHeld();
 }
 
 void AOperatorPawn::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) {
@@ -358,21 +380,21 @@ void AOperatorPawn::CaptureControllerOrigins() {
 }
 
 void AOperatorPawn::SendArmCommands() {
-	if (LeftTracked->IsTracking() && !LeftTracked->IsClutching()) {
+	if (LeftTracked->IsTracking() && !LeftTracked->IsFullClutch()) {
 		FControllerDeltaPose Delta = LeftTracked->GetDeltaPose();
 		ArmCommandMsg Msg{};
 		CoordConvert::UnrealToProtocolFloat(Delta.Translation, Msg.position[0], Msg.position[1], Msg.position[2]);
 		CoordConvert::UnrealToProtocolQuatFloat(Delta.Rotation, Msg.quaternion[0], Msg.quaternion[1], Msg.quaternion[2], Msg.quaternion[3]);
-		Msg.gripper = LeftTracked->GetTriggerValue();
+		Msg.gripper = LeftTracked->IsGraspHeld() ? 1.0f : 0.0f;
 		ComLink->SendArmCommand(Msg, 0);
 	}
 
-	if (RightTracked->IsTracking() && !RightTracked->IsClutching()) {
+	if (RightTracked->IsTracking() && !RightTracked->IsFullClutch()) {
 		FControllerDeltaPose Delta = RightTracked->GetDeltaPose();
 		ArmCommandMsg Msg{};
 		CoordConvert::UnrealToProtocolFloat(Delta.Translation, Msg.position[0], Msg.position[1], Msg.position[2]);
 		CoordConvert::UnrealToProtocolQuatFloat(Delta.Rotation, Msg.quaternion[0], Msg.quaternion[1], Msg.quaternion[2], Msg.quaternion[3]);
-		Msg.gripper = RightTracked->GetTriggerValue();
+		Msg.gripper = RightTracked->IsGraspHeld() ? 1.0f : 0.0f;
 		ComLink->SendArmCommand(Msg, 1);
 
 		const FString QuatText = FString::Printf(TEXT("w:%.3f x:%.3f y:%.3f z:%.3f"), Msg.quaternion[0], Msg.quaternion[1], Msg.quaternion[2], Msg.quaternion[3]);

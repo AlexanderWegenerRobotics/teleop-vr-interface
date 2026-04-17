@@ -39,12 +39,6 @@ protected:
 	UPROPERTY() UTrackedControllerComponent* LeftTracked = nullptr;
 	UPROPERTY() UTrackedControllerComponent* RightTracked = nullptr;
 	UPROPERTY() UInputMappingContext* InputMappingContext = nullptr;
-	UPROPERTY() UInputAction* IA_LeftTrigger = nullptr;
-	UPROPERTY() UInputAction* IA_LeftGrip = nullptr;
-	UPROPERTY() UInputAction* IA_LeftStop = nullptr;
-	UPROPERTY() UInputAction* IA_RightTrigger = nullptr;
-	UPROPERTY() UInputAction* IA_RightGrip = nullptr;
-	UPROPERTY() UInputAction* IA_RightStop = nullptr;
 
 	UPROPERTY() TObjectPtr<UVideoFeedComponent> VideoFeed;
 	UPROPERTY() TObjectPtr<UComLink> ComLink;
@@ -78,4 +72,6 @@ private:
 
 	FTransform HMDOrigin_;
 	bool bHMDOriginValid_ = false;
+	bool bLeftWasGrasping = false;
+	bool bRightWasGrasping = false;
 };
