@@ -53,6 +53,7 @@ public:
 	void SetButtonLocked(FName ButtonName, bool bLocked);
 	bool IsButtonLocked(FName ButtonName) const;
 	void SetVisibility(FName WidgetName, bool bVisible);
+	UTextureRenderTarget2D* GetRenderTarget() const { return RenderTarget_; }
 
 	FName GetHoveredButton() const { return HoveredButton_; }
 	FName ConsumePress();

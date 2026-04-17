@@ -1,6 +1,7 @@
 #include "Teleop/OperatorPawn.h"
 #include "Video/GStreamerSource.h"
 #include "Teleop/TeleOpConfig.h"
+#include "Engine/TextureRenderTarget2D.h"
 
 AOperatorPawn::AOperatorPawn() {
 	PrimaryActorTick.bCanEverTick = true;
@@ -130,42 +131,37 @@ void AOperatorPawn::BeginPlay() {
 
 	float AspectRatio = 1280.f / 720.f;
 	FGazeProjection::ComputeQuadSize(VideoFeed->PlaneDistance, VideoFeed->FOVCoverage, AspectRatio, VideoQuadWidth_, VideoQuadHeight_);
-
 	{
 		FActorSpawnParameters Params;
 		Params.Owner = this;
 		VideoLogger_ = GetWorld()->SpawnActor<AVideoLogger>(AVideoLogger::StaticClass(), FTransform::Identity, Params);
-		if (VideoLogger_)
-		{
-			// Wire source texture — add GetVideoTexture() to VideoFeedComponent
-			// (see note below)
-			VideoLogger_->SourceTexture = VideoFeed->GetVideoTexture();
-			VideoLogger_->QuadWidth = VideoQuadWidth_;
-			VideoLogger_->QuadHeight = VideoQuadHeight_;
-			VideoLogger_->PlaneDistance = VideoFeed->PlaneDistance;
+	}
 
-			// Logging configuration — expose as UPROPERTY on OperatorPawn
-			// if you want to tune them per-level without recompiling.
-			VideoLogger_->CaptureFPS = 30.0f;
-			VideoLogger_->LogW = 1280;
-			VideoLogger_->LogH = 720;
-			VideoLogger_->GazeRadiusFraction = 0.15f;
-			VideoLogger_->PeripheralBrightness = 0.20f;
-			VideoLogger_->bDrawGazeDot = true;
-			VideoLogger_->GazeDotRadiusPx = 6;
+	if (VideoLogger_){
+		VideoLogger_->AddLayerSource([this]() -> UTexture* { return VideoFeed->GetVideoTexture(); }, 0);
+		VideoLogger_->AddLayerSource([this]() -> UTexture* { return static_cast<UTexture*>(UIBinder->GetRenderTarget()); }, 1);
+		//VideoLogger_->AddLayerSource([this]() -> UTexture* { return static_cast<UTexture*>(TrayBinder->GetRenderTarget()); }, 2);
 
-			UE_LOG(LogTemp, Log, TEXT("OperatorPawn: VideoLogger spawned"));
-		}
-		else
-		{
-			UE_LOG(LogTemp, Error, TEXT("OperatorPawn: failed to spawn VideoLogger"));
-		}
+		VideoLogger_->QuadWidth = VideoQuadWidth_;
+		VideoLogger_->QuadHeight = VideoQuadHeight_;
+		VideoLogger_->PlaneDistance = VideoFeed->PlaneDistance;
+
+		UE_LOG(LogTemp, Log, TEXT("OperatorPawn: VideoLogger spawned"));
 	}
 
 	if (VideoLogger_) {
 		VideoLogger_->StartLogging();
 	}
 }
+
+
+void AOperatorPawn::EndPlay(const EEndPlayReason::Type EndPlayReason) {
+	if (VideoLogger_) {
+		VideoLogger_->StopLogging(TEXT("EndPlay"));
+	}
+	Super::EndPlay(EndPlayReason);
+}
+
 
 void AOperatorPawn::Tick(float DeltaTime) {
 	Super::Tick(DeltaTime);
@@ -218,9 +214,8 @@ void AOperatorPawn::Tick(float DeltaTime) {
 	}
 	bRightWasGrasping = RightTracked->IsGraspHeld();
 
-	if (VideoLogger_ && VideoLogger_->IsLogging()) {
-		FFrameBundle Bundle = BuildFrameBundle();
-		VideoLogger_->SubmitFrame(Bundle);
+	if (VideoLogger_ && VideoLogger_->IsLogging()){
+		VideoLogger_->SubmitFrame(BuildFrameBundle());
 	}
 }
 

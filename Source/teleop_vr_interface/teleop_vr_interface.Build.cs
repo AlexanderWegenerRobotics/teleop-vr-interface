@@ -20,7 +20,6 @@ public class teleop_vr_interface : ModuleRules
             "Core", "CoreUObject", "Engine", "InputCore", "RenderCore", "EnhancedInput", "UMG", "Slate", "SlateCore", "SlateRHIRenderer",
             "MediaAssets", "Renderer", "RHI", "Sockets", "Networking", "EyeTracker", "ViveOpenXREyeTracker",
             "HeadMountedDisplay", "OpenXRHMD", "Json", "JsonUtilities", "ImageWrapper", "GStreamerPlugin",
-            "VideoEncoderModule",
         });
 
 	}

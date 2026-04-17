@@ -1,5 +1,5 @@
 #include "Video/VideoLogger.h"
-#include "VideoEncoderWrapper.h"
+#include "Video/VideoEncoderWrapper.h"
 
 #include "Engine/TextureRenderTarget2D.h"
 #include "Engine/Texture2D.h"
@@ -41,9 +41,9 @@ void AVideoLogger::EndPlay(const EEndPlayReason::Type EndPlayReason)
 
 void AVideoLogger::StartLogging()
 {
-    UE_LOG(LogTemp, Warning, TEXT("Attempting to start video logging"));
-    if (bIsLogging || !SourceTexture) {
-        UE_LOG(LogTemp, Warning, TEXT("Video logging failed"));
+    if (bIsLogging || LayerSources.Num() == 0) {
+        UE_LOG(LogTemp, Warning, TEXT("Video logging failed: bIsLogging=%d Sources=%d"),
+            bIsLogging, LayerSources.Num());
         return;
     }
 
@@ -62,7 +62,7 @@ void AVideoLogger::StartLogging()
     InitSessionDirectory();
     WriteInitialMetadata();
 
-    // Create H.264 encoder — output written to session.h264 in real time.
+    // Create ffmpeg-based H.264 encoder — output written to session.mp4 in real time.
     EncoderState = VideoEncoder_Create(LogW, LogH, FMath::RoundToInt(CaptureFPS), VideoPath);
     if (!EncoderState)
     {
@@ -105,9 +105,7 @@ void AVideoLogger::StartLogging()
 
             VideoEncoder_SubmitYUV420P(
                 static_cast<FEncoderHandle*>(EncoderState),
-                Yp, Up, Vp, LogW, LogH,
-                (uint32)Frame.Bundle.FrameIdx,
-                (int64)(Frame.Bundle.UnixTime * 1e6));
+                Yp, Up, Vp, LogW, LogH);
 
             AppendFrameJsonl(Frame.Bundle);
         }
@@ -126,13 +124,36 @@ void AVideoLogger::StopLogging(const FString& Notes)
     if (!bIsLogging) return;
     bIsLogging = false;
 
+    // Signal the encode thread to stop FIRST.
     EncoderRunning = false;
-    if (EncoderFuture.IsValid()) EncoderFuture.Wait();
 
+    // Drain with a timeout — if the thread is stuck in WritePipe,
+    // FinalizeEncoder (which closes the pipe) will unblock it.
+    if (EncoderFuture.IsValid())
+    {
+        // Give the thread a short window to drain naturally.
+        const double Start = FPlatformTime::Seconds();
+        while (!EncoderFuture.WaitFor(FTimespan::FromMilliseconds(100)))
+        {
+            if (FPlatformTime::Seconds() - Start > 2.0)
+            {
+                // Thread is stuck (likely blocked on pipe write).
+                // Close the pipe to unblock it, then wait again.
+                UE_LOG(LogTemp, Warning,
+                    TEXT("VideoLogger: encode thread stuck, closing pipe to unblock"));
+                FinalizeEncoder();
+                EncoderFuture.Wait();
+                break;
+            }
+        }
+    }
+
+    // FinalizeEncoder is safe to call twice (checks for nullptr).
     FinalizeEncoder();
     UpdateFinalMetadata(Notes);
 
-    UE_LOG(LogTemp, Log, TEXT("VideoLogger: stopped. Frames=%lld → %s"), FrameIndex, *VideoPath);
+    UE_LOG(LogTemp, Log, TEXT("VideoLogger: stopped. Frames=%lld → %s"),
+        FrameIndex, *VideoPath);
 }
 
 // ----------------------------------------------------------------
@@ -141,7 +162,7 @@ void AVideoLogger::StopLogging(const FString& Notes)
 
 void AVideoLogger::SubmitFrame(const FFrameBundle& InBundle)
 {
-    if (!bIsLogging || !SourceTexture || !LoggingRT) return;
+    if (!bIsLogging || !LoggingRT) return;
 
     if (CaptureFPS > 0.f)
     {
@@ -161,21 +182,31 @@ void AVideoLogger::SubmitFrame(const FFrameBundle& InBundle)
 
 void AVideoLogger::CaptureFrame(const FFrameBundle& Bundle)
 {
-    // GPU blit: SourceTexture → LoggingRT at log resolution.
+    FDrawToRenderTargetContext Ctx;
+    UCanvas* Canvas = nullptr;
+    FVector2D Size;
+    UKismetRenderingLibrary::ClearRenderTarget2D(this, LoggingRT, FLinearColor::Black);
+    UKismetRenderingLibrary::BeginDrawCanvasToRenderTarget(this, LoggingRT, Canvas, Size, Ctx);
+
+    if (Canvas)
     {
-        FDrawToRenderTargetContext Ctx;
-        UCanvas* Canvas = nullptr; FVector2D Size;
-        UKismetRenderingLibrary::ClearRenderTarget2D(this, LoggingRT, FLinearColor::Black);
-        UKismetRenderingLibrary::BeginDrawCanvasToRenderTarget(this, LoggingRT, Canvas, Size, Ctx);
-        if (Canvas)
-            Canvas->K2_DrawTexture(SourceTexture, FVector2D::ZeroVector,
+        for (const FLayerSource& Src : LayerSources)
+        {
+            UTexture* Tex = Src.GetTexture ? Src.GetTexture() : nullptr;
+            if (!Tex) continue;
+
+            // Draw each layer fullscreen with alpha blending.
+            // Video feed (priority 0) is opaque, UI layers blend on top.
+            EBlendMode Blend = (Src.Priority == 0) ? BLEND_Opaque : BLEND_Translucent;
+            Canvas->K2_DrawTexture(Tex, FVector2D::ZeroVector,
                 FVector2D((float)LogW, (float)LogH),
                 FVector2D::ZeroVector, FVector2D::UnitVector,
-                FLinearColor::White, BLEND_Opaque);
-        UKismetRenderingLibrary::EndDrawCanvasToRenderTarget(this, Ctx);
+                FLinearColor::White, Blend);
+        }
     }
 
-    // Capture by value — this is the sync point for gaze + timestamp.
+    UKismetRenderingLibrary::EndDrawCanvasToRenderTarget(this, Ctx);
+
     const FFrameBundle Snap = Bundle;
     const int32 W = LogW, H = LogH;
 
@@ -216,7 +247,6 @@ void AVideoLogger::ApplyGazeSpotlight(TArray<FColor>& Pixels,
         if (bValid && Confidence > 0.f)
         {
             float dx = (float)X - GX, dy = (float)Y - GY;
-            // Gaussian spotlight with perceptual gamma correction on the weight.
             W = Dark + (1.f-Dark) * FMath::Pow(
                 FMath::Exp(-(dx*dx + dy*dy) / (2.f*SigSq)), 0.45f);
         }
@@ -245,10 +275,10 @@ void AVideoLogger::ApplyGazeSpotlight(TArray<FColor>& Pixels,
 
 void AVideoLogger::FinalizeEncoder()
 {
+    if (!EncoderState) return;
     VideoEncoder_Destroy(static_cast<FEncoderHandle*>(EncoderState));
     EncoderState = nullptr;
 }
-
 // ----------------------------------------------------------------
 // Session IO
 // ----------------------------------------------------------------
@@ -262,7 +292,7 @@ void AVideoLogger::InitSessionDirectory()
     SessionDir      = Base / FDateTime::Now().ToString(TEXT("%Y%m%d_%H%M%S"));
     FramesJsonlPath = SessionDir / TEXT("frames.jsonl");
     MetaJsonPath    = SessionDir / TEXT("metadata.json");
-    VideoPath       = SessionDir / TEXT("session.h264");
+    VideoPath       = SessionDir / TEXT("session.mp4");
     IFileManager::Get().MakeDirectory(*SessionDir, true);
     UE_LOG(LogTemp, Log, TEXT("Video Logging: Writing to %s"), *SessionDir);
 }
@@ -300,7 +330,7 @@ void AVideoLogger::UpdateFinalMetadata(const FString& Notes)
     R->SetNumberField(TEXT("duration_sec"), (End - StartTimeUtc).GetTotalSeconds());
     R->SetNumberField(TEXT("frame_count"),  (double)FrameIndex);
     R->SetStringField(TEXT("notes"),        Notes);
-    R->SetStringField(TEXT("video_file"),   TEXT("session.h264"));
+    R->SetStringField(TEXT("video_file"),   TEXT("session.mp4"));
 
     FString Out; TSharedRef<TJsonWriter<>> W = TJsonWriterFactory<>::Create(&Out);
     FJsonSerializer::Serialize(R.ToSharedRef(), W);
@@ -323,4 +353,16 @@ void AVideoLogger::AppendFrameJsonl(const FFrameBundle& B)
     Line.AppendChar('\n');
     FFileHelper::SaveStringToFile(Line, *FramesJsonlPath,
         FFileHelper::EEncodingOptions::AutoDetect, &IFileManager::Get(), FILEWRITE_Append);
+}
+
+void AVideoLogger::AddLayerSource(TFunction<UTexture* ()> Getter, int32 Priority)
+{
+    FLayerSource Src;
+    Src.GetTexture = MoveTemp(Getter);
+    Src.Priority = Priority;
+    LayerSources.Add(MoveTemp(Src));
+    LayerSources.Sort([](const FLayerSource& A, const FLayerSource& B)
+        {
+            return A.Priority < B.Priority;
+        });
 }
