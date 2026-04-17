@@ -5,6 +5,11 @@
 	"Description": "",
 	"Modules": [
 		{
+			"Name": "VideoEncoderModule",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		},
+		{
 			"Name": "teleop_vr_interface",
 			"Type": "Runtime",
 			"LoadingPhase": "Default",

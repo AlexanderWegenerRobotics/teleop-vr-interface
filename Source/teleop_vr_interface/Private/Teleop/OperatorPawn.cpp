@@ -127,6 +127,44 @@ void AOperatorPawn::BeginPlay() {
 	}
 
 	UpdateButtonStates();
+
+	float AspectRatio = 1280.f / 720.f;
+	FGazeProjection::ComputeQuadSize(VideoFeed->PlaneDistance, VideoFeed->FOVCoverage, AspectRatio, VideoQuadWidth_, VideoQuadHeight_);
+
+	{
+		FActorSpawnParameters Params;
+		Params.Owner = this;
+		VideoLogger_ = GetWorld()->SpawnActor<AVideoLogger>(AVideoLogger::StaticClass(), FTransform::Identity, Params);
+		if (VideoLogger_)
+		{
+			// Wire source texture — add GetVideoTexture() to VideoFeedComponent
+			// (see note below)
+			VideoLogger_->SourceTexture = VideoFeed->GetVideoTexture();
+			VideoLogger_->QuadWidth = VideoQuadWidth_;
+			VideoLogger_->QuadHeight = VideoQuadHeight_;
+			VideoLogger_->PlaneDistance = VideoFeed->PlaneDistance;
+
+			// Logging configuration — expose as UPROPERTY on OperatorPawn
+			// if you want to tune them per-level without recompiling.
+			VideoLogger_->CaptureFPS = 30.0f;
+			VideoLogger_->LogW = 1280;
+			VideoLogger_->LogH = 720;
+			VideoLogger_->GazeRadiusFraction = 0.15f;
+			VideoLogger_->PeripheralBrightness = 0.20f;
+			VideoLogger_->bDrawGazeDot = true;
+			VideoLogger_->GazeDotRadiusPx = 6;
+
+			UE_LOG(LogTemp, Log, TEXT("OperatorPawn: VideoLogger spawned"));
+		}
+		else
+		{
+			UE_LOG(LogTemp, Error, TEXT("OperatorPawn: failed to spawn VideoLogger"));
+		}
+	}
+
+	if (VideoLogger_) {
+		VideoLogger_->StartLogging();
+	}
 }
 
 void AOperatorPawn::Tick(float DeltaTime) {
@@ -179,6 +217,11 @@ void AOperatorPawn::Tick(float DeltaTime) {
 		SoundFeedback->PlayAtLocation(ESoundType::Confirm, RightController->GetComponentLocation());
 	}
 	bRightWasGrasping = RightTracked->IsGraspHeld();
+
+	if (VideoLogger_ && VideoLogger_->IsLogging()) {
+		FFrameBundle Bundle = BuildFrameBundle();
+		VideoLogger_->SubmitFrame(Bundle);
+	}
 }
 
 void AOperatorPawn::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) {
@@ -306,6 +349,32 @@ void AOperatorPawn::TransitionTo(ESysState NewState) {
 	UpdateButtonStates();
 }
 
+/*
+void AOperatorPawn::TransitionTo(ESysState NewState)
+{
+	UE_LOG(LogTemp, Log, TEXT("OperatorPawn: %d -> %d"),
+		static_cast<int>(OperatorState_), static_cast<int>(NewState));
+
+	SoundFeedback->Play(ESoundType::Transition);
+
+	// Capture before assignment
+	const bool bWasEngaged = (OperatorState_ == ESysState::Engaged);
+	const bool bNowEngaged = (NewState       == ESysState::Engaged);
+
+	OperatorState_ = NewState;
+	UpdateButtonStates();
+
+	if (VideoLogger_)
+	{
+		if (!bWasEngaged && bNowEngaged)
+			VideoLogger_->StartLogging();
+		else if (bWasEngaged && !bNowEngaged)
+			VideoLogger_->StopLogging(StateToString(NewState));
+	}
+}
+
+*/
+
 void AOperatorPawn::UpdateButtonStates() {
 	switch (OperatorState_) {
 
@@ -413,4 +482,33 @@ void AOperatorPawn::SendHeadCommand() {
 	Msg.pan = static_cast<float>(FMath::DegreesToRadians(-DeltaRot.Yaw));
 	Msg.tilt = static_cast<float>(FMath::DegreesToRadians(DeltaRot.Pitch));
 	ComLink->SendHeadCommand(Msg);
+}
+
+FFrameBundle AOperatorPawn::BuildFrameBundle() const {
+	FFrameBundle Bundle;
+
+	// Timestamp — wall clock
+	const FDateTime NowUtc = FDateTime::UtcNow();
+	const int64 UnixSec = NowUtc.ToUnixTimestamp();
+	Bundle.UnixTime = static_cast<double>(UnixSec)
+		+ static_cast<double>(NowUtc.GetMillisecond()) / 1000.0;
+
+	// Sender timestamp — from GStreamer embedded timestamp
+	Bundle.SenderTimeNs = VideoFeed->GetSenderTimeNs();
+	Bundle.FrameIdx = 0;
+
+	// Gaze projection — snapshot gaze + camera on game thread
+	const FGazeData& GazeData = Gaze->GetGazeData();
+	FVector2D GazeUV(0.5f, 0.5f);
+	bool bHit = false;
+
+	if (VRCamera) {
+		bHit = FGazeProjection::Project(GazeData,VRCamera->GetComponentTransform(),VideoFeed->PlaneDistance,VideoQuadWidth_,VideoQuadHeight_,GazeUV);
+	}
+
+	Bundle.GazeUV = GazeUV;
+	Bundle.GazeConfidence = GazeData.Confidence;
+	Bundle.bGazeValid = bHit && GazeData.bIsValid;
+
+	return Bundle;
 }

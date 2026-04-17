@@ -19,10 +19,9 @@ public class teleop_vr_interface : ModuleRules
         PublicDependencyModuleNames.AddRange(new string[] {
             "Core", "CoreUObject", "Engine", "InputCore", "RenderCore", "EnhancedInput", "UMG", "Slate", "SlateCore", "SlateRHIRenderer",
             "MediaAssets", "Renderer", "RHI", "Sockets", "Networking", "EyeTracker", "ViveOpenXREyeTracker",
-            "HeadMountedDisplay", "OpenXRHMD", "Json", "JsonUtilities", "ImageWrapper", "GStreamerPlugin"
+            "HeadMountedDisplay", "OpenXRHMD", "Json", "JsonUtilities", "ImageWrapper", "GStreamerPlugin",
+            "VideoEncoderModule",
         });
-  
-        PrivateDependencyModuleNames.AddRange(new string[] {  });
 
 	}
 }

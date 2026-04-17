@@ -68,6 +68,11 @@ void FFramePullRunnable::ExtractTimestampRow(FVideoFrame& Frame)
     }
 }
 
+int64 FGStreamerVideoReceiver::GetLastSenderTimeNs() const
+{
+    return FramePullRunnable_ ? FramePullRunnable_->GetLastSenderTimeNs() : 0;
+}
+
 // ---------------------------------------------------------------------------
 // FFramePullRunnable::Run
 // ---------------------------------------------------------------------------
@@ -107,6 +112,7 @@ uint32 FFramePullRunnable::Run()
 
                     // Extract embedded timestamp and crop the extra row
                     ExtractTimestampRow(Frame);
+                    LastSenderTimeNs.Store(Frame.SenderTimestampNs);
 
                     // Drain stale — always keep the newest frame only
                     FVideoFrame Discard;

@@ -15,6 +15,8 @@
 #include "UI/TMetricHistory.h"
 #include "UI/SoundFeedback.h"
 #include "UI/TrayController.h"
+#include "Video/VideoLogger.h"
+#include "Video/GazeProjection.h"
 
 #include "OperatorPawn.generated.h"
 
@@ -49,6 +51,7 @@ protected:
 
 	UPROPERTY() TObjectPtr<UWidgetBinder> TrayBinder;
 	UPROPERTY() TSubclassOf<UUserWidget> TrayWidgetClass;
+	UPROPERTY() AVideoLogger* VideoLogger_ = nullptr;
 
 	UPROPERTY(EditAnywhere, Category = "Tray")
 	FTrayController Tray;
@@ -69,9 +72,13 @@ private:
 	bool CheckEmergencyStop();
 	void UpdateTray(float DeltaTime, const FGazeData& GazeData);
 	void HandleTrayPress(FName ButtonPressed);
+	FFrameBundle BuildFrameBundle() const;
 
 	FTransform HMDOrigin_;
 	bool bHMDOriginValid_ = false;
 	bool bLeftWasGrasping = false;
 	bool bRightWasGrasping = false;
+
+	float VideoQuadWidth_ = 0.f;
+	float VideoQuadHeight_ = 0.f;
 };

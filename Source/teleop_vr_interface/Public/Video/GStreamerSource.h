@@ -35,6 +35,11 @@ public:
         return (OutWidth > 0 && OutHeight > 0);
     }
 
+    virtual int64 GetLastSenderTimeNs() const override
+    {
+        return Receiver ? Receiver->GetLastSenderTimeNs() : 0;
+    }
+
     virtual FVideoSourceStats GetStats() const override {
         FVideoSourceStats Out;
         if (!Receiver) return Out;

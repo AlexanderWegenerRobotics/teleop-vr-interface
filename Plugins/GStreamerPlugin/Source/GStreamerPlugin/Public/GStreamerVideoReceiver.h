@@ -115,7 +115,7 @@ public:
     bool HasPendingFrame() const { return !FrameQueue.IsEmpty(); }
 
     float GetFrameIntervalVarianceMs() const { return static_cast<float>(FrameIntervalVariance); }
-
+    int64 GetLastSenderTimeNs() const { return LastSenderTimeNs.Load(); }
 private:
     /// Number of bytes carrying the sender timestamp in the extra row.
     static constexpr int32 kTimestampBytes = 8;
@@ -136,6 +136,7 @@ private:
     double FrameIntervalMean    = 0.0;
     double FrameIntervalM2      = 0.0;
     TAtomic<double> FrameIntervalVariance{ 0.0 };
+    TAtomic<int64> LastSenderTimeNs{ 0 };
 };
 
 // ---------------------------------------------------------------------------
@@ -156,6 +157,8 @@ public:
 
     void           GetDimensions(int32& OutWidth, int32& OutHeight) const;
     FReceiverStats GetStats() const;
+
+    int64 GetLastSenderTimeNs() const;
 
 private:
     static void RtpProbeThunk(uint16_t Seq, uint32_t Ts, void* Userdata);
