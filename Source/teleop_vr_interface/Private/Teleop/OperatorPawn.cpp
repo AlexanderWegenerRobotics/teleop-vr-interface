@@ -127,6 +127,32 @@ void AOperatorPawn::BeginPlay() {
 		TrayBinder->SetLayerOpacity(Tray.CollapsedOpacity);
 	}
 
+	ComLink->RegisterHandler("device_event", [this](const FReliableEnvelope& Env) {
+		std::map<std::string, msgpack::object> Fields;
+		Env.payload.convert(Fields);
+		auto DevIt = Fields.find("device");
+		auto EvtIt = Fields.find("event");
+		if (DevIt == Fields.end() || EvtIt == Fields.end()) return;
+
+		std::string Device = DevIt->second.as<std::string>();
+		std::string Event = EvtIt->second.as<std::string>();
+
+		if (Event == "reset_complete") {
+			if (Device == "arm_left") {
+				LeftTracked->CaptureOrigin();
+				SendArmResume("arm_left");
+				LeftArmResetState_ = EArmResetState::Idle;
+			}
+			if (Device == "arm_right") {
+				RightTracked->CaptureOrigin();
+				SendArmResume("arm_right");
+				RightArmResetState_ = EArmResetState::Idle;
+			}
+			UpdateButtonStates();
+			SoundFeedback->Play(ESoundType::Transition);
+		}
+		});
+
 	UpdateButtonStates();
 
 	float AspectRatio = 1280.f / 720.f;
@@ -137,10 +163,9 @@ void AOperatorPawn::BeginPlay() {
 		VideoLogger_ = GetWorld()->SpawnActor<AVideoLogger>(AVideoLogger::StaticClass(), FTransform::Identity, Params);
 	}
 
-	if (VideoLogger_){
+	if (VideoLogger_) {
 		VideoLogger_->AddLayerSource([this]() -> UTexture* { return VideoFeed->GetVideoTexture(); }, 0);
 		VideoLogger_->AddLayerSource([this]() -> UTexture* { return static_cast<UTexture*>(UIBinder->GetRenderTarget()); }, 1);
-		//VideoLogger_->AddLayerSource([this]() -> UTexture* { return static_cast<UTexture*>(TrayBinder->GetRenderTarget()); }, 2);
 
 		VideoLogger_->QuadWidth = VideoQuadWidth_;
 		VideoLogger_->QuadHeight = VideoQuadHeight_;
@@ -214,7 +239,7 @@ void AOperatorPawn::Tick(float DeltaTime) {
 	}
 	bRightWasGrasping = RightTracked->IsGraspHeld();
 
-	if (VideoLogger_ && VideoLogger_->IsLogging()){
+	if (VideoLogger_ && VideoLogger_->IsLogging()) {
 		VideoLogger_->SubmitFrame(BuildFrameBundle());
 	}
 }
@@ -265,6 +290,7 @@ void AOperatorPawn::UpdateStateMachine() {
 	}
 	ESysState AvatarState = ComLink->GetAvatarState();
 
+
 	switch (OperatorState_) {
 	case ESysState::Offline:
 		if (ComLink->IsAvatarAlive() && Gaze->IsTrackerConnected()) {
@@ -314,6 +340,26 @@ void AOperatorPawn::UpdateStateMachine() {
 			ComLink->SendStateRequest(SysState::PAUSED);
 			TransitionTo(ESysState::Paused);
 		}
+		else if (ButtonPressed == FName("resetButtonLeft") && LeftArmResetState_ == EArmResetState::Idle) {
+			SendArmReset("arm_left");
+			LeftArmResetState_ = EArmResetState::Recovering;
+			UpdateButtonStates();
+		}
+		else if (ButtonPressed == FName("resetButtonRight") && RightArmResetState_ == EArmResetState::Idle) {
+			SendArmReset("arm_right");
+			RightArmResetState_ = EArmResetState::Recovering;
+			UpdateButtonStates();
+		}
+		else if (ButtonPressed == FName("resetButton")) {
+			SendResetAll();
+			if (LeftArmResetState_ == EArmResetState::Idle) LeftArmResetState_ = EArmResetState::Recovering;
+			if (RightArmResetState_ == EArmResetState::Idle) RightArmResetState_ = EArmResetState::Recovering;
+			UpdateButtonStates();
+		}
+		else if (AvatarState == ESysState::Awaiting) {
+			CaptureControllerOrigins();
+			TransitionTo(ESysState::Awaiting);
+		}
 		else {
 			SendArmCommands();
 			SendHeadCommand();
@@ -330,6 +376,22 @@ void AOperatorPawn::UpdateStateMachine() {
 			ComLink->SendStateRequest(SysState::ENGAGED);
 			TransitionTo(ESysState::Engaged);
 		}
+		else if (ButtonPressed == FName("resetButtonLeft") && LeftArmResetState_ == EArmResetState::Idle) {
+			SendArmReset("arm_left");
+			LeftArmResetState_ = EArmResetState::Recovering;
+			UpdateButtonStates();
+		}
+		else if (ButtonPressed == FName("resetButtonRight") && RightArmResetState_ == EArmResetState::Idle) {
+			SendArmReset("arm_right");
+			RightArmResetState_ = EArmResetState::Recovering;
+			UpdateButtonStates();
+		}
+		else if (ButtonPressed == FName("resetButton")) {
+			SendResetAll();
+			if (LeftArmResetState_ == EArmResetState::Idle) LeftArmResetState_ = EArmResetState::Recovering;
+			if (RightArmResetState_ == EArmResetState::Idle) RightArmResetState_ = EArmResetState::Recovering;
+			UpdateButtonStates();
+		}
 		break;
 
 	default:
@@ -344,35 +406,36 @@ void AOperatorPawn::TransitionTo(ESysState NewState) {
 	UpdateButtonStates();
 }
 
-/*
-void AOperatorPawn::TransitionTo(ESysState NewState)
-{
-	UE_LOG(LogTemp, Log, TEXT("OperatorPawn: %d -> %d"),
-		static_cast<int>(OperatorState_), static_cast<int>(NewState));
-
-	SoundFeedback->Play(ESoundType::Transition);
-
-	// Capture before assignment
-	const bool bWasEngaged = (OperatorState_ == ESysState::Engaged);
-	const bool bNowEngaged = (NewState       == ESysState::Engaged);
-
-	OperatorState_ = NewState;
-	UpdateButtonStates();
-
-	if (VideoLogger_)
-	{
-		if (!bWasEngaged && bNowEngaged)
-			VideoLogger_->StartLogging();
-		else if (bWasEngaged && !bNowEngaged)
-			VideoLogger_->StopLogging(StateToString(NewState));
-	}
-}
-
-*/
-
 void AOperatorPawn::UpdateButtonStates() {
-	switch (OperatorState_) {
+	bool bCanReset = (OperatorState_ == ESysState::Engaged || OperatorState_ == ESysState::Paused);
+	bool bAnyRecovering = LeftArmResetState_ == EArmResetState::Recovering
+		|| RightArmResetState_ == EArmResetState::Recovering;
 
+	auto ApplyResetButton = [&](FName Button, FName Label, EArmResetState ResetState, const TCHAR* Side) {
+		switch (ResetState) {
+		case EArmResetState::Idle:
+			UIBinder->SetButtonLocked(Button, !bCanReset);
+			UIBinder->SetText(Label, FString::Printf(TEXT("Reset %s"), Side));
+			break;
+		case EArmResetState::Recovering:
+			UIBinder->SetButtonLocked(Button, true);
+			UIBinder->SetText(Label, FString::Printf(TEXT("Resetting %s..."), Side));
+			break;
+		case EArmResetState::AwaitingResume:
+			UIBinder->SetButtonLocked(Button, true);
+			UIBinder->SetText(Label, FString::Printf(TEXT("Resetting %s..."), Side));
+			break;
+		}
+		};
+
+	ApplyResetButton(FName("resetButtonLeft"), FName("resetLabelLeft"), LeftArmResetState_, TEXT("L"));
+	ApplyResetButton(FName("resetButtonRight"), FName("resetLabelRight"), RightArmResetState_, TEXT("R"));
+
+	bool bBothIdle = LeftArmResetState_ == EArmResetState::Idle && RightArmResetState_ == EArmResetState::Idle;
+	UIBinder->SetButtonLocked(FName("resetButton"), !bCanReset || !bBothIdle);
+	UIBinder->SetText(FName("resetLabel"), TEXT("Reset All"));
+
+	switch (OperatorState_) {
 	case ESysState::Offline:
 		UIBinder->SetButtonLocked(FName("startButton"), true);
 		UIBinder->SetButtonLocked(FName("engageButton"), true);
@@ -402,15 +465,15 @@ void AOperatorPawn::UpdateButtonStates() {
 		break;
 
 	case ESysState::Engaged:
-		UIBinder->SetButtonLocked(FName("startButton"), false);
-		UIBinder->SetButtonLocked(FName("engageButton"), false);
+		UIBinder->SetButtonLocked(FName("startButton"), bAnyRecovering);
+		UIBinder->SetButtonLocked(FName("engageButton"), bAnyRecovering);
 		UIBinder->SetText(FName("startLabel"), TEXT("Stop"));
 		UIBinder->SetText(FName("engageLabel"), TEXT("Pause"));
 		break;
 
 	case ESysState::Paused:
-		UIBinder->SetButtonLocked(FName("startButton"), false);
-		UIBinder->SetButtonLocked(FName("engageButton"), false);
+		UIBinder->SetButtonLocked(FName("startButton"), bAnyRecovering);
+		UIBinder->SetButtonLocked(FName("engageButton"), bAnyRecovering);
 		UIBinder->SetText(FName("startLabel"), TEXT("Stop"));
 		UIBinder->SetText(FName("engageLabel"), TEXT("Engage"));
 		break;
@@ -444,7 +507,12 @@ void AOperatorPawn::CaptureControllerOrigins() {
 }
 
 void AOperatorPawn::SendArmCommands() {
-	if (LeftTracked->IsTracking() && !LeftTracked->IsFullClutch()) {
+	bool bLeftActive = LeftArmResetState_ == EArmResetState::Idle
+		&& ComLink->GetArmRemoteState(0) == SysState::ENGAGED;
+	bool bRightActive = RightArmResetState_ == EArmResetState::Idle
+		&& ComLink->GetArmRemoteState(1) == SysState::ENGAGED;
+
+	if (bLeftActive && LeftTracked->IsTracking() && !LeftTracked->IsFullClutch()) {
 		FControllerDeltaPose Delta = LeftTracked->GetDeltaPose();
 		ArmCommandMsg Msg{};
 		CoordConvert::UnrealToProtocolFloat(Delta.Translation, Msg.position[0], Msg.position[1], Msg.position[2]);
@@ -453,7 +521,7 @@ void AOperatorPawn::SendArmCommands() {
 		ComLink->SendArmCommand(Msg, 0);
 	}
 
-	if (RightTracked->IsTracking() && !RightTracked->IsFullClutch()) {
+	if (bRightActive && RightTracked->IsTracking() && !RightTracked->IsFullClutch()) {
 		FControllerDeltaPose Delta = RightTracked->GetDeltaPose();
 		ArmCommandMsg Msg{};
 		CoordConvert::UnrealToProtocolFloat(Delta.Translation, Msg.position[0], Msg.position[1], Msg.position[2]);
@@ -479,26 +547,44 @@ void AOperatorPawn::SendHeadCommand() {
 	ComLink->SendHeadCommand(Msg);
 }
 
+void AOperatorPawn::SendArmReset(const std::string& DeviceName) {
+	msgpack::sbuffer Buf;
+	msgpack::pack(Buf, std::map<std::string, std::string>{{"device", DeviceName}});
+	ComLink->SendReliable("arm_reset", Buf, true);
+	UE_LOG(LogTemp, Log, TEXT("OperatorPawn: arm_reset -> %s"), UTF8_TO_TCHAR(DeviceName.c_str()));
+}
+
+void AOperatorPawn::SendArmResume(const std::string& DeviceName) {
+	msgpack::sbuffer Buf;
+	msgpack::pack(Buf, std::map<std::string, std::string>{{"device", DeviceName}});
+	ComLink->SendReliable("arm_resume", Buf, true);
+	UE_LOG(LogTemp, Log, TEXT("OperatorPawn: arm_resume -> %s"), UTF8_TO_TCHAR(DeviceName.c_str()));
+}
+
+void AOperatorPawn::SendResetAll() {
+	msgpack::sbuffer Buf;
+	msgpack::pack(Buf, std::map<std::string, std::string>{{"reason", "operator_reset_all"}});
+	ComLink->SendReliable("reset_all", Buf, true);
+	UE_LOG(LogTemp, Log, TEXT("OperatorPawn: reset_all"));
+}
+
 FFrameBundle AOperatorPawn::BuildFrameBundle() const {
 	FFrameBundle Bundle;
 
-	// Timestamp — wall clock
 	const FDateTime NowUtc = FDateTime::UtcNow();
 	const int64 UnixSec = NowUtc.ToUnixTimestamp();
 	Bundle.UnixTime = static_cast<double>(UnixSec)
 		+ static_cast<double>(NowUtc.GetMillisecond()) / 1000.0;
 
-	// Sender timestamp — from GStreamer embedded timestamp
 	Bundle.SenderTimeNs = VideoFeed->GetSenderTimeNs();
 	Bundle.FrameIdx = 0;
 
-	// Gaze projection — snapshot gaze + camera on game thread
 	const FGazeData& GazeData = Gaze->GetGazeData();
 	FVector2D GazeUV(0.5f, 0.5f);
 	bool bHit = false;
 
 	if (VRCamera) {
-		bHit = FGazeProjection::Project(GazeData,VRCamera->GetComponentTransform(),VideoFeed->PlaneDistance,VideoQuadWidth_,VideoQuadHeight_,GazeUV);
+		bHit = FGazeProjection::Project(GazeData, VRCamera->GetComponentTransform(), VideoFeed->PlaneDistance, VideoQuadWidth_, VideoQuadHeight_, GazeUV);
 	}
 
 	Bundle.GazeUV = GazeUV;

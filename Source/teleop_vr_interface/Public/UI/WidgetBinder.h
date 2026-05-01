@@ -106,11 +106,11 @@ private:
 
 	TSharedPtr<FWidgetRenderer> WidgetRenderer_;
 
-	TMap<FName, UButton*> CachedButtons_;
-	TMap<FName, UTextBlock*> CachedTextBlocks_;
-	TMap<FName, UTimeSeriesWidget*> CachedPlots_;
-	TMap<FName, FWidgetRect> WidgetRects_;
-	TMap<FName, FWidgetRect> ButtonRects_;
+	UPROPERTY() TMap<FName, UButton*> CachedButtons_;
+	UPROPERTY() TMap<FName, UTextBlock*> CachedTextBlocks_;
+	UPROPERTY() TMap<FName, UTimeSeriesWidget*> CachedPlots_;
+	UPROPERTY() TMap<FName, FWidgetRect> WidgetRects_;
+	UPROPERTY() TMap<FName, FWidgetRect> ButtonRects_;
 	UVerticalBox* MessageLog_ = nullptr;
 
 	TSet<FName> LockedButtons_;

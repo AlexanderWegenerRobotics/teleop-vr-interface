@@ -169,6 +169,7 @@ void UTrackedControllerComponent::CaptureOrigin() {
     BankedScaledTranslation = FVector::ZeroVector;
     BankedRotation = FQuat::Identity;
     bPrevLocationValid = false;
+    bFullClutch = true;
 
     if (SampleBuffer.Num() == 0) {
         if (MotionController) {

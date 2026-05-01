@@ -32,6 +32,7 @@ public:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	UCameraComponent* GetVRCamera() const { return VRCamera; }
+	void SendResetAll();
 
 protected:
 	UPROPERTY() TObjectPtr<USceneComponent> VROrigin;
@@ -64,6 +65,10 @@ protected:
 private:
 	ESysState OperatorState_ = ESysState::Offline;
 
+	enum class EArmResetState : uint8 { Idle, Recovering, AwaitingResume };
+	EArmResetState LeftArmResetState_ = EArmResetState::Idle;
+	EArmResetState RightArmResetState_ = EArmResetState::Idle;
+
 	void UpdateStateMachine();
 	void TransitionTo(ESysState NewState);
 	void UpdateButtonStates();
@@ -73,6 +78,8 @@ private:
 	bool CheckEmergencyStop();
 	void UpdateTray(float DeltaTime, const FGazeData& GazeData);
 	void HandleTrayPress(FName ButtonPressed);
+	void SendArmReset(const std::string& DeviceName);
+	void SendArmResume(const std::string& DeviceName);
 	FFrameBundle BuildFrameBundle() const;
 
 	FTransform HMDOrigin_;
