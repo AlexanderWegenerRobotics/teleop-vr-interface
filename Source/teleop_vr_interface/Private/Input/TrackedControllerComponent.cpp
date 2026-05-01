@@ -97,11 +97,11 @@ void UTrackedControllerComponent::OnTrigger(const FInputActionValue& Value) {
 }
 
 void UTrackedControllerComponent::OnGripPressed(const FInputActionValue& Value) {
-    bGripHeld = true;
+    bGripHeld = !bGripHeld;
 }
 
 void UTrackedControllerComponent::OnGripReleased(const FInputActionValue& Value) {
-    bGripHeld = false;
+    //bGripHeld = false;
 }
 
 void UTrackedControllerComponent::OnMenuPressed(const FInputActionValue& Value) {
@@ -132,12 +132,11 @@ EControllerHand UTrackedControllerComponent::GetHand() const {
 }
 
 float UTrackedControllerComponent::ComputeClutchScale(float TriggerRaw) const {
-    if (TriggerRaw <= ClutchDeadZoneLow) return 1.0f;
-    if (TriggerRaw >= ClutchActiveRangeMax) return 0.0f;
+    if (TriggerRaw >= ClutchActiveRangeMax) return 1.0f;
+    if (TriggerRaw <= ClutchDeadZoneLow) return 0.0f;
 
     float t = (TriggerRaw - ClutchDeadZoneLow) / (ClutchActiveRangeMax - ClutchDeadZoneLow);
-    //float Scale = 1.0f - (t * t);
-    float Scale = (1 - t) * (1 - t);
+    float Scale = t * t;
     return FMath::Clamp(Scale, 0.0f, 1.0f);
 }
 
@@ -231,15 +230,7 @@ EControllerTrackingState UTrackedControllerComponent::GetTrackingState() const {
 }
 
 void UTrackedControllerComponent::UpdateClutch() {
-    if (bFullClutch && TriggerValue < ClutchDisengageThreshold) {
-        bFullClutch = false;
-        PlayClutchHaptic(ClutchDisengageHapticIntensity, ClutchDisengageHapticDuration);
-        if (MotionController) {
-            Origin = MotionController->GetComponentTransform();
-            PrevTrackedLocation = Origin.GetLocation();
-        }
-    }
-    else if (!bFullClutch && TriggerValue >= ClutchEngageThreshold) {
+    if (!bFullClutch && TriggerValue <= ClutchDisengageThreshold) {
         if (bOriginValid && MotionController && TrackingState == EControllerTrackingState::Tracking) {
             FTransform Current = MotionController->GetComponentTransform();
             FQuat LiveRotation = Origin.GetRotation().Inverse() * Current.GetRotation();
@@ -252,6 +243,14 @@ void UTrackedControllerComponent::UpdateClutch() {
         PlayClutchHaptic(ClutchEngageHapticIntensity, ClutchEngageHapticDuration);
         if (MotionController) {
             Origin = MotionController->GetComponentTransform();
+        }
+    }
+    else if (bFullClutch && TriggerValue > ClutchEngageThreshold) {
+        bFullClutch = false;
+        PlayClutchHaptic(ClutchDisengageHapticIntensity, ClutchDisengageHapticDuration);
+        if (MotionController) {
+            Origin = MotionController->GetComponentTransform();
+            PrevTrackedLocation = Origin.GetLocation();
         }
     }
 

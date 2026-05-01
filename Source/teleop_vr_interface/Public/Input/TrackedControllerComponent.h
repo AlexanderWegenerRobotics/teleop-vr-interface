@@ -139,7 +139,7 @@ private:
     float TriggerValue = 0.0f;
     bool bGripHeld = false;
     bool bMenuPressed = false;
-    bool bFullClutch = false;
+    bool bFullClutch = true;
     bool bWasFullClutch = false;
 
     uint8 ScaleFactor = 3;
