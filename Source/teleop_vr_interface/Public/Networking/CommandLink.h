@@ -88,4 +88,5 @@ private:
     TArray<PendingMsg> PendingAcks_;
 
     TMap<FString, FMsgHandler> Handlers_;
+    TArray<TUniquePtr<msgpack::object_handle>> IncomingZones_;
 };

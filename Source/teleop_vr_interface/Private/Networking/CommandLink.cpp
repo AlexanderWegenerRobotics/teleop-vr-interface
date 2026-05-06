@@ -11,8 +11,8 @@ bool CommandLink::Open(const Config& Cfg) {
     Config_ = Cfg;
 
     UdpSocket::Config SocketCfg;
-    SocketCfg.RemoteIP    = Cfg.RemoteIP;
-    SocketCfg.SendPort    = Cfg.SendPort;
+    SocketCfg.RemoteIP = Cfg.RemoteIP;
+    SocketCfg.SendPort = Cfg.SendPort;
     SocketCfg.ReceivePort = Cfg.ReceivePort;
 
     Socket_ = MakeUnique<UdpSocket>();
@@ -38,8 +38,8 @@ void CommandLink::SetState(SysState State, FaultCode Fault) {
 }
 
 void CommandLink::Send(const std::string& MsgType,
-                       const msgpack::sbuffer& PayloadBuf,
-                       bool AckRequested) {
+    const msgpack::sbuffer& PayloadBuf,
+    bool AckRequested) {
     TArray<uint8> Packed = PackEnvelope(MsgType, PayloadBuf, AckRequested);
     if (!Socket_) return;
 
@@ -55,31 +55,31 @@ void CommandLink::Send(const std::string& MsgType,
 
         PendingMsg PM;
         PM.PackedData = Packed;
-        PM.Sequence   = Seq;
-        PM.RetryMs    = Config_.DefaultRetryMs;
+        PM.Sequence = Seq;
+        PM.RetryMs = Config_.DefaultRetryMs;
         PM.MaxRetries = Config_.MaxRetries;
-        PM.Attempts   = 1;
+        PM.Attempts = 1;
         PM.LastSendTime = FPlatformTime::Seconds();
         PendingAcks_.Add(MoveTemp(PM));
     }
 }
 
 TArray<uint8> CommandLink::PackEnvelope(const std::string& MsgType,
-                                         const msgpack::sbuffer& PayloadBuf,
-                                         bool AckRequested) {
+    const msgpack::sbuffer& PayloadBuf,
+    bool AckRequested) {
     FScopeLock Lock(&SendMtx_);
     ++SendSeq_;
 
     msgpack::object_handle oh = msgpack::unpack(PayloadBuf.data(), PayloadBuf.size());
 
     FReliableEnvelope Env;
-    Env.sequence      = SendSeq_;
-    Env.timestamp_ns  = timestamp_ns();
-    Env.state         = static_cast<uint8_t>(CurrentState_);
-    Env.fault_code    = static_cast<uint8_t>(CurrentFault_);
-    Env.msg_type      = MsgType;
+    Env.sequence = SendSeq_;
+    Env.timestamp_ns = timestamp_ns();
+    Env.state = static_cast<uint8_t>(CurrentState_);
+    Env.fault_code = static_cast<uint8_t>(CurrentFault_);
+    Env.msg_type = MsgType;
     Env.ack_requested = AckRequested;
-    Env.payload       = oh.get();
+    Env.payload = oh.get();
 
     msgpack::sbuffer Buf;
     msgpack::pack(Buf, Env);
@@ -91,11 +91,11 @@ TArray<uint8> CommandLink::PackEnvelope(const std::string& MsgType,
 
 void CommandLink::HandleReceive(const uint8* Data, int32 Size) {
     try {
-        msgpack::object_handle oh = msgpack::unpack(
-            reinterpret_cast<const char*>(Data), static_cast<size_t>(Size));
+        TUniquePtr<msgpack::object_handle> Oh = MakeUnique<msgpack::object_handle>(
+            msgpack::unpack(reinterpret_cast<const char*>(Data), static_cast<size_t>(Size)));
 
         FReliableEnvelope Env;
-        oh.get().convert(Env);
+        Oh->get().convert(Env);
 
         {
             FScopeLock Lock(&SendMtx_);
@@ -126,6 +126,7 @@ void CommandLink::HandleReceive(const uint8* Data, int32 Size) {
         {
             FScopeLock Lock(&RecvMtx_);
             IncomingQueue_.Add(MoveTemp(Env));
+            IncomingZones_.Add(MoveTemp(Oh));
         }
     }
     catch (const msgpack::type_error&) {
@@ -140,17 +141,20 @@ void CommandLink::HandleAck(uint32 AckSeq) {
     FScopeLock Lock(&PendingMtx_);
     PendingAcks_.RemoveAll([AckSeq](const PendingMsg& PM) {
         return PM.Sequence == AckSeq;
-    });
+        });
 }
 
 void CommandLink::Tick() {
     ProcessRetries();
 
     TArray<FReliableEnvelope> ToDispatch;
+    TArray<TUniquePtr<msgpack::object_handle>> Zones;
     {
         FScopeLock Lock(&RecvMtx_);
         ToDispatch = MoveTemp(IncomingQueue_);
+        Zones = MoveTemp(IncomingZones_);
         IncomingQueue_.Reset();
+        IncomingZones_.Reset();
     }
 
     for (const FReliableEnvelope& Env : ToDispatch) {
