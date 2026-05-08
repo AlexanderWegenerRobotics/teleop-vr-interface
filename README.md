@@ -3,6 +3,7 @@
 Immersive bimanual robot teleoperation in Unreal Engine 5.4 with a HTC Vive Pro Eye headset and two HTC handheld controllers. The interface streams live H.264 video from the robot over UDP/RTP with adaptive quality control, exposes a fully hands-free UI driven by eye gaze and speech, and logs every operator action, robot state, and video metric to disk for offline analysis.
 
 > **Status: active development** — core functionality is stable; hardware configurations and feature set are still evolving.
+> The robot-side backend (control loops, MuJoCo simulation, video streamer) lives in [teleop-simulator](https://github.com/AlexanderWegenerRobotics/teleop-simulator).
 
 ---
 
