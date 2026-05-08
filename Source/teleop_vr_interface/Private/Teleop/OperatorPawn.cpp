@@ -2,6 +2,7 @@
 #include "Video/GStreamerSource.h"
 #include "Teleop/TeleOpConfig.h"
 #include "Engine/TextureRenderTarget2D.h"
+#include "Misc/Paths.h"
 
 AOperatorPawn::AOperatorPawn() {
 	PrimaryActorTick.bCanEverTick = true;
@@ -118,8 +119,8 @@ void AOperatorPawn::BeginPlay() {
 	RightTracked->bDrawDebugRay = true;
 
 	UIBinder->Initialize(UIWidgetClass, VRCamera, FVector2D(1280.0f, 720.0f), 690.0f, 1);
-	UIBinder->BindPlot(FName("latencyPlot"), LatencyHistory.GetSamplesPtr(), nullptr, LatencyHistory.Capacity(), LatencyHistory.GetHeadPtr(), 0.0f, 40.0f);
-	UIBinder->BindPlot(FName("jitterPlot"), JitterHistory.GetSamplesPtr(), nullptr, JitterHistory.Capacity(), JitterHistory.GetHeadPtr(), 0.0f, 20.0f);
+	UIBinder->BindPlot(FName("videoLatencyPlot"), LatencyHistory.GetSamplesPtr(), nullptr, LatencyHistory.Capacity(), LatencyHistory.GetHeadPtr(), 0.0f, 40.0f);
+	UIBinder->BindPlot(FName("dataLatencyPlot"), JitterHistory.GetSamplesPtr(), nullptr, JitterHistory.Capacity(), JitterHistory.GetHeadPtr(), 0.0f, 40.0f);
 
 	if (TrayWidgetClass) {
 		TrayBinder->Initialize(TrayWidgetClass, VRCamera, FVector2D(1280.0f, 720.0f), Tray.LayerDistance, 2, Tray.CollapsedWidth, Tray.ExpandedWidth, Tray.VerticalOffset);
@@ -138,6 +139,8 @@ void AOperatorPawn::BeginPlay() {
 		std::string Event = EvtIt->second.as<std::string>();
 
 		if (Event == "reset_complete") {
+			if (Logger_) Logger_->LogEvent(FString::Printf(TEXT("ARM_RESET_COMPLETE device=%s"),
+				UTF8_TO_TCHAR(Device.c_str())));
 			if (Device == "arm_left") {
 				LeftTracked->CaptureOrigin();
 				SendArmResume("arm_left");
@@ -177,12 +180,19 @@ void AOperatorPawn::BeginPlay() {
 	if (VideoLogger_) {
 		VideoLogger_->StartLogging();
 	}
+
+	Logger_ = MakeUnique<FTeleOpLogger>();
+	FString SessionDir = Logger_->Open(FPaths::ProjectDir() / LogBaseDirectory);
+	UE_LOG(LogTemp, Log, TEXT("OperatorPawn: logging to %s"), *SessionDir);
 }
 
 
 void AOperatorPawn::EndPlay(const EEndPlayReason::Type EndPlayReason) {
 	if (VideoLogger_) {
 		VideoLogger_->StopLogging(TEXT("EndPlay"));
+	}
+	if (Logger_) {
+		Logger_->Close();
 	}
 	Super::EndPlay(EndPlayReason);
 }
@@ -195,7 +205,7 @@ void AOperatorPawn::Tick(float DeltaTime) {
 
 	FVideoSourceStats Stats = VideoFeed->GetStreamStats();
 	LatencyHistory.Push(Stats.OneWayLatencyMs);
-	JitterHistory.Push(Stats.JitterMs);
+	JitterHistory.Push(ComLink->GetArmStateLatencyMs(0));
 	LossHistory.Push(Stats.PacketLossPercent);
 
 	const FGazeData& GazeData = Gaze->GetGazeData();
@@ -229,15 +239,94 @@ void AOperatorPawn::Tick(float DeltaTime) {
 		UIBinder->SetTextColor(FName("stream_health_value"), HealthColors[HealthIdx]);
 	}
 
-	if (LeftTracked->IsGraspHeld() && !bLeftWasGrasping) {
+	bool bLeftGrasping  = LeftTracked->IsGraspHeld();
+	bool bRightGrasping = RightTracked->IsGraspHeld();
+
+	if (bLeftGrasping && !bLeftWasGrasping) {
 		SoundFeedback->PlayAtLocation(ESoundType::Confirm, LeftController->GetComponentLocation());
 	}
-	bLeftWasGrasping = LeftTracked->IsGraspHeld();
-
-	if (RightTracked->IsGraspHeld() && !bRightWasGrasping) {
+	if (bRightGrasping && !bRightWasGrasping) {
 		SoundFeedback->PlayAtLocation(ESoundType::Confirm, RightController->GetComponentLocation());
 	}
-	bRightWasGrasping = RightTracked->IsGraspHeld();
+
+	if (Logger_)
+	{
+		// --- gear change events ---
+		uint8 LeftGear  = LeftTracked->GetScaleFactor();
+		uint8 RightGear = RightTracked->GetScaleFactor();
+		if (LeftGear != PrevLeftGear_) {
+			Logger_->LogEvent(FString::Printf(TEXT("GEAR_CHANGE side=left gear=%d"), LeftGear));
+			PrevLeftGear_ = LeftGear;
+		}
+		if (RightGear != PrevRightGear_) {
+			Logger_->LogEvent(FString::Printf(TEXT("GEAR_CHANGE side=right gear=%d"), RightGear));
+			PrevRightGear_ = RightGear;
+		}
+
+		// --- clutch transition events ---
+		bool bLeftClutch  = LeftTracked->IsFullClutch();
+		bool bRightClutch = RightTracked->IsFullClutch();
+		if (bLeftClutch != bPrevLeftClutch_) {
+			Logger_->LogEvent(FString::Printf(TEXT("CLUTCH side=left state=%s"),
+				bLeftClutch ? TEXT("engaged") : TEXT("disengaged")));
+			bPrevLeftClutch_ = bLeftClutch;
+		}
+		if (bRightClutch != bPrevRightClutch_) {
+			Logger_->LogEvent(FString::Printf(TEXT("CLUTCH side=right state=%s"),
+				bRightClutch ? TEXT("engaged") : TEXT("disengaged")));
+			bPrevRightClutch_ = bRightClutch;
+		}
+
+		// --- grasp transition events ---
+		if (bLeftGrasping != bLeftWasGrasping) {
+			Logger_->LogEvent(FString::Printf(TEXT("GRASP side=left state=%s"),
+				bLeftGrasping ? TEXT("held") : TEXT("released")));
+		}
+		if (bRightGrasping != bRightWasGrasping) {
+			Logger_->LogEvent(FString::Printf(TEXT("GRASP side=right state=%s"),
+				bRightGrasping ? TEXT("held") : TEXT("released")));
+		}
+
+		// --- stream row ---
+		FStreamRow Row;
+		Row.TimestampNs   = FTeleOpLogger::NowNs();
+		Row.OperatorState = static_cast<uint8>(OperatorState_);
+
+		Row.LeftClutch = LeftTracked->GetClutchFactor();
+		Row.LeftGear   = LeftGear;
+		Row.LeftGrasp  = bLeftGrasping ? 1.f : 0.f;
+
+		Row.RightClutch = RightTracked->GetClutchFactor();
+		Row.RightGear   = RightGear;
+		Row.RightGrasp  = bRightGrasping ? 1.f : 0.f;
+
+		// Controller delta poses in protocol coordinates (always, regardless of clutch)
+		{
+			FControllerDeltaPose L = LeftTracked->GetDeltaPose();
+			CoordConvert::UnrealToProtocolFloat(L.Translation, Row.LeftPx, Row.LeftPy, Row.LeftPz);
+			CoordConvert::UnrealToProtocolQuatFloat(L.Rotation, Row.LeftQw, Row.LeftQx, Row.LeftQy, Row.LeftQz);
+
+			FControllerDeltaPose R = RightTracked->GetDeltaPose();
+			CoordConvert::UnrealToProtocolFloat(R.Translation, Row.RightPx, Row.RightPy, Row.RightPz);
+			CoordConvert::UnrealToProtocolQuatFloat(R.Rotation, Row.RightQw, Row.RightQx, Row.RightQy, Row.RightQz);
+		}
+
+		Row.HeadPan  = LastHeadPan_;
+		Row.HeadTilt = LastHeadTilt_;
+
+		Row.VideoLatencyMs = Stats.OneWayLatencyMs;
+		Row.VideoJitterMs  = Stats.JitterMs;
+		Row.VideoLossPct   = Stats.PacketLossPercent;
+		Row.VideoFps       = Stats.CurrentFPS;
+
+		Row.DataLatencyMs = ComLink->GetArmStateLatencyMs(0);
+		Row.DataMsgRateHz = ComLink->GetArmMsgRateHz(0);
+
+		Logger_->WriteStreamRow(Row);
+	}
+
+	bLeftWasGrasping  = bLeftGrasping;
+	bRightWasGrasping = bRightGrasping;
 
 	if (VideoLogger_ && VideoLogger_->IsLogging()) {
 		VideoLogger_->SubmitFrame(BuildFrameBundle());
@@ -264,6 +353,7 @@ void AOperatorPawn::UpdateTray(float DeltaTime, const FGazeData& GazeData) {
 
 void AOperatorPawn::HandleTrayPress(FName ButtonPressed) {
 	UE_LOG(LogTemp, Log, TEXT("TrayBinder: press=%s"), *ButtonPressed.ToString());
+	if (Logger_) Logger_->LogEvent(TEXT("TRAY_PRESS button=") + ButtonPressed.ToString());
 }
 
 
@@ -287,6 +377,10 @@ void AOperatorPawn::UpdateStateMachine() {
 	FName ButtonRejected = UIBinder->ConsumeRejection();
 	if (ButtonRejected != FName()) {
 		SoundFeedback->Play(ESoundType::Reject);
+		if (Logger_) Logger_->LogEvent(TEXT("BUTTON_REJECTED button=") + ButtonRejected.ToString());
+	}
+	if (ButtonPressed != FName() && Logger_) {
+		Logger_->LogEvent(TEXT("BUTTON_PRESS button=") + ButtonPressed.ToString());
 	}
 	ESysState AvatarState = ComLink->GetAvatarState();
 
@@ -327,11 +421,16 @@ void AOperatorPawn::UpdateStateMachine() {
 		else if (ButtonPressed == FName("engageButton")) {
 			CaptureControllerOrigins();
 			ComLink->SendStateRequest(SysState::ENGAGED);
+			bAvatarConfirmedEngaged_ = false;
 			TransitionTo(ESysState::Engaged);
 		}
 		break;
 
 	case ESysState::Engaged:
+		if (!bAvatarConfirmedEngaged_ && AvatarState == ESysState::Engaged) {
+			bAvatarConfirmedEngaged_ = true;
+		}
+
 		if (ButtonPressed == FName("startButton")) {
 			ComLink->SendStateRequest(SysState::IDLE);
 			TransitionTo(ESysState::Idle);
@@ -356,8 +455,10 @@ void AOperatorPawn::UpdateStateMachine() {
 			if (RightArmResetState_ == EArmResetState::Idle) RightArmResetState_ = EArmResetState::Recovering;
 			UpdateButtonStates();
 		}
-		else if (AvatarState == ESysState::Awaiting) {
+		else if (bAvatarConfirmedEngaged_ && AvatarState == ESysState::Awaiting) {
+			// Avatar dropped back to awaiting after confirming engaged (e.g. arm fault).
 			CaptureControllerOrigins();
+			bAvatarConfirmedEngaged_ = false;
 			TransitionTo(ESysState::Awaiting);
 		}
 		else {
@@ -374,6 +475,7 @@ void AOperatorPawn::UpdateStateMachine() {
 		else if (ButtonPressed == FName("engageButton")) {
 			CaptureControllerOrigins();
 			ComLink->SendStateRequest(SysState::ENGAGED);
+			bAvatarConfirmedEngaged_ = false;
 			TransitionTo(ESysState::Engaged);
 		}
 		else if (ButtonPressed == FName("resetButtonLeft") && LeftArmResetState_ == EArmResetState::Idle) {
@@ -401,6 +503,10 @@ void AOperatorPawn::UpdateStateMachine() {
 
 void AOperatorPawn::TransitionTo(ESysState NewState) {
 	UE_LOG(LogTemp, Log, TEXT("OperatorPawn: %d -> %d"), static_cast<int>(OperatorState_), static_cast<int>(NewState));
+	if (Logger_) {
+		Logger_->LogEvent(FString::Printf(TEXT("STATE_TRANSITION old=%s new=%s"),
+			*StateToString(OperatorState_), *StateToString(NewState)));
+	}
 	SoundFeedback->Play(ESoundType::Transition);
 	OperatorState_ = NewState;
 	UpdateButtonStates();
@@ -489,6 +595,7 @@ bool AOperatorPawn::CheckEmergencyStop() {
 	}
 	bool bStop = LeftTracked->IsMenuPressed() || RightTracked->IsMenuPressed();
 	if (bStop) {
+		if (Logger_) Logger_->LogEvent(TEXT("EMERGENCY_STOP"));
 		SoundFeedback->Play(ESoundType::Warning);
 		LeftTracked->ConsumeMenuPress();
 		RightTracked->ConsumeMenuPress();
@@ -542,8 +649,10 @@ void AOperatorPawn::SendHeadCommand() {
 	FRotator DeltaRot = DeltaQuat.Rotator();
 
 	HeadCommandMsg Msg{};
-	Msg.pan = static_cast<float>(FMath::DegreesToRadians(-DeltaRot.Yaw));
+	Msg.pan  = static_cast<float>(FMath::DegreesToRadians(-DeltaRot.Yaw));
 	Msg.tilt = static_cast<float>(FMath::DegreesToRadians(DeltaRot.Pitch));
+	LastHeadPan_  = Msg.pan;
+	LastHeadTilt_ = Msg.tilt;
 	ComLink->SendHeadCommand(Msg);
 }
 
@@ -552,6 +661,7 @@ void AOperatorPawn::SendArmReset(const std::string& DeviceName) {
 	msgpack::pack(Buf, std::map<std::string, std::string>{{"device", DeviceName}});
 	ComLink->SendReliable("arm_reset", Buf, true);
 	UE_LOG(LogTemp, Log, TEXT("OperatorPawn: arm_reset -> %s"), UTF8_TO_TCHAR(DeviceName.c_str()));
+	if (Logger_) Logger_->LogEvent(FString::Printf(TEXT("ARM_RESET device=%s"), UTF8_TO_TCHAR(DeviceName.c_str())));
 }
 
 void AOperatorPawn::SendArmResume(const std::string& DeviceName) {
@@ -559,6 +669,7 @@ void AOperatorPawn::SendArmResume(const std::string& DeviceName) {
 	msgpack::pack(Buf, std::map<std::string, std::string>{{"device", DeviceName}});
 	ComLink->SendReliable("arm_resume", Buf, true);
 	UE_LOG(LogTemp, Log, TEXT("OperatorPawn: arm_resume -> %s"), UTF8_TO_TCHAR(DeviceName.c_str()));
+	if (Logger_) Logger_->LogEvent(FString::Printf(TEXT("ARM_RESUME device=%s"), UTF8_TO_TCHAR(DeviceName.c_str())));
 }
 
 void AOperatorPawn::SendResetAll() {
@@ -566,6 +677,7 @@ void AOperatorPawn::SendResetAll() {
 	msgpack::pack(Buf, std::map<std::string, std::string>{{"reason", "operator_reset_all"}});
 	ComLink->SendReliable("reset_all", Buf, true);
 	UE_LOG(LogTemp, Log, TEXT("OperatorPawn: reset_all"));
+	if (Logger_) Logger_->LogEvent(TEXT("ARM_RESET device=all"));
 }
 
 FFrameBundle AOperatorPawn::BuildFrameBundle() const {

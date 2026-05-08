@@ -69,7 +69,9 @@ public:
         return LastRecv_.header.fault_code;
     }
 
-    uint32 DroppedPackets() const { return DroppedCount_; }
+    uint32 DroppedPackets()    const { return DroppedCount_; }
+    float  GetStateLatencyMs() const { return LatencyMs_; }
+    float  GetMsgRateHz()      const { return MsgRateHz_; }
 
     FOnStreamFault OnFaultDetected;
 
@@ -88,12 +90,31 @@ private:
         if (Seq > LastRecvSeq_ || LastRecvSeq_ == 0) {
             FScopeLock Lock(&Mutex_);
             LastRecv_ = Msg;
-            bHasNew_ = true;
+            bHasNew_  = true;
             LastRecvSeq_ = Seq;
+
+            if (Msg.header.timestamp_ns > 0) {
+                uint64_t NowNs = timestamp_ns();
+                if (NowNs > Msg.header.timestamp_ns) {
+                    float LatMs = static_cast<float>((NowNs - Msg.header.timestamp_ns) / 1000000.0);
+                    if (LatMs < 5000.f) {
+                        LatencyMs_ = 0.1f * LatMs + 0.9f * LatencyMs_;
+                    }
+                }
+            }
 
             if (Msg.header.state == SysState::FAULT && OnFaultDetected.IsBound()) {
                 OnFaultDetected.Broadcast(Msg.header.fault_code);
             }
+        }
+
+        ++RecvCountInWindow_;
+        double NowSec = FPlatformTime::Seconds();
+        double Elapsed = NowSec - WindowStartTime_;
+        if (Elapsed >= 1.0) {
+            MsgRateHz_ = static_cast<float>(RecvCountInWindow_) / static_cast<float>(Elapsed);
+            RecvCountInWindow_ = 0;
+            WindowStartTime_   = NowSec;
         }
     }
 
@@ -105,6 +126,11 @@ private:
     uint32   LastRecvSeq_ = 0;
     uint32   DroppedCount_= 0;
     TAtomic<bool> bHasNew_{false};
+
+    float  LatencyMs_        = 0.f;
+    float  MsgRateHz_        = 0.f;
+    uint32 RecvCountInWindow_= 0;
+    double WindowStartTime_  = 0.0;
 
     SysState  StickyState_ = SysState::OFFLINE;
     FaultCode StickyFault_ = FaultCode::NONE;

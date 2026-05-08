@@ -12,8 +12,7 @@ enum class SysState : uint8_t {
     PAUSED      = 5,
     FAULT       = 6,
     STOP        = 7,
-    E_STOP      = 8,
-    CLUTCH      = 9,
+    RECOVERING  = 8,
     UNDEFINED   = 255
 };
 

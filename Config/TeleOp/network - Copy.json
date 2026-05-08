@@ -1,0 +1,7 @@
+{
+    "remote_ip": "172.23.228.87",
+    "avatar":    { "send": 7000, "receive": 8000 },
+    "arm_left":  { "send": 7001, "receive": 8001 },
+    "arm_right": { "send": 7002, "receive": 8002 },
+    "head":      { "send": 7003, "receive": 8003 }
+}

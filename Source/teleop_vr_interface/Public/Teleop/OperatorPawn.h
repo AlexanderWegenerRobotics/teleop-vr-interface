@@ -17,6 +17,7 @@
 #include "UI/TrayController.h"
 #include "Video/VideoLogger.h"
 #include "Video/GazeProjection.h"
+#include "Teleop/TeleOpLogger.h"
 
 #include "OperatorPawn.generated.h"
 
@@ -58,6 +59,9 @@ protected:
 	UPROPERTY(EditAnywhere, Category = "Tray")
 	FTrayController Tray;
 
+	UPROPERTY(EditAnywhere, Category = "Logging")
+	FString LogBaseDirectory = TEXT("Logs/TeleOp/");
+
 	TMetricHistory<128> LatencyHistory;
 	TMetricHistory<128> JitterHistory;
 	TMetricHistory<128> LossHistory;
@@ -83,10 +87,22 @@ private:
 	FFrameBundle BuildFrameBundle() const;
 
 	FTransform HMDOrigin_;
-	bool bHMDOriginValid_ = false;
-	bool bLeftWasGrasping = false;
+	bool bHMDOriginValid_  = false;
+	bool bLeftWasGrasping  = false;
 	bool bRightWasGrasping = false;
+	// True once avatar confirms ENGAGED after VR entered ENGAGED; prevents
+	// dropping back to AWAITING on stale pre-transition avatar state.
+	bool bAvatarConfirmedEngaged_ = false;
 
-	float VideoQuadWidth_ = 0.f;
+	float VideoQuadWidth_  = 0.f;
 	float VideoQuadHeight_ = 0.f;
+
+	// Logging
+	TUniquePtr<FTeleOpLogger> Logger_;
+	float LastHeadPan_   = 0.f;
+	float LastHeadTilt_  = 0.f;
+	uint8 PrevLeftGear_  = 255;   // 255 = uninitialized, forces first-tick event
+	uint8 PrevRightGear_ = 255;
+	bool  bPrevLeftClutch_  = false;
+	bool  bPrevRightClutch_ = false;
 };

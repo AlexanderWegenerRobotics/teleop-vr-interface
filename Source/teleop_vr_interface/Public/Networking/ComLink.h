@@ -60,10 +60,13 @@ public:
     UFUNCTION(BlueprintCallable, Category = "ComLink")
     uint8 GetAvatarFaultCode() const;
 
-    SysState GetArmRemoteState(uint8 DeviceIndex = 0) const;
+    SysState  GetArmRemoteState(uint8 DeviceIndex = 0) const;
     FaultCode GetArmRemoteFault(uint8 DeviceIndex = 0) const;
-    SysState GetHeadRemoteState() const;
+    SysState  GetHeadRemoteState() const;
     FaultCode GetHeadRemoteFault() const;
+
+    float GetArmStateLatencyMs(uint8 DeviceIndex = 0) const;
+    float GetArmMsgRateHz(uint8 DeviceIndex = 0) const;
 
     UPROPERTY(BlueprintAssignable) FOnConnectionChanged OnAvatarConnectionChanged;
 

@@ -156,3 +156,15 @@ FaultCode UComLink::GetHeadRemoteFault() const {
     if (HeadStream_) return HeadStream_->GetRemoteFault();
     return FaultCode::NONE;
 }
+
+float UComLink::GetArmStateLatencyMs(uint8 DeviceIndex) const {
+    if (DeviceIndex < 2 && ArmStreams_[DeviceIndex])
+        return ArmStreams_[DeviceIndex]->GetStateLatencyMs();
+    return 0.f;
+}
+
+float UComLink::GetArmMsgRateHz(uint8 DeviceIndex) const {
+    if (DeviceIndex < 2 && ArmStreams_[DeviceIndex])
+        return ArmStreams_[DeviceIndex]->GetMsgRateHz();
+    return 0.f;
+}

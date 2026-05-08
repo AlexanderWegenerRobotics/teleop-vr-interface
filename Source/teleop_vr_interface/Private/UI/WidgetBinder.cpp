@@ -11,6 +11,12 @@
 #include "Blueprint/UserWidget.h"
 #include "Slate/WidgetRenderer.h"
 
+// windows.h (pulled in transitively) defines UpdateResource as UpdateResourceW,
+// which shadows UTextureRenderTarget2D::UpdateResource.
+#ifdef UpdateResource
+    #undef UpdateResource
+#endif
+
 UWidgetBinder::UWidgetBinder() {
 	PrimaryComponentTick.bCanEverTick = true;
 	PrimaryComponentTick.TickGroup = TG_PostPhysics;

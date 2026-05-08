@@ -79,13 +79,13 @@ public:
     float StaleThreshold = 0.5f;
 
     UPROPERTY(EditAnywhere, Category = "Controller|Clutch")
-    float ClutchDeadZoneLow = 0.1f;
+    float ClutchDeadZoneLow = 0.05f;
 
     UPROPERTY(EditAnywhere, Category = "Controller|Clutch")
-    float ClutchEngageThreshold = 0.92f;
+    float ClutchEngageThreshold = 0.08f;
 
     UPROPERTY(EditAnywhere, Category = "Controller|Clutch")
-    float ClutchDisengageThreshold = 0.88f;
+    float ClutchDisengageThreshold = 0.04f;
 
     UPROPERTY(EditAnywhere, Category = "Controller|Clutch")
     float ClutchActiveRangeMax = 0.9f;

@@ -12,8 +12,9 @@ enum class ESysState : uint8 {
     Awaiting = 3,
     Engaged  = 4,
     Paused   = 5,
-    Fault    = 6,
-    Stop     = 7
+    Fault      = 6,
+    Stop       = 7,
+    Recovering = 8
 };
 
 inline ESysState ToESysState(SysState S) {
@@ -32,9 +33,10 @@ inline FString StateToString(ESysState S) {
     case ESysState::Awaiting: return TEXT("AWAITING");
     case ESysState::Engaged:  return TEXT("ENGAGED");
     case ESysState::Paused:   return TEXT("PAUSED");
-    case ESysState::Fault:    return TEXT("FAULT");
-    case ESysState::Stop:     return TEXT("STOP");
-    default:                  return TEXT("UNKNOWN");
+    case ESysState::Fault:      return TEXT("FAULT");
+    case ESysState::Stop:       return TEXT("STOP");
+    case ESysState::Recovering: return TEXT("RECOVERING");
+    default:                    return TEXT("UNKNOWN");
     }
 }
 
