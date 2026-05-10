@@ -18,6 +18,7 @@
 #include "Video/VideoLogger.h"
 #include "Video/GazeProjection.h"
 #include "Teleop/TeleOpLogger.h"
+#include "UI/VoiceAnnotatorComponent.h"
 
 #include "OperatorPawn.generated.h"
 
@@ -55,6 +56,7 @@ protected:
 	UPROPERTY() TObjectPtr<UWidgetBinder> TrayBinder;
 	UPROPERTY() TSubclassOf<UUserWidget> TrayWidgetClass;
 	UPROPERTY() AVideoLogger* VideoLogger_ = nullptr;
+	UPROPERTY() TObjectPtr<UVoiceAnnotatorComponent> VoiceAnnotator;
 
 	UPROPERTY(EditAnywhere, Category = "Tray")
 	FTrayController Tray;
@@ -84,6 +86,8 @@ private:
 	void HandleTrayPress(FName ButtonPressed);
 	void SendArmReset(const std::string& DeviceName);
 	void SendArmResume(const std::string& DeviceName);
+	void SendGazeSample();
+	void HandleVoiceAnnotation(const FVoiceAnnotation& Ann);
 	FFrameBundle BuildFrameBundle() const;
 
 	FTransform HMDOrigin_;
@@ -93,6 +97,7 @@ private:
 	// True once avatar confirms ENGAGED after VR entered ENGAGED; prevents
 	// dropping back to AWAITING on stale pre-transition avatar state.
 	bool bAvatarConfirmedEngaged_ = false;
+	bool bPendingVoiceReengage_   = false;
 
 	float VideoQuadWidth_  = 0.f;
 	float VideoQuadHeight_ = 0.f;

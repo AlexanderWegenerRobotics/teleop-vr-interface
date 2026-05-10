@@ -26,7 +26,8 @@ public:
     FVideoSourceStats GetStreamStats() const;
     bool IsReceiving() const;
     UTexture2D* GetVideoTexture() const { return VideoTexture; }
-    int64 GetSenderTimeNs() const { return ActiveSource_ ? ActiveSource_->GetLastSenderTimeNs() : 0; }
+    int64  GetSenderTimeNs() const { return ActiveSource_ ? ActiveSource_->GetLastSenderTimeNs() : 0; }
+    uint64 GetLastFrameId() const  { return ActiveSource_ ? ActiveSource_->GetLastFrameId()      : 0; }
 
     UPROPERTY(EditAnywhere, Category = "VideoFeed")
     float PlaneDistance = 700.0f;

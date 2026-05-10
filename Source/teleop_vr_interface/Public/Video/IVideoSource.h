@@ -61,5 +61,6 @@ public:
     virtual bool GetDimensions(int32& OutWidth, int32& OutHeight) const = 0;
     virtual FVideoSourceStats GetStats() const = 0;
     virtual FString GetSourceName() const = 0;
-    virtual int64 GetLastSenderTimeNs() const { return 0; }
+    virtual int64  GetLastSenderTimeNs() const { return 0; }
+    virtual uint64 GetLastFrameId()      const { return 0; }
 };

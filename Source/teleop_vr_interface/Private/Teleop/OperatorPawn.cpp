@@ -3,6 +3,17 @@
 #include "Teleop/TeleOpConfig.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "Misc/Paths.h"
+#include "Shared/annotation_msg.hpp"
+
+namespace {
+struct FGazeSampleMsg {
+    uint64_t frame_id     = 0;
+    float    gaze_px_x    = 0.f;
+    float    gaze_px_y    = 0.f;
+    uint64_t timestamp_ns = 0;
+    MSGPACK_DEFINE_MAP(frame_id, gaze_px_x, gaze_px_y, timestamp_ns)
+};
+}
 
 AOperatorPawn::AOperatorPawn() {
 	PrimaryActorTick.bCanEverTick = true;
@@ -35,6 +46,7 @@ AOperatorPawn::AOperatorPawn() {
 	TrayBinder = CreateDefaultSubobject<UWidgetBinder>(TEXT("TrayBinder"));
 	LeftTracked = CreateDefaultSubobject<UTrackedControllerComponent>(TEXT("LeftTracked"));
 	RightTracked = CreateDefaultSubobject<UTrackedControllerComponent>(TEXT("RightTracked"));
+	VoiceAnnotator = CreateDefaultSubobject<UVoiceAnnotatorComponent>(TEXT("VoiceAnnotator"));
 
 	static ConstructorHelpers::FObjectFinder<UInputMappingContext> IMC(TEXT("/Game/Input/IMC_PoseMapper.IMC_PoseMapper"));
 	if (IMC.Succeeded()) InputMappingContext = IMC.Object;
@@ -108,6 +120,8 @@ void AOperatorPawn::BeginPlay() {
 	VideoFeed->RegisterSource(TEXT("AvatarStream"), MakeUnique<FGStreamerSource>(GstConfig));
 
 	Super::BeginPlay();
+
+	VoiceAnnotator->OnAnnotationReceived.AddUObject(this, &AOperatorPawn::HandleVoiceAnnotation);
 
 	if (APlayerController* PC = Cast<APlayerController>(GetController())) {
 		if (UEnhancedInputLocalPlayerSubsystem* Subsystem = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(PC->GetLocalPlayer())) {
@@ -464,6 +478,7 @@ void AOperatorPawn::UpdateStateMachine() {
 		else {
 			SendArmCommands();
 			SendHeadCommand();
+			SendGazeSample();
 		}
 		break;
 
@@ -678,6 +693,93 @@ void AOperatorPawn::SendResetAll() {
 	ComLink->SendReliable("reset_all", Buf, true);
 	UE_LOG(LogTemp, Log, TEXT("OperatorPawn: reset_all"));
 	if (Logger_) Logger_->LogEvent(TEXT("ARM_RESET device=all"));
+}
+
+void AOperatorPawn::SendGazeSample()
+{
+	uint64 FrameId = VideoFeed->GetLastFrameId();
+	if (FrameId == 0) return;
+
+	const FGazeData& GazeData = Gaze->GetGazeData();
+	if (!GazeData.bIsValid) return;
+
+	if (!VRCamera) return;
+
+	FVector2D GazeUV;
+	if (!FGazeProjection::Project(GazeData, VRCamera->GetComponentTransform(),
+	                               VideoFeed->PlaneDistance, VideoQuadWidth_, VideoQuadHeight_, GazeUV))
+		return;
+
+	UTexture2D* Tex = VideoFeed->GetVideoTexture();
+	float W = Tex ? static_cast<float>(Tex->GetSizeX()) : 1280.f;
+	float H = Tex ? static_cast<float>(Tex->GetSizeY()) : 720.f;
+
+	const FDateTime NowUtc = FDateTime::UtcNow();
+	uint64_t NowNs = static_cast<uint64_t>(NowUtc.ToUnixTimestamp()) * 1000000000ULL
+	               + static_cast<uint64_t>(NowUtc.GetMillisecond())  * 1000000ULL;
+
+	FGazeSampleMsg Msg;
+	Msg.frame_id     = static_cast<uint64_t>(FrameId);
+	Msg.gaze_px_x    = GazeUV.X * W;
+	Msg.gaze_px_y    = GazeUV.Y * H;
+	Msg.timestamp_ns = NowNs;
+
+	msgpack::sbuffer Buf;
+	msgpack::pack(Buf, Msg);
+	ComLink->SendReliable("gaze_sample", Buf, false);
+}
+
+void AOperatorPawn::HandleVoiceAnnotation(const FVoiceAnnotation& Ann) {
+	if (Ann.Type == 0) {
+		if (Ann.Label.Equals(TEXT("start"), ESearchCase::IgnoreCase)) {
+			if (OperatorState_ == ESysState::Idle) {
+				ComLink->SendStateRequest(SysState::HOMING);
+				TransitionTo(ESysState::Homing);
+			}
+		} else if (Ann.Label.Equals(TEXT("engage"), ESearchCase::IgnoreCase)) {
+			if (OperatorState_ == ESysState::Awaiting) {
+				CaptureControllerOrigins();
+				ComLink->SendStateRequest(SysState::ENGAGED);
+				bAvatarConfirmedEngaged_ = false;
+				TransitionTo(ESysState::Engaged);
+			} else if (OperatorState_ == ESysState::Paused) {
+				CaptureControllerOrigins();
+				ComLink->SendStateRequest(SysState::ENGAGED);
+				bAvatarConfirmedEngaged_ = false;
+				TransitionTo(ESysState::Engaged);
+			}
+		} else if (Ann.Label.Equals(TEXT("stop"), ESearchCase::IgnoreCase)) {
+			ComLink->SendStateRequest(SysState::IDLE);
+			TransitionTo(ESysState::Idle);
+		} else if (Ann.Label.Equals(TEXT("pause"), ESearchCase::IgnoreCase)) {
+			if (OperatorState_ == ESysState::Engaged) {
+				ComLink->SendStateRequest(SysState::PAUSED);
+				TransitionTo(ESysState::Paused);
+			}
+		} else if (Ann.Label.Equals(TEXT("reset"), ESearchCase::IgnoreCase)) {
+			if (OperatorState_ == ESysState::Engaged || OperatorState_ == ESysState::Paused) {
+				SendResetAll();
+				if (LeftArmResetState_  == EArmResetState::Idle) LeftArmResetState_  = EArmResetState::Recovering;
+				if (RightArmResetState_ == EArmResetState::Idle) RightArmResetState_ = EArmResetState::Recovering;
+				bPendingVoiceReengage_ = true;
+				UpdateButtonStates();
+			}
+		}
+		if (Logger_) Logger_->LogEvent(FString::Printf(TEXT("VOICE_CMD label=%s conf=%.2f"), *Ann.Label, Ann.Confidence));
+	} else {
+		AnnotationMsg Msg;
+		Msg.timestamp  = Ann.Timestamp;
+		Msg.label      = TCHAR_TO_UTF8(*Ann.Label);
+		Msg.atype      = Ann.Type;
+		Msg.confidence = Ann.Confidence;
+		Msg.score      = Ann.Score;
+		Msg.frame_id   = static_cast<uint64_t>(VideoFeed->GetLastFrameId());
+
+		msgpack::sbuffer Buf;
+		msgpack::pack(Buf, Msg);
+		ComLink->SendReliable("annotation", Buf, false);
+		if (Logger_) Logger_->LogEvent(FString::Printf(TEXT("VOICE_ANN label=%s type=%d conf=%.2f"), *Ann.Label, Ann.Type, Ann.Confidence));
+	}
 }
 
 FFrameBundle AOperatorPawn::BuildFrameBundle() const {

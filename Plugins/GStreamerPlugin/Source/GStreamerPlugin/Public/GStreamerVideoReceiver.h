@@ -82,6 +82,7 @@ struct FVideoFrame
     int32         Height             = 0;
     double        Timestamp          = 0.0;
     uint64        SenderTimestampNs  = 0;   // embedded wall-clock from sender
+    uint64        FrameId            = 0;   // monotonic counter from sender
 };
 
 // ---------------------------------------------------------------------------
@@ -114,8 +115,9 @@ public:
     bool PopFrame(FVideoFrame& OutFrame);
     bool HasPendingFrame() const { return !FrameQueue.IsEmpty(); }
 
-    float GetFrameIntervalVarianceMs() const { return static_cast<float>(FrameIntervalVariance); }
-    int64 GetLastSenderTimeNs() const { return LastSenderTimeNs.Load(); }
+    float  GetFrameIntervalVarianceMs() const { return static_cast<float>(FrameIntervalVariance); }
+    int64  GetLastSenderTimeNs() const { return LastSenderTimeNs.Load(); }
+    uint64 GetLastFrameId()      const { return LastFrameId.Load(); }
 private:
     /// Number of bytes carrying the sender timestamp in the extra row.
     static constexpr int32 kTimestampBytes = 8;
@@ -135,8 +137,9 @@ private:
     int64  FrameIntervalCount   = 0;
     double FrameIntervalMean    = 0.0;
     double FrameIntervalM2      = 0.0;
-    TAtomic<double> FrameIntervalVariance{ 0.0 };
-    TAtomic<int64> LastSenderTimeNs{ 0 };
+    TAtomic<double>  FrameIntervalVariance{ 0.0 };
+    TAtomic<int64>   LastSenderTimeNs{ 0 };
+    TAtomic<uint64>  LastFrameId{ 0 };
 };
 
 // ---------------------------------------------------------------------------
@@ -158,7 +161,8 @@ public:
     void           GetDimensions(int32& OutWidth, int32& OutHeight) const;
     FReceiverStats GetStats() const;
 
-    int64 GetLastSenderTimeNs() const;
+    int64  GetLastSenderTimeNs() const;
+    uint64 GetLastFrameId()      const;
 
 private:
     static void RtpProbeThunk(uint16_t Seq, uint32_t Ts, void* Userdata);

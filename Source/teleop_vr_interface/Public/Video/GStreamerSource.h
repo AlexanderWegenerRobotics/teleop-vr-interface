@@ -40,6 +40,11 @@ public:
         return Receiver ? Receiver->GetLastSenderTimeNs() : 0;
     }
 
+    virtual uint64 GetLastFrameId() const override
+    {
+        return Receiver ? Receiver->GetLastFrameId() : 0;
+    }
+
     virtual FVideoSourceStats GetStats() const override {
         FVideoSourceStats Out;
         if (!Receiver) return Out;

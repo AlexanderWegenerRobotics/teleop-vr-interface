@@ -57,6 +57,22 @@ void FFramePullRunnable::ExtractTimestampRow(FVideoFrame& Frame)
 
     Frame.SenderTimestampNs = SenderNs;
 
+    // Decode frame ID from the last padding row (Frame.Height - 1)
+    int32 IdRowOffset  = (Frame.Height - 1) * RowBytes;
+    int32 IdNeeded     = IdRowOffset + 64 * 4;
+    if (Frame.Data.Num() >= IdNeeded)
+    {
+        const uint8* IdRow = Frame.Data.GetData() + IdRowOffset;
+        uint64 FrameId = 0;
+        for (int32 Bit = 0; Bit < 64; ++Bit)
+        {
+            if (IdRow[Bit * 4 + 0] > 128)
+                FrameId |= (static_cast<uint64>(1) << Bit);
+        }
+        Frame.FrameId = FrameId;
+        LastFrameId.Store(FrameId);
+    }
+
     // Crop: remove the 2 padding rows
     Frame.Height -= 2;
     Frame.Data.SetNum(Frame.Height * RowBytes);
@@ -71,6 +87,11 @@ void FFramePullRunnable::ExtractTimestampRow(FVideoFrame& Frame)
 int64 FGStreamerVideoReceiver::GetLastSenderTimeNs() const
 {
     return FramePullRunnable_ ? FramePullRunnable_->GetLastSenderTimeNs() : 0;
+}
+
+uint64 FGStreamerVideoReceiver::GetLastFrameId() const
+{
+    return FramePullRunnable_ ? FramePullRunnable_->GetLastFrameId() : 0;
 }
 
 // ---------------------------------------------------------------------------
