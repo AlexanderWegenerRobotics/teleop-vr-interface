@@ -46,7 +46,9 @@ AOperatorPawn::AOperatorPawn() {
 	TrayBinder = CreateDefaultSubobject<UWidgetBinder>(TEXT("TrayBinder"));
 	LeftTracked = CreateDefaultSubobject<UTrackedControllerComponent>(TEXT("LeftTracked"));
 	RightTracked = CreateDefaultSubobject<UTrackedControllerComponent>(TEXT("RightTracked"));
-	VoiceAnnotator = CreateDefaultSubobject<UVoiceAnnotatorComponent>(TEXT("VoiceAnnotator"));
+	//VoiceAnnotator = CreateDefaultSubobject<UVoiceAnnotatorComponent>(TEXT("VoiceAnnotator"));
+	GhostOverlay = CreateDefaultSubobject<UGhostOverlayComponent>(TEXT("GhostOverlay"));
+	GhostOverlay->SetCamera(VRCamera);   // explicit wiring; component's FindComponentByClass fallback stays for safety
 
 	static ConstructorHelpers::FObjectFinder<UInputMappingContext> IMC(TEXT("/Game/Input/IMC_PoseMapper.IMC_PoseMapper"));
 	if (IMC.Succeeded()) InputMappingContext = IMC.Object;
@@ -121,7 +123,7 @@ void AOperatorPawn::BeginPlay() {
 
 	Super::BeginPlay();
 
-	VoiceAnnotator->OnAnnotationReceived.AddUObject(this, &AOperatorPawn::HandleVoiceAnnotation);
+	//VoiceAnnotator->OnAnnotationReceived.AddUObject(this, &AOperatorPawn::HandleVoiceAnnotation);
 
 	if (APlayerController* PC = Cast<APlayerController>(GetController())) {
 		if (UEnhancedInputLocalPlayerSubsystem* Subsystem = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(PC->GetLocalPlayer())) {
@@ -402,7 +404,12 @@ void AOperatorPawn::UpdateStateMachine() {
 	switch (OperatorState_) {
 	case ESysState::Offline:
 		if (ComLink->IsAvatarAlive() && Gaze->IsTrackerConnected()) {
-			TransitionTo(ESysState::Idle);
+			if (bPendingVoiceReengage_) {
+				ComLink->SendStateRequest(SysState::HOMING);
+				TransitionTo(ESysState::Homing);
+			} else {
+				TransitionTo(ESysState::Idle);
+			}
 		}
 		break;
 
@@ -423,7 +430,14 @@ void AOperatorPawn::UpdateStateMachine() {
 		}
 		else if (AvatarState == ESysState::Awaiting) {
 			CaptureControllerOrigins();
-			TransitionTo(ESysState::Awaiting);
+			if (bPendingVoiceReengage_) {
+				ComLink->SendStateRequest(SysState::ENGAGED);
+				bAvatarConfirmedEngaged_ = false;
+				bPendingVoiceReengage_ = false;
+				TransitionTo(ESysState::Engaged);
+			} else {
+				TransitionTo(ESysState::Awaiting);
+			}
 		}
 		break;
 
@@ -432,10 +446,11 @@ void AOperatorPawn::UpdateStateMachine() {
 			ComLink->SendStateRequest(SysState::IDLE);
 			TransitionTo(ESysState::Idle);
 		}
-		else if (ButtonPressed == FName("engageButton")) {
+		else if (bPendingVoiceReengage_ || ButtonPressed == FName("engageButton")) {
 			CaptureControllerOrigins();
 			ComLink->SendStateRequest(SysState::ENGAGED);
 			bAvatarConfirmedEngaged_ = false;
+			bPendingVoiceReengage_ = false;
 			TransitionTo(ESysState::Engaged);
 		}
 		break;
@@ -521,6 +536,9 @@ void AOperatorPawn::TransitionTo(ESysState NewState) {
 	if (Logger_) {
 		Logger_->LogEvent(FString::Printf(TEXT("STATE_TRANSITION old=%s new=%s"),
 			*StateToString(OperatorState_), *StateToString(NewState)));
+	}
+	if (NewState == ESysState::Idle) {
+		bPendingVoiceReengage_ = false;
 	}
 	SoundFeedback->Play(ESoundType::Transition);
 	OperatorState_ = NewState;

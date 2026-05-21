@@ -19,6 +19,7 @@
 #include "Video/GazeProjection.h"
 #include "Teleop/TeleOpLogger.h"
 #include "UI/VoiceAnnotatorComponent.h"
+#include "Video/GhostOverlayComponent.h"
 
 #include "OperatorPawn.generated.h"
 
@@ -33,7 +34,9 @@ public:
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
-	UCameraComponent* GetVRCamera() const { return VRCamera; }
+	UCameraComponent*    GetVRCamera()   const { return VRCamera; }
+	UComLink*            GetComLink()    const { return ComLink; }
+	UVideoFeedComponent* GetVideoFeed()  const { return VideoFeed; }
 	void SendResetAll();
 
 protected:
@@ -57,6 +60,7 @@ protected:
 	UPROPERTY() TSubclassOf<UUserWidget> TrayWidgetClass;
 	UPROPERTY() AVideoLogger* VideoLogger_ = nullptr;
 	UPROPERTY() TObjectPtr<UVoiceAnnotatorComponent> VoiceAnnotator;
+	UPROPERTY() TObjectPtr<UGhostOverlayComponent>  GhostOverlay;
 
 	UPROPERTY(EditAnywhere, Category = "Tray")
 	FTrayController Tray;
