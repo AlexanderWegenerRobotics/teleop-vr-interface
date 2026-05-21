@@ -61,8 +61,22 @@ public:
     float CaptureFOV = 60.f;
     UPROPERTY(EditAnywhere, Category = "Ghost|Capture")
     FIntPoint RenderTargetSize = FIntPoint(1280, 960);
-    UPROPERTY(EditAnywhere, Category = "Ghost|Capture")
-    FVector CapturePivotPosition = FVector(5.f, 0.f, 123.5f);
+
+    // ---------------------------------------------------------------------------
+    // Head camera kinematic chain (protocol frame: X-fwd, Y-left, Z-up, meters)
+    // Mirrors the projection chain in intention_buffer.cpp::projectToImage.
+    // Values from robot_config.yaml — move to TeleOpConfig YAML later.
+    // ---------------------------------------------------------------------------
+
+    // Position of the head/pan-tilt base in robot world frame.
+    // robot_config.yaml: devices[head].base_pose.position
+    UPROPERTY(EditAnywhere, Category = "Ghost|HeadCam")
+    FVector HeadBasePosition = FVector(0.f, 0.f, 1.2f);
+
+    // Camera site offset inside the head frame (applied after pan+tilt rotation).
+    // robot_config.yaml: devices[head].camera.position
+    UPROPERTY(EditAnywhere, Category = "Ghost|HeadCam")
+    FVector CamOffsetInHead = FVector(0.05f, 0.f, 0.035f);
     UPROPERTY(EditAnywhere, Category = "Ghost|Mesh")
     FRotator EEFrameOffset = FRotator::ZeroRotator;
     UPROPERTY(EditAnywhere, Category = "Ghost|Fingers")

@@ -124,9 +124,12 @@ void UGhostOverlayComponent::CreateSceneCapture()
     SceneCapture->SetupAttachment(Owner->GetRootComponent());
     SceneCapture->RegisterComponent();
 
-    // Position at the robot head-camera pivot in world space.
-    SceneCapture->SetWorldLocation(CapturePivotPosition);
-    SceneCapture->SetWorldRotation(FRotator::ZeroRotator);
+    // The SceneCapture can live anywhere — the ghost mesh is placed relative to
+    // it in camera-body frame, so world position no longer matters.
+    // ZeroRotator keeps the capture facing +X (UE forward), which matches the
+    // protocol-frame +X (robot forward) after ProtocolToUnreal conversion.
+    SceneCapture->SetRelativeLocation(FVector::ZeroVector);
+    SceneCapture->SetRelativeRotation(FRotator::ZeroRotator);
 
     SceneCapture->TextureTarget              = CaptureRT;
     SceneCapture->CaptureSource              = ESceneCaptureSource::SCS_FinalColorLDR;
@@ -279,19 +282,68 @@ void UGhostOverlayComponent::UpdateFingerPose() {
 // UpdateGhostPose
 // ---------------------------------------------------------------------------
 
-void UGhostOverlayComponent::UpdateGhostPose(){
+void UGhostOverlayComponent::UpdateGhostPose()
+{
+    // ── Primary path: live robot EE state ────────────────────────────────────
+    if (ComLinkRef && ComLinkRef->HasNewArmState(1))
+    {
+        const ArmStateMsg A = ComLinkRef->ReadArmState(1);
 
-    if (ComLinkRef && ComLinkRef->HasNewArmState(1)) {
-        const ArmStateMsg R = ComLinkRef->ReadArmState(1);
+        // Head angles — use live state when available, zero otherwise.
+        float Pan  = 0.f;
+        float Tilt = 0.f;
+        if (ComLinkRef->IsHeadAlive())
+        {
+            const HeadStateMsg H = ComLinkRef->ReadHeadState();
+            Pan  = H.pan;
+            Tilt = H.tilt;
+        }
 
-        const FVector EEPosBase = CoordConvert::ProtocolToUnreal(R.position[0], R.position[1], R.position[2]);
-        const FQuat EERotBase = CoordConvert::ProtocolToUnrealQuat(R.quaternion[0], R.quaternion[1], R.quaternion[2], R.quaternion[3]);
+        // ------------------------------------------------------------------
+        // Compute EE pose in camera-body frame (protocol convention throughout:
+        // X-fwd, Y-left, Z-up, meters, right-hand rule).
+        //
+        // Mirrors intention_buffer.cpp::projectToImage exactly:
+        //
+        //   R_CH    = R_tilt * R_pan              (world → head frame)
+        //   p_cam   = R_CH*(p_EE − t_WH) − t_HC  (EE in camera-body frame)
+        //   q_cam   = R_CH * q_EE                 (EE orientation in camera frame)
+        //
+        // where:
+        //   t_WH  = HeadBasePosition  (head base in world, from yaml base_pose)
+        //   t_HC  = CamOffsetInHead   (camera site in head frame, from yaml camera.position)
+        // ------------------------------------------------------------------
 
-        GhostMeshComp->SetWorldLocationAndRotation(EEPosBase, EERotBase);
+        // EE world pose — raw protocol values, no frame conversion yet.
+        // quaternion[0]=w, [1]=x, [2]=y, [3]=z (existing convention, see AvatarTypes.h).
+        const FVector p_EE(A.position[0],   A.position[1],   A.position[2]);
+        const FQuat   q_EE(A.quaternion[1], A.quaternion[2], A.quaternion[3], A.quaternion[0]); // FQuat(x,y,z,w)
+
+        // Head rotation chain (right-hand rule, protocol frame).
+        // pan  = rotation around +Z (yaw)  — matches AngleAxisd(pan,  UnitZ) in Eigen
+        // tilt = rotation around +Y (pitch) — matches AngleAxisd(tilt, UnitY) in Eigen
+        const FQuat qPan (FVector(0.f, 0.f, 1.f), Pan);
+        const FQuat qTilt(FVector(0.f, 1.f, 0.f), Tilt);
+        const FQuat R_CH = qTilt * qPan;
+
+        // EE in camera-body frame (protocol, meters)
+        const FVector p_cam = R_CH.RotateVector(p_EE - HeadBasePosition) - CamOffsetInHead;
+        const FQuat   q_cam = R_CH * q_EE;
+
+        // Convert to UE frame (X-fwd, Y-right, Z-up, cm) and place relative to SceneCapture.
+        // SceneCapture faces its local +X with ZeroRotator, which matches protocol +X (forward)
+        // after ProtocolToUnreal — so no additional orientation correction is needed.
+        const FVector posUE = CoordConvert::ProtocolToUnreal(p_cam.X, p_cam.Y, p_cam.Z);
+        const FQuat   rotUE = CoordConvert::ProtocolToUnrealQuat(q_cam.W, q_cam.X, q_cam.Y, q_cam.Z);
+
+        GhostMeshComp->SetRelativeLocationAndRotation(posUE, rotUE);
         UpdateFingerPose();
         return;
     }
 
+    // ── Fallback: VR controller (used when robot is not connected) ────────────
+    // TODO: update this path to also use SetRelativeLocationAndRotation once
+    // the primary path is validated. Left as-is for testing convenience.
     if (!RightHandRef) return;
 
     const FTransform& CaptureTM = SceneCapture->GetComponentTransform();
