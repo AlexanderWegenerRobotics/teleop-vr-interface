@@ -85,8 +85,18 @@ namespace CoordConvert {
         return FVector(X * 100.0, -Y * 100.0, Z * 100.0);
     }
 
+    // Backward path only — do NOT use for sending commands.
+    // Converts a rotation quaternion from protocol convention (X-fwd, Y-left, Z-up)
+    // to UE convention (X-fwd, Y-right, Z-up) via the similarity transform
+    // R_UE = R_flip * R_proto * R_flip  where R_flip = diag(1,-1,1).
+    // Negates the X and Z imaginary components (not Y).
+    // Protocol convention: Q0=w, Q1=x, Q2=y, Q3=z.
+    inline FQuat ProtocolToUnrealQuat(float Q0, float Q1, float Q2, float Q3) {
+        return FQuat(-Q1, Q2, -Q3, Q0);  // FQuat(x, y, z, w): negate x and z
+    }
+
+    // Legacy overload kept for existing call sites; now consistent with ProtocolToUnreal.
     inline FRotator ProtocolToUnrealRot(float Q0, float Q1, float Q2, float Q3) {
-        FQuat Q(Q1, Q2, Q3, Q0);  // FQuat constructor is (x, y, z, w)
-        return Q.Rotator();
+        return ProtocolToUnrealQuat(Q0, Q1, Q2, Q3).Rotator();
     }
 }

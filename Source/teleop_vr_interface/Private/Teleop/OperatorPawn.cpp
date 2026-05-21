@@ -48,7 +48,10 @@ AOperatorPawn::AOperatorPawn() {
 	RightTracked = CreateDefaultSubobject<UTrackedControllerComponent>(TEXT("RightTracked"));
 	//VoiceAnnotator = CreateDefaultSubobject<UVoiceAnnotatorComponent>(TEXT("VoiceAnnotator"));
 	GhostOverlay = CreateDefaultSubobject<UGhostOverlayComponent>(TEXT("GhostOverlay"));
-	GhostOverlay->SetCamera(VRCamera);   // explicit wiring; component's FindComponentByClass fallback stays for safety
+	GhostOverlay->SetCamera(VRCamera);
+	GhostOverlay->SetComLink(ComLink);            // Phase 2: ghost tracks twin EE state (priority)
+	GhostOverlay->SetRightHand(RightController);  // Phase 1: fallback when twin not streaming
+	GhostOverlay->SetRightTracked(RightTracked);  // Finger open/close driven by grip state
 
 	static ConstructorHelpers::FObjectFinder<UInputMappingContext> IMC(TEXT("/Game/Input/IMC_PoseMapper.IMC_PoseMapper"));
 	if (IMC.Succeeded()) InputMappingContext = IMC.Object;
