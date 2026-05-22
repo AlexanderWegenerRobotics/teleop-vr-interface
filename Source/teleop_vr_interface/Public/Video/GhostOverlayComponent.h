@@ -71,7 +71,7 @@ public:
     TObjectPtr<UMaterialInterface> GhostHandMaterial;
 
     UPROPERTY(EditAnywhere, Category = "Ghost|Debug")
-    bool bEEInArmBaseFrame = true;
+    bool bEEInArmBaseFrame = false;
 
 private:
     void LoadAssets();
