@@ -124,12 +124,23 @@ void UGhostOverlayComponent::CreateSceneCapture()
     SceneCapture->SetupAttachment(Owner->GetRootComponent());
     SceneCapture->RegisterComponent();
 
-    // The SceneCapture can live anywhere — the ghost mesh is placed relative to
-    // it in camera-body frame, so world position no longer matters.
-    // ZeroRotator keeps the capture facing +X (UE forward), which matches the
-    // protocol-frame +X (robot forward) after ProtocolToUnreal conversion.
+    // The SceneCapture must NOT rotate with the VR headset.
+    //
+    // When the pawn's root component inherits HMD rotation, any child component
+    // with default relative attachment also rotates.  The ghost mesh sits at
+    // posUE RELATIVE to SceneCapture, so its WORLD position = SceneCapture_rot
+    // * posUE.  When SceneCapture_rot changes with head movement, the ghost
+    // world position moves in/out of the SceneCapture's view frustum → the
+    // mesh gets frustum-culled → ghost flickers or vanishes as the user looks
+    // around (exactly the "disappears when looking at it" symptom).
+    //
+    // Fix: lock the SceneCapture to absolute world rotation.  It still moves
+    // with the pawn (teleport-safe), but never spins.  Since posUE is expressed
+    // in camera-body frame (X-fwd, Y-right, Z-up) and SceneCapture faces world
+    // +X with ZeroRotator, the two frames are permanently aligned.
+    SceneCapture->SetUsingAbsoluteRotation(true);
     SceneCapture->SetRelativeLocation(FVector::ZeroVector);
-    SceneCapture->SetRelativeRotation(FRotator::ZeroRotator);
+    SceneCapture->SetWorldRotation(FRotator::ZeroRotator);
 
     SceneCapture->TextureTarget              = CaptureRT;
     SceneCapture->CaptureSource              = ESceneCaptureSource::SCS_FinalColorLDR;
@@ -160,7 +171,8 @@ void UGhostOverlayComponent::CreateSceneCapture()
         GhostMeshComp->RegisterComponent();
 
         GhostMeshComp->SetRelativeLocation(FVector(50.f, 0.f, 0.f));
-        GhostMeshComp->SetRelativeRotation(EEFrameOffset);
+        // Initial rotation is intentionally identity — EEFrameOffset is composed
+        // with rotUE every tick in UpdateGhostPose so it stays correct at runtime.
 
         if (GhostHandMesh) GhostMeshComp->SetStaticMesh(GhostHandMesh);
         if (GhostHandMaterial) {
@@ -314,60 +326,101 @@ void UGhostOverlayComponent::UpdateGhostPose()
         //   t_HC  = CamOffsetInHead   (camera site in head frame, from yaml camera.position)
         // ------------------------------------------------------------------
 
-        // EE world pose — raw protocol values, no frame conversion yet.
-        // quaternion[0]=w, [1]=x, [2]=y, [3]=z (existing convention, see AvatarTypes.h).
-        const FVector p_EE(A.position[0],   A.position[1],   A.position[2]);
-        const FQuat   q_EE(A.quaternion[1], A.quaternion[2], A.quaternion[3], A.quaternion[0]); // FQuat(x,y,z,w)
+        // EE pose — raw protocol values, no frame conversion yet.
+        // quaternion layout: [0]=w, [1]=x, [2]=y, [3]=z  (see AvatarTypes.h)
+        FVector p_EE(A.position[0],   A.position[1],   A.position[2]);
+        FQuat   q_EE(A.quaternion[1], A.quaternion[2], A.quaternion[3], A.quaternion[0]); // FQuat(x,y,z,w)
+
+        // If the avatar publishes EE pose in arm-base frame rather than world
+        // frame, promote BOTH position and orientation to world frame using the
+        // arm_right base transform (protocol frame, values from robot_config.yaml).
+        // Toggle bEEInArmBaseFrame in Ghost|Debug details panel — no recompile needed.
+        if (bEEInArmBaseFrame)
+        {
+            // arm_right base: position=[0,-0.4,0.8], orientation=[0.5,0.5,0.5,0.5] (W,X,Y,Z)
+            // FQuat stores (x,y,z,w):
+            static const FVector kArmRightBasePos(0.f, -0.4f, 0.8f);
+            static const FQuat   kArmRightBaseQuat(0.5f, 0.5f, 0.5f, 0.5f); // FQuat(x,y,z,w)
+            p_EE = kArmRightBaseQuat.RotateVector(p_EE) + kArmRightBasePos;
+            q_EE = kArmRightBaseQuat * q_EE;   // orientation must rotate through base too
+        }
 
         // Head rotation chain (right-hand rule, protocol frame).
         // pan  = rotation around +Z (yaw)  — matches AngleAxisd(pan,  UnitZ) in Eigen
         // tilt = rotation around +Y (pitch) — matches AngleAxisd(tilt, UnitY) in Eigen
-        const FQuat qPan (FVector(0.f, 0.f, 1.f), Pan);
-        const FQuat qTilt(FVector(0.f, 1.f, 0.f), Tilt);
-        const FQuat R_CH = qTilt * qPan;
+        const FQuat R_HW_pan(FVector(0, 0, 1), Pan);
+        const FQuat R_HW_tilt(FVector(0, -1, 0), Tilt);
+        const FQuat R_HW = R_HW_pan * R_HW_tilt;
+        const FQuat R_CH = R_HW.Inverse();
 
         // EE in camera-body frame (protocol, meters)
         const FVector p_cam = R_CH.RotateVector(p_EE - HeadBasePosition) - CamOffsetInHead;
         const FQuat   q_cam = R_CH * q_EE;
 
+        // Guard: EE behind camera → skip this frame.  Placing a mesh behind the
+        // SceneCapture produces undefined/garbage rendering in the capture RT.
+        if (p_cam.X <= 0.f)
+        {
+            return;
+        }
+
         // Convert to UE frame (X-fwd, Y-right, Z-up, cm) and place relative to SceneCapture.
-        // SceneCapture faces its local +X with ZeroRotator, which matches protocol +X (forward)
-        // after ProtocolToUnreal — so no additional orientation correction is needed.
+        // SceneCapture faces its absolute world +X with ZeroRotator (absolute rotation locked
+        // above), which matches protocol +X (forward) after ProtocolToUnreal — so no
+        // additional orientation correction is needed.
         const FVector posUE = CoordConvert::ProtocolToUnreal(p_cam.X, p_cam.Y, p_cam.Z);
         const FQuat   rotUE = CoordConvert::ProtocolToUnrealQuat(q_cam.W, q_cam.X, q_cam.Y, q_cam.Z);
 
-        GhostMeshComp->SetRelativeLocationAndRotation(posUE, rotUE);
+        // ── Diagnostic log (rate-limited to ~1 Hz) ─────────────────────────────
+        // Remove once translation is verified correct.
+        //
+        // If p_EE is in WORLD frame expect: X≈0.0–1.0, Y≈±0.5, Z≈0.5–1.5 (meters)
+        // If p_EE is in ARM BASE frame the axes will be rotated (arm_right base has
+        // orientation [0.5,0.5,0.5,0.5] → arm-X maps to world-Y, arm-Z to world-X).
+        // p_cam.X should be positive (EE in front of camera). If it is near-zero or
+        // negative the head kinematic chain or reference frame is wrong.
+        static int32 GhostLogCounter = 0;
+        if (++GhostLogCounter >= 45) // ~1 Hz at 90 fps
+        {
+            GhostLogCounter = 0;
+            UE_LOG(LogTemp, Warning,
+                TEXT("GhostOverlay | p_EE(proto,m)=(%.3f, %.3f, %.3f)  pan=%.3f  tilt=%.3f"
+                     "  p_cam(proto,m)=(%.3f, %.3f, %.3f)  posUE(cm)=(%.1f, %.1f, %.1f)"),
+                p_EE.X, p_EE.Y, p_EE.Z,
+                Pan, Tilt,
+                p_cam.X, p_cam.Y, p_cam.Z,
+                posUE.X, posUE.Y, posUE.Z);
+        }
+
+        // EEFrameOffset corrects the mesh-local frame (Blender export orientation).
+        // Applied as a post-rotation so it stays fixed relative to the mesh pivot
+        // regardless of the world-space EE rotation.
+        const FQuat finalRot = rotUE * FQuat(EEFrameOffset);
+        GhostMeshComp->SetRelativeLocationAndRotation(posUE, finalRot);
         UpdateFingerPose();
         return;
     }
 
     // ── Fallback: VR controller (used when robot is not connected) ────────────
-    // TODO: update this path to also use SetRelativeLocationAndRotation once
-    // the primary path is validated. Left as-is for testing convenience.
-    if (!RightHandRef) return;
+    // Guard: only fire when the arm link is genuinely offline.  Without this
+    // guard, every tick that arrives between 200-Hz UDP packets (HasNewArmState
+    // returns false) would call SetWorldLocationAndRotation and fight the
+    // camera-frame SetRelativeLocationAndRotation above.
+    if (ComLinkRef && ComLinkRef->IsArmAlive(1)) return;
 
+    if (!RightHandRef || !CameraRef) return;
+
+    // Express the VR controller position relative to the SceneCapture so the
+    // mesh ends up in the same coordinate space as the primary path.
     const FTransform& CaptureTM = SceneCapture->GetComponentTransform();
     const FTransform& HandTM    = RightHandRef->GetComponentTransform();
+    const FTransform& CamTM     = CameraRef->GetComponentTransform();
 
-    FVector GhostWorldPos;
-    FQuat   GhostWorldQuat;
+    const FVector RelPos  = CaptureTM.InverseTransformPosition(HandTM.GetLocation());
+    const FQuat   RelRot  = CaptureTM.GetRotation().Inverse()
+                            * (CamTM.GetRotation().Inverse() * HandTM.GetRotation())
+                            * FQuat(EEFrameOffset);  // same post-rotation convention
 
-    if (CameraRef)
-    {
-        const FVector HandRelToCamera =
-            CameraRef->GetComponentTransform().InverseTransformPosition(HandTM.GetLocation());
-        GhostWorldPos = CaptureTM.TransformPosition(HandRelToCamera);
-
-        const FQuat HandRelRot =
-            CameraRef->GetComponentTransform().GetRotation().Inverse() * HandTM.GetRotation();
-        GhostWorldQuat = CaptureTM.GetRotation() * HandRelRot * FQuat(EEFrameOffset);
-    }
-    else
-    {
-        GhostWorldPos  = HandTM.GetLocation();
-        GhostWorldQuat = HandTM.GetRotation() * FQuat(EEFrameOffset);
-    }
-
-    GhostMeshComp->SetWorldLocationAndRotation(GhostWorldPos, GhostWorldQuat);
+    GhostMeshComp->SetRelativeLocationAndRotation(RelPos, RelRot);
     UpdateFingerPose();
 }
