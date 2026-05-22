@@ -10,6 +10,7 @@
 
 class UCameraComponent;
 class UComLink;
+class UMaterialInstanceDynamic;
 class UMaterialInterface;
 class UStaticMesh;
 class UTrackedControllerComponent;
@@ -28,11 +29,46 @@ public:
     virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 
     void SetCamera(UCameraComponent* InCamera) { CameraRef = InCamera; }
-    void SetRightHand(USceneComponent* InHand) { RightHandRef = InHand; }
     void SetComLink(UComLink* InComLink) { ComLinkRef = InComLink; }
-    void SetRightTracked(UTrackedControllerComponent* InTracked) { RightTrackedRef = InTracked; }
     UTextureRenderTarget2D* GetRenderTarget() const { return CaptureRT; }
 
+    // Right arm VR controller fallback refs.
+    void SetRightHand   (USceneComponent*            h) { RightHandRef    = h; }
+    void SetRightTracked(UTrackedControllerComponent* t) { RightTrackedRef = t; }
+
+    // Left arm VR controller fallback refs.
+    void SetLeftHand   (USceneComponent*            h) { LeftHandRef    = h; }
+    void SetLeftTracked(UTrackedControllerComponent* t) { LeftTrackedRef = t; }
+
+    // Called each frame by the pawn with the current video-feed latency (ms).
+    // Thread-safe write; value is consumed and smoothed on the game thread.
+    void SetVideoLatencyMs(float Ms) { RawLatencyMs_ = Ms; }
+
+    // ---- Latency feedback ------------------------------------------------- //
+    // Smoothed latency (EMA, τ ≈ 0.2 s) is compared against these thresholds.
+    // Hysteresis prevents rapid flipping: enter Warning above WarnMs, exit below OkMs;
+    // enter Bad above BadMs, exit back to Warning below WarnMs.
+    UPROPERTY(EditAnywhere, Category = "Ghost|Latency")
+    float LatencyOkMs   =  100.f;   // smoothed threshold — exit Warning → OK
+    UPROPERTY(EditAnywhere, Category = "Ghost|Latency")
+    float LatencyWarnMs =  150.f;   // smoothed threshold — enter Warning
+    UPROPERTY(EditAnywhere, Category = "Ghost|Latency")
+    float LatencyBadMs  =  300.f;   // smoothed threshold — enter Bad
+    UPROPERTY(EditAnywhere, Category = "Ghost|Latency")
+    float LatencyBadExitMs = 200.f; // smoothed threshold — exit Bad → Warning
+
+    // Amber = "pay attention but no panic".  Orange-red = "ghost is stale, act".
+    UPROPERTY(EditAnywhere, Category = "Ghost|Latency")
+    FLinearColor LatencyWarnColor = FLinearColor(1.f, 0.60f, 0.00f, 1.f);
+    UPROPERTY(EditAnywhere, Category = "Ghost|Latency")
+    FLinearColor LatencyBadColor  = FLinearColor(1.f, 0.20f, 0.00f, 1.f);
+
+    // Vector/Color parameter name inside M_Ghost to receive the latency tint.
+    // Open the material in the editor and check what the parameter is called.
+    UPROPERTY(EditAnywhere, Category = "Ghost|Latency")
+    FName LatencyColorParam = TEXT("Color");
+
+    // ---- Overlay / Capture ------------------------------------------------ //
     UPROPERTY(EditAnywhere, Category = "Ghost|Overlay")
     float PlaneDistance = 700.f;
 
@@ -51,20 +87,25 @@ public:
     UPROPERTY(EditAnywhere, Category = "Ghost|HeadCam")
     FVector CamOffsetInHead = FVector(0.05f, 0.f, 0.035f);
 
+    // Per-arm mesh import orientation offset.  Tune in editor if the mesh is
+    // rotated relative to the EE frame reported by the robot.
     UPROPERTY(EditAnywhere, Category = "Ghost|Mesh")
     FRotator EEFrameOffset = FRotator::ZeroRotator;
 
-    UPROPERTY(EditAnywhere, Category = "Ghost|Fingers")
-    FVector RightFingerOpenOffset = FVector(0.f, 4.0f, 5.28f);
+    UPROPERTY(EditAnywhere, Category = "Ghost|Mesh")
+    FRotator LeftEEFrameOffset = FRotator::ZeroRotator;
 
     UPROPERTY(EditAnywhere, Category = "Ghost|Fingers")
-    FVector RightFingerClosedOffset = FVector(0.f, 0.5f, 5.28f);
+    FVector RightFingerOpenOffset = FVector(0.f, 4.0f, 5.38f);
 
     UPROPERTY(EditAnywhere, Category = "Ghost|Fingers")
-    FVector LeftFingerOpenOffset = FVector(0.f, -4.0f, 5.28f);
+    FVector RightFingerClosedOffset = FVector(0.f, 0.5f, 5.38f);
 
     UPROPERTY(EditAnywhere, Category = "Ghost|Fingers")
-    FVector LeftFingerClosedOffset = FVector(0.f, -0.5f, 5.28f);
+    FVector LeftFingerOpenOffset = FVector(0.f, -4.0f, 5.38f);
+
+    UPROPERTY(EditAnywhere, Category = "Ghost|Fingers")
+    FVector LeftFingerClosedOffset = FVector(0.f, -0.5f, 5.38f);
 
     UPROPERTY(EditAnywhere, Category = "Ghost|Assets")
     TObjectPtr<UMaterialInterface> PostProcessMaterial;
@@ -81,14 +122,23 @@ public:
     UPROPERTY(EditAnywhere, Category = "Ghost|Assets")
     TObjectPtr<UMaterialInterface> GhostHandMaterial;
 
+    // Left arm hand mesh — optional, falls back to GhostHandMesh if unset.
+    UPROPERTY(EditAnywhere, Category = "Ghost|Assets")
+    TObjectPtr<UStaticMesh> GhostLeftHandMesh;
+
 private:
     void LoadAssets();
     void CreateRenderTarget();
     void CreateSceneCapture();
     void CreateStereoLayer();
+    void CreateLatencyMaterial();   // builds GhostMID_ from GhostHandMaterial
     void UpdateLayerSize();
-    void UpdateGhostPose();
-    void UpdateFingerPose();
+    void UpdateGhostPose();       // right arm (index 1)
+    void UpdateLeftArmPose();     // left  arm (index 0)
+    void UpdateFingerPose(UStaticMeshComponent* LFinger, UStaticMeshComponent* RFinger,
+                          UTrackedControllerComponent* Tracked);
+    void UpdateLatencyState(float DeltaTime);
+    void ApplyLatencyColor();       // pushes tint to GhostMID_ based on LatencyLevel_
 
     UPROPERTY()
     TObjectPtr<UTextureRenderTarget2D> CaptureRT;
@@ -96,6 +146,7 @@ private:
     UPROPERTY()
     TObjectPtr<USceneCaptureComponent2D> SceneCapture;
 
+    // Right arm mesh components.
     UPROPERTY()
     TObjectPtr<UStaticMeshComponent> GhostMeshComp;
 
@@ -104,6 +155,16 @@ private:
 
     UPROPERTY()
     TObjectPtr<UStaticMeshComponent> RightFingerMeshComp;
+
+    // Left arm mesh components — same SceneCapture, separate pose.
+    UPROPERTY()
+    TObjectPtr<UStaticMeshComponent> GhostLeftMeshComp;
+
+    UPROPERTY()
+    TObjectPtr<UStaticMeshComponent> LeftArmLeftFingerMeshComp;
+
+    UPROPERTY()
+    TObjectPtr<UStaticMeshComponent> LeftArmRightFingerMeshComp;
 
     UPROPERTY()
     TObjectPtr<UStereoLayerComponent> StereoLayer;
@@ -115,10 +176,26 @@ private:
     TObjectPtr<USceneComponent> RightHandRef;
 
     UPROPERTY()
+    TObjectPtr<USceneComponent> LeftHandRef;
+
+    UPROPERTY()
     TObjectPtr<UComLink> ComLinkRef;
 
     UPROPERTY()
     TObjectPtr<UTrackedControllerComponent> RightTrackedRef;
 
+    UPROPERTY()
+    TObjectPtr<UTrackedControllerComponent> LeftTrackedRef;
+
+    // Shared dynamic material instance applied to all ghost mesh components.
+    // Created at BeginPlay from GhostHandMaterial so we can tint at runtime.
+    UPROPERTY()
+    TObjectPtr<UMaterialInstanceDynamic> GhostMID_;
+
     bool bPipelineReady = false;
+
+    // Latency state — written by SetVideoLatencyMs (pawn thread), consumed in Tick.
+    float RawLatencyMs_      = 0.f;
+    float SmoothedLatencyMs_ = 0.f;
+    uint8 LatencyLevel_      = 0;   // 0 = OK  |  1 = Warning  |  2 = Bad
 };

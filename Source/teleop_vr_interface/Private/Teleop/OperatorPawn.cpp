@@ -656,8 +656,8 @@ void AOperatorPawn::SendArmCommands() {
 		&& ComLink->GetArmRemoteState(1) == SysState::ENGAGED;
 
 	if (bLeftActive && LeftTracked->IsTracking() && !LeftTracked->IsFullClutch()) {
-		FControllerDeltaPose Delta = LeftTracked->GetDeltaPose();
 		ArmCommandMsg Msg{};
+		FControllerDeltaPose Delta = LeftTracked->GetDeltaPose();
 		CoordConvert::UnrealToProtocolFloat(Delta.Translation, Msg.position[0], Msg.position[1], Msg.position[2]);
 		CoordConvert::UnrealToProtocolQuatFloat(Delta.Rotation, Msg.quaternion[0], Msg.quaternion[1], Msg.quaternion[2], Msg.quaternion[3]);
 		Msg.gripper = LeftTracked->IsGraspHeld() ? 1.0f : 0.0f;
@@ -665,8 +665,8 @@ void AOperatorPawn::SendArmCommands() {
 	}
 
 	if (bRightActive && RightTracked->IsTracking() && !RightTracked->IsFullClutch()) {
-		FControllerDeltaPose Delta = RightTracked->GetDeltaPose();
 		ArmCommandMsg Msg{};
+		FControllerDeltaPose Delta = RightTracked->GetDeltaPose();
 		CoordConvert::UnrealToProtocolFloat(Delta.Translation, Msg.position[0], Msg.position[1], Msg.position[2]);
 		CoordConvert::UnrealToProtocolQuatFloat(Delta.Rotation, Msg.quaternion[0], Msg.quaternion[1], Msg.quaternion[2], Msg.quaternion[3]);
 		Msg.gripper = RightTracked->IsGraspHeld() ? 1.0f : 0.0f;
@@ -736,8 +736,7 @@ void AOperatorPawn::SendGazeSample()
 	float H = Tex ? static_cast<float>(Tex->GetSizeY()) : 720.f;
 
 	const FDateTime NowUtc = FDateTime::UtcNow();
-	uint64_t NowNs = static_cast<uint64_t>(NowUtc.ToUnixTimestamp()) * 1000000000ULL
-	               + static_cast<uint64_t>(NowUtc.GetMillisecond())  * 1000000ULL;
+	uint64_t NowNs = static_cast<uint64_t>(NowUtc.ToUnixTimestamp()) * 1000000000ULL + static_cast<uint64_t>(NowUtc.GetMillisecond()) * 1000000ULL;
 
 	FGazeSampleMsg Msg;
 	Msg.frame_id     = static_cast<uint64_t>(FrameId);
