@@ -49,9 +49,9 @@ AOperatorPawn::AOperatorPawn() {
 	//VoiceAnnotator = CreateDefaultSubobject<UVoiceAnnotatorComponent>(TEXT("VoiceAnnotator"));
 	GhostOverlay = CreateDefaultSubobject<UGhostOverlayComponent>(TEXT("GhostOverlay"));
 	GhostOverlay->SetCamera(VRCamera);
-	GhostOverlay->SetComLink(ComLink);            // Phase 2: ghost tracks twin EE state (priority)
-	GhostOverlay->SetRightHand(RightController);  // Phase 1: fallback when twin not streaming
-	GhostOverlay->SetRightTracked(RightTracked);  // Finger open/close driven by grip state
+	GhostOverlay->SetComLink(ComLink);
+	GhostOverlay->SetRightHand(RightController);
+	GhostOverlay->SetRightTracked(RightTracked);
 
 	static ConstructorHelpers::FObjectFinder<UInputMappingContext> IMC(TEXT("/Game/Input/IMC_PoseMapper.IMC_PoseMapper"));
 	if (IMC.Succeeded()) InputMappingContext = IMC.Object;
@@ -187,7 +187,8 @@ void AOperatorPawn::BeginPlay() {
 
 	if (VideoLogger_) {
 		VideoLogger_->AddLayerSource([this]() -> UTexture* { return VideoFeed->GetVideoTexture(); }, 0);
-		VideoLogger_->AddLayerSource([this]() -> UTexture* { return static_cast<UTexture*>(UIBinder->GetRenderTarget()); }, 1);
+		VideoLogger_->AddLayerSource([this]() -> UTexture* { return static_cast<UTexture*>(GhostOverlay->GetRenderTarget()); }, 1);
+		VideoLogger_->AddLayerSource([this]() -> UTexture* { return static_cast<UTexture*>(UIBinder->GetRenderTarget()); }, 2);
 
 		VideoLogger_->QuadWidth = VideoQuadWidth_;
 		VideoLogger_->QuadHeight = VideoQuadHeight_;
@@ -268,8 +269,7 @@ void AOperatorPawn::Tick(float DeltaTime) {
 		SoundFeedback->PlayAtLocation(ESoundType::Confirm, RightController->GetComponentLocation());
 	}
 
-	if (Logger_)
-	{
+	if (Logger_) {
 		// --- gear change events ---
 		uint8 LeftGear  = LeftTracked->GetScaleFactor();
 		uint8 RightGear = RightTracked->GetScaleFactor();

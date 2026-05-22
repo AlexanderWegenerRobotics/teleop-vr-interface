@@ -10,4 +10,6 @@ class TELEOP_VR_INTERFACE_API ATeleOpGameMode : public AGameModeBase
 	GENERATED_BODY()
 public:
 	ATeleOpGameMode();
+
+	virtual void HandleStartingNewPlayer_Implementation(APlayerController* NewPlayer) override;
 };

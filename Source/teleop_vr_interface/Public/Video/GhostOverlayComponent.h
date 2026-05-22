@@ -31,7 +31,7 @@ public:
     void SetRightHand(USceneComponent* InHand) { RightHandRef = InHand; }
     void SetComLink(UComLink* InComLink) { ComLinkRef = InComLink; }
     void SetRightTracked(UTrackedControllerComponent* InTracked) { RightTrackedRef = InTracked; }
-
+    UTextureRenderTarget2D* GetRenderTarget() const { return CaptureRT; }
 
     UPROPERTY(EditAnywhere, Category = "Ghost|Overlay")
     float PlaneDistance = 700.f;
@@ -41,6 +41,7 @@ public:
 
     UPROPERTY(EditAnywhere, Category = "Ghost|Capture")
     float CaptureFOV = 75.2f;
+
     UPROPERTY(EditAnywhere, Category = "Ghost|Capture")
     FIntPoint RenderTargetSize = FIntPoint(1280, 960);
 
@@ -49,29 +50,36 @@ public:
 
     UPROPERTY(EditAnywhere, Category = "Ghost|HeadCam")
     FVector CamOffsetInHead = FVector(0.05f, 0.f, 0.035f);
+
     UPROPERTY(EditAnywhere, Category = "Ghost|Mesh")
     FRotator EEFrameOffset = FRotator::ZeroRotator;
+
     UPROPERTY(EditAnywhere, Category = "Ghost|Fingers")
-    FVector RightFingerOpenOffset = FVector(0.f, 4.0f, 0.f);
+    FVector RightFingerOpenOffset = FVector(0.f, 4.0f, 5.28f);
+
     UPROPERTY(EditAnywhere, Category = "Ghost|Fingers")
-    FVector RightFingerClosedOffset = FVector(0.f, 0.5f, 0.f);
+    FVector RightFingerClosedOffset = FVector(0.f, 0.5f, 5.28f);
+
     UPROPERTY(EditAnywhere, Category = "Ghost|Fingers")
-    FVector LeftFingerOpenOffset = FVector(0.f, -4.0f, 0.f);
+    FVector LeftFingerOpenOffset = FVector(0.f, -4.0f, 5.28f);
+
     UPROPERTY(EditAnywhere, Category = "Ghost|Fingers")
-    FVector LeftFingerClosedOffset = FVector(0.f, -0.5f, 0.f);
+    FVector LeftFingerClosedOffset = FVector(0.f, -0.5f, 5.28f);
+
     UPROPERTY(EditAnywhere, Category = "Ghost|Assets")
     TObjectPtr<UMaterialInterface> PostProcessMaterial;
+
     UPROPERTY(EditAnywhere, Category = "Ghost|Assets")
     TObjectPtr<UStaticMesh> GhostHandMesh;
+
     UPROPERTY(EditAnywhere, Category = "Ghost|Assets")
     TObjectPtr<UStaticMesh> GhostLeftFingerMesh;
+
     UPROPERTY(EditAnywhere, Category = "Ghost|Assets")
     TObjectPtr<UStaticMesh> GhostRightFingerMesh;
+
     UPROPERTY(EditAnywhere, Category = "Ghost|Assets")
     TObjectPtr<UMaterialInterface> GhostHandMaterial;
-
-    UPROPERTY(EditAnywhere, Category = "Ghost|Debug")
-    bool bEEInArmBaseFrame = false;
 
 private:
     void LoadAssets();
@@ -79,29 +87,36 @@ private:
     void CreateSceneCapture();
     void CreateStereoLayer();
     void UpdateLayerSize();
-
     void UpdateGhostPose();
     void UpdateFingerPose();
+
     UPROPERTY()
     TObjectPtr<UTextureRenderTarget2D> CaptureRT;
 
     UPROPERTY()
     TObjectPtr<USceneCaptureComponent2D> SceneCapture;
+
     UPROPERTY()
     TObjectPtr<UStaticMeshComponent> GhostMeshComp;
+
     UPROPERTY()
     TObjectPtr<UStaticMeshComponent> LeftFingerMeshComp;
+
     UPROPERTY()
     TObjectPtr<UStaticMeshComponent> RightFingerMeshComp;
+
     UPROPERTY()
     TObjectPtr<UStereoLayerComponent> StereoLayer;
+
     UPROPERTY()
     TObjectPtr<UCameraComponent> CameraRef;
 
     UPROPERTY()
     TObjectPtr<USceneComponent> RightHandRef;
+
     UPROPERTY()
     TObjectPtr<UComLink> ComLinkRef;
+
     UPROPERTY()
     TObjectPtr<UTrackedControllerComponent> RightTrackedRef;
 
