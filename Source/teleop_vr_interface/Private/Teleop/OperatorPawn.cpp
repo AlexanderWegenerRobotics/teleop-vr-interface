@@ -46,7 +46,7 @@ AOperatorPawn::AOperatorPawn() {
 	TrayBinder = CreateDefaultSubobject<UWidgetBinder>(TEXT("TrayBinder"));
 	LeftTracked = CreateDefaultSubobject<UTrackedControllerComponent>(TEXT("LeftTracked"));
 	RightTracked = CreateDefaultSubobject<UTrackedControllerComponent>(TEXT("RightTracked"));
-	//VoiceAnnotator = CreateDefaultSubobject<UVoiceAnnotatorComponent>(TEXT("VoiceAnnotator"));
+	VoiceAnnotator = CreateDefaultSubobject<UVoiceAnnotatorComponent>(TEXT("VoiceAnnotator"));
 	GhostOverlay = CreateDefaultSubobject<UGhostOverlayComponent>(TEXT("GhostOverlay"));
 	GhostOverlay->SetCamera(VRCamera);
 	GhostOverlay->SetComLink(ComLink);
@@ -126,7 +126,7 @@ void AOperatorPawn::BeginPlay() {
 
 	Super::BeginPlay();
 
-	//VoiceAnnotator->OnAnnotationReceived.AddUObject(this, &AOperatorPawn::HandleVoiceAnnotation);
+	VoiceAnnotator->OnAnnotationReceived.AddUObject(this, &AOperatorPawn::HandleVoiceAnnotation);
 
 	if (APlayerController* PC = Cast<APlayerController>(GetController())) {
 		if (UEnhancedInputLocalPlayerSubsystem* Subsystem = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(PC->GetLocalPlayer())) {
@@ -650,15 +650,20 @@ void AOperatorPawn::CaptureControllerOrigins() {
 }
 
 void AOperatorPawn::SendArmCommands() {
-	bool bLeftActive = LeftArmResetState_ == EArmResetState::Idle
-		&& ComLink->GetArmRemoteState(0) == SysState::ENGAGED;
-	bool bRightActive = RightArmResetState_ == EArmResetState::Idle
-		&& ComLink->GetArmRemoteState(1) == SysState::ENGAGED;
+	bool bLeftActive = LeftArmResetState_ == EArmResetState::Idle && ComLink->GetArmRemoteState(0) == SysState::ENGAGED;
+	bool bRightActive = RightArmResetState_ == EArmResetState::Idle && ComLink->GetArmRemoteState(1) == SysState::ENGAGED;
+
+	FQuat HMDYawQuat = FQuat::Identity;
+	if (bHMDOriginValid_) {
+		float CaptureYaw = HMDOrigin_.GetRotation().Rotator().Yaw;
+		HMDYawQuat = FQuat(FRotator(0.f, CaptureYaw, 0.f));
+	}
 
 	if (bLeftActive && LeftTracked->IsTracking() && !LeftTracked->IsFullClutch()) {
 		ArmCommandMsg Msg{};
 		FControllerDeltaPose Delta = LeftTracked->GetDeltaPose();
-		CoordConvert::UnrealToProtocolFloat(Delta.Translation, Msg.position[0], Msg.position[1], Msg.position[2]);
+		FVector LocalTranslation = HMDYawQuat.UnrotateVector(Delta.Translation); // <-- key line
+		CoordConvert::UnrealToProtocolFloat(LocalTranslation, Msg.position[0], Msg.position[1], Msg.position[2]);
 		CoordConvert::UnrealToProtocolQuatFloat(Delta.Rotation, Msg.quaternion[0], Msg.quaternion[1], Msg.quaternion[2], Msg.quaternion[3]);
 		Msg.gripper = LeftTracked->IsGraspHeld() ? 1.0f : 0.0f;
 		ComLink->SendArmCommand(Msg, 0);
@@ -667,13 +672,11 @@ void AOperatorPawn::SendArmCommands() {
 	if (bRightActive && RightTracked->IsTracking() && !RightTracked->IsFullClutch()) {
 		ArmCommandMsg Msg{};
 		FControllerDeltaPose Delta = RightTracked->GetDeltaPose();
-		CoordConvert::UnrealToProtocolFloat(Delta.Translation, Msg.position[0], Msg.position[1], Msg.position[2]);
+		FVector LocalTranslation = HMDYawQuat.UnrotateVector(Delta.Translation); // <-- key line
+		CoordConvert::UnrealToProtocolFloat(LocalTranslation, Msg.position[0], Msg.position[1], Msg.position[2]);
 		CoordConvert::UnrealToProtocolQuatFloat(Delta.Rotation, Msg.quaternion[0], Msg.quaternion[1], Msg.quaternion[2], Msg.quaternion[3]);
 		Msg.gripper = RightTracked->IsGraspHeld() ? 1.0f : 0.0f;
 		ComLink->SendArmCommand(Msg, 1);
-
-		const FString QuatText = FString::Printf(TEXT("w:%.3f x:%.3f y:%.3f z:%.3f"), Msg.quaternion[0], Msg.quaternion[1], Msg.quaternion[2], Msg.quaternion[3]);
-		UIBinder->SetText(FName("angleDelta"), QuatText);
 	}
 }
 
