@@ -61,6 +61,9 @@ public:
     virtual bool GetDimensions(int32& OutWidth, int32& OutHeight) const = 0;
     virtual FVideoSourceStats GetStats() const = 0;
     virtual FString GetSourceName() const = 0;
-    virtual int64  GetLastSenderTimeNs() const { return 0; }
-    virtual uint64 GetLastFrameId()      const { return 0; }
+    virtual int64  GetLastSenderTimeNs()  const { return 0; }
+    virtual uint64 GetLastFrameId()       const { return 0; }
+    /// FrameId queued and ready to be consumed by the next UpdateTexture call.
+    /// Returns 0 if no frame is currently waiting.  Used to sync stereo eyes.
+    virtual uint64 GetPendingFrameId()    const { return 0; }
 };

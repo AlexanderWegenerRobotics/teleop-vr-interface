@@ -15,6 +15,7 @@ class UButton;
 class UVerticalBox;
 class UTextureRenderTarget2D;
 class FWidgetRenderer;
+class UImage;
 
 USTRUCT()
 struct FPendingMessage {
@@ -49,11 +50,13 @@ public:
 	void SetTextColor(FName WidgetName, const FLinearColor& Color);
 	void PushMessage(const FString& Text, float Duration);
 	void BindPlot(FName WidgetName, const float* Samples, const float* Envelope, int32 Capacity, const int32* Head, float RangeMin, float RangeMax);
+	void SetPlotThreshold(FName WidgetName, float ThresholdHi, float ThresholdLo = 0.0f);
 
 	void SetButtonLocked(FName ButtonName, bool bLocked);
 	bool IsButtonLocked(FName ButtonName) const;
 	void SetVisibility(FName WidgetName, bool bVisible);
 	UTextureRenderTarget2D* GetRenderTarget() const { return RenderTarget_; }
+	void SetImageColor(FName WidgetName, const FLinearColor& Color);
 
 	FName GetHoveredButton() const { return HoveredButton_; }
 	FName ConsumePress();
@@ -111,6 +114,7 @@ private:
 	UPROPERTY() TMap<FName, UTimeSeriesWidget*> CachedPlots_;
 	UPROPERTY() TMap<FName, FWidgetRect> WidgetRects_;
 	UPROPERTY() TMap<FName, FWidgetRect> ButtonRects_;
+	UPROPERTY() TMap<FName, UImage*> CachedImages_;
 	UVerticalBox* MessageLog_ = nullptr;
 
 	TSet<FName> LockedButtons_;

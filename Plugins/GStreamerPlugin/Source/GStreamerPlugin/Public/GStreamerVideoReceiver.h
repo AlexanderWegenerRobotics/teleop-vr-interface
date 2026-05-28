@@ -41,6 +41,9 @@ extern "C" bool GStreamerAddFecProbe(void* pipeline, const char* element_name,
     void (*callback)(uint16_t seq, void* userdata),
     void* userdata);
 
+extern "C" bool GStreamerNvdecAvailable();
+extern "C" bool GStreamerPopBusError(void* bus, char* OutMsg, int OutMsgLen, bool* bOutIsWarning);
+
 // ---------------------------------------------------------------------------
 // Config / stats structs
 // ---------------------------------------------------------------------------
@@ -103,8 +106,8 @@ struct FProbeContext
 class FFramePullRunnable : public FRunnable
 {
 public:
-    FFramePullRunnable(void* InAppSink, FStreamStats* InStats)
-        : AppSink(InAppSink), Stats(InStats), bShouldStop(false) {}
+    FFramePullRunnable(void* InAppSink, FStreamStats* InStats, void* InBus = nullptr)
+        : AppSink(InAppSink), Stats(InStats), Bus(InBus), bShouldStop(false) {}
 
     virtual ~FFramePullRunnable() {}
     virtual bool   Init() override { return true; }
@@ -116,8 +119,12 @@ public:
     bool HasPendingFrame() const { return !FrameQueue.IsEmpty(); }
 
     float  GetFrameIntervalVarianceMs() const { return static_cast<float>(FrameIntervalVariance); }
-    int64  GetLastSenderTimeNs() const { return LastSenderTimeNs.Load(); }
-    uint64 GetLastFrameId()      const { return LastFrameId.Load(); }
+    int64  GetLastSenderTimeNs()  const { return LastSenderTimeNs.Load(); }
+    uint64 GetLastFrameId()       const { return LastFrameId.Load(); }
+    /// FrameId of the frame currently waiting in the queue (0 = queue empty).
+    /// Set when a frame is enqueued, cleared when PopFrame consumes it.
+    /// Used by VideoFeedComponent to sync left/right eyes before consuming.
+    uint64 GetPendingFrameId()    const { return PendingFrameId.Load(); }
 private:
     /// Number of bytes carrying the sender timestamp in the extra row.
     static constexpr int32 kTimestampBytes = 8;
@@ -128,6 +135,7 @@ private:
 
     void*         AppSink;
     FStreamStats* Stats;
+    void*         Bus;
     TAtomic<bool> bShouldStop;
     TQueue<FVideoFrame, EQueueMode::Spsc> FrameQueue;
 
@@ -140,6 +148,7 @@ private:
     TAtomic<double>  FrameIntervalVariance{ 0.0 };
     TAtomic<int64>   LastSenderTimeNs{ 0 };
     TAtomic<uint64>  LastFrameId{ 0 };
+    TAtomic<uint64>  PendingFrameId{ 0 }; // 0 = nothing queued
 };
 
 // ---------------------------------------------------------------------------
@@ -161,8 +170,9 @@ public:
     void           GetDimensions(int32& OutWidth, int32& OutHeight) const;
     FReceiverStats GetStats() const;
 
-    int64  GetLastSenderTimeNs() const;
-    uint64 GetLastFrameId()      const;
+    int64  GetLastSenderTimeNs()  const;
+    uint64 GetLastFrameId()       const;
+    uint64 GetPendingFrameId()    const;
 
 private:
     static void RtpProbeThunk(uint16_t Seq, uint32_t Ts, void* Userdata);

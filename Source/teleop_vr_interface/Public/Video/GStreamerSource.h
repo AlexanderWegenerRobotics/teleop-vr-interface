@@ -45,6 +45,11 @@ public:
         return Receiver ? Receiver->GetLastFrameId() : 0;
     }
 
+    virtual uint64 GetPendingFrameId() const override
+    {
+        return Receiver ? Receiver->GetPendingFrameId() : 0;
+    }
+
     virtual FVideoSourceStats GetStats() const override {
         FVideoSourceStats Out;
         if (!Receiver) return Out;

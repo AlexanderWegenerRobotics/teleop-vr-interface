@@ -14,7 +14,6 @@
 #include "UI/WidgetBinder.h"
 #include "UI/TMetricHistory.h"
 #include "UI/SoundFeedback.h"
-#include "UI/TrayController.h"
 #include "Video/VideoLogger.h"
 #include "Video/GazeProjection.h"
 #include "Teleop/TeleOpLogger.h"
@@ -61,9 +60,6 @@ protected:
 	UPROPERTY() AVideoLogger* VideoLogger_ = nullptr;
 	UPROPERTY() TObjectPtr<UVoiceAnnotatorComponent> VoiceAnnotator;
 	UPROPERTY() TObjectPtr<UGhostOverlayComponent>  GhostOverlay;
-
-	UPROPERTY(EditAnywhere, Category = "Tray")
-	FTrayController Tray;
 
 	UPROPERTY(EditAnywhere, Category = "Logging")
 	FString LogBaseDirectory = TEXT("Logs/TeleOp/");

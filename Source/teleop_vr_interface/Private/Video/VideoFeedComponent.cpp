@@ -2,6 +2,9 @@
 #include "Teleop/OperatorPawn.h"
 #include "Camera/CameraComponent.h"
 #include "Engine/Texture2D.h"
+#include "Engine/TextureRenderTarget2D.h"
+#include "Materials/MaterialInstanceDynamic.h"
+#include "UObject/ConstructorHelpers.h"
 #include "RenderingThread.h"
 
 #ifdef UpdateResource
@@ -12,6 +15,11 @@ UVideoFeedComponent::UVideoFeedComponent()
 {
     PrimaryComponentTick.bCanEverTick = true;
     PrimaryComponentTick.TickGroup = TG_PostPhysics;
+
+    static ConstructorHelpers::FObjectFinder<UMaterialInterface> StereoMatFinder(
+        TEXT("/Game/Materials/M_StereoVideoFeed.M_StereoVideoFeed"));
+    if (StereoMatFinder.Succeeded())
+        StereoVideoMaterial = StereoMatFinder.Object;
 }
 
 void UVideoFeedComponent::BeginPlay()
@@ -40,12 +48,19 @@ void UVideoFeedComponent::BeginPlay()
         UE_LOG(LogTemp, Log, TEXT("VideoFeed: started source '%s'"), *ActiveSourceName_);
     }
 
-    UE_LOG(LogTemp, Log, TEXT("VideoFeed: BeginPlay complete, %d source(s)"), Sources_.Num());
+    UE_LOG(LogTemp, Log, TEXT("VideoFeed: BeginPlay complete, %d source(s), stereo=%s"),
+        Sources_.Num(), bStereo_ ? TEXT("true") : TEXT("false"));
 }
 
 void UVideoFeedComponent::EndPlay(const EEndPlayReason::Type EndPlayReason) {
     for (auto& Pair : Sources_)
         Pair.Value->Stop();
+
+    if (bStereo_ && PostProcessMID_ && CameraRef)
+    {
+        auto& Blendables = CameraRef->PostProcessSettings.WeightedBlendables.Array;
+        Blendables.RemoveAll([this](const FWeightedBlendable& B) { return B.Object == PostProcessMID_; });
+    }
 
     if (VideoTexture || StereoLayer)
         FlushRenderingCommands();
@@ -58,22 +73,43 @@ void UVideoFeedComponent::TickComponent(float DeltaTime, ELevelTick TickType, FA
 
     if (!ActiveSource_ || !VideoTexture) return;
 
-    UTexture2D* PrevTexture = VideoTexture;
     UTexture2D* TexturePtr = VideoTexture;
     ActiveSource_->UpdateTexture(TexturePtr);
 
-    if (TexturePtr != PrevTexture)
+    if (TexturePtr != VideoTexture)
     {
         VideoTexture = TexturePtr;
-        StereoLayer->SetTexture(VideoTexture);
 
-        int32 W = 0, H = 0;
-        if (ActiveSource_->GetDimensions(W, H))
-            UpdateLayerSize(W, H);
+        if (StereoLayer)
+        {
+            StereoLayer->SetTexture(VideoTexture);
 
-        UE_LOG(LogTemp, Log, TEXT("VideoFeed: rebound stereo layer to new texture %dx%d"),
+            int32 W = 0, H = 0;
+            if (ActiveSource_->GetDimensions(W, H))
+                UpdateLayerSize(W, H);
+        }
+
+        UE_LOG(LogTemp, Log, TEXT("VideoFeed: rebound left/mono texture %dx%d"),
             VideoTexture->GetSizeX(), VideoTexture->GetSizeY());
     }
+
+    if (bStereo_ && PostProcessMID_)
+    {
+        // Side-by-side mode: VideoTexture holds the combined 2560×960 frame
+        // (left eye in the left half, right eye in the right half).
+        // Both material params point to the same texture; the HLSL crops per eye.
+        PostProcessMID_->SetTextureParameterValue(TEXT("VideoLeft"),  VideoTexture);
+        PostProcessMID_->SetTextureParameterValue(TEXT("VideoRight"), VideoTexture);
+    }
+}
+
+void UVideoFeedComponent::SetStereoMode(bool bStereo)
+{
+    // Side-by-side mode: a single combined stream carries both eyes.
+    // No separate right-eye source needed.
+    bStereo_ = bStereo;
+    UE_LOG(LogTemp, Log, TEXT("VideoFeed: stereo mode %s (side-by-side combined stream)"),
+        bStereo_ ? TEXT("enabled") : TEXT("disabled"));
 }
 
 void UVideoFeedComponent::RegisterSource(const FString& Name, TUniquePtr<IVideoSource> Source)
@@ -129,28 +165,61 @@ bool UVideoFeedComponent::IsReceiving() const
 
 void UVideoFeedComponent::CreateStereoLayer()
 {
+    // Creates stereo layer(s) and initial textures; in stereo mode creates per-eye layers.
     AActor* Owner = GetOwner();
     if (!Owner || !CameraRef) return;
 
-    VideoTexture = UTexture2D::CreateTransient(1280, 720, PF_B8G8R8A8);
-    if (VideoTexture)
+    auto MakeBlankTexture = [](const FName& DebugName) -> UTexture2D*
     {
-        VideoTexture->SRGB = false;
-        VideoTexture->Filter = TF_Bilinear;
-        VideoTexture->LODGroup = TEXTUREGROUP_UI;
-        VideoTexture->NeverStream = true;
-        VideoTexture->UpdateResource();
+        UTexture2D* Tex = UTexture2D::CreateTransient(1280, 960, PF_B8G8R8A8, DebugName);
+        if (Tex)
+        {
+            Tex->SRGB        = false;
+            Tex->Filter      = TF_Bilinear;
+            Tex->LODGroup    = TEXTUREGROUP_UI;
+            Tex->NeverStream = true;
+            Tex->UpdateResource();
+        }
+        return Tex;
+    };
+
+    auto MakeLayer = [&](const FName& Name) -> UStereoLayerComponent*
+    {
+        UStereoLayerComponent* Layer = NewObject<UStereoLayerComponent>(Owner, Name);
+        Layer->SetPriority(0);
+        Layer->bLiveTexture = true;
+        Layer->AttachToComponent(CameraRef, FAttachmentTransformRules::KeepRelativeTransform);
+        Layer->SetRelativeLocation(FVector(PlaneDistance, 0.0f, 0.0f));
+        return Layer;
+    };
+
+    // In side-by-side stereo mode the combined texture is 2×width.
+    // Blank texture starts at 1×1; it will resize on first real frame.
+    VideoTexture = MakeBlankTexture(TEXT("VideoTexCombined"));
+
+    if (bStereo_) {
+        if (StereoVideoMaterial)
+        {
+            PostProcessMID_ = UMaterialInstanceDynamic::Create(StereoVideoMaterial, this);
+            // Both params point to the same combined texture; HLSL crops per eye.
+            PostProcessMID_->SetTextureParameterValue(TEXT("VideoLeft"),  VideoTexture);
+            PostProcessMID_->SetTextureParameterValue(TEXT("VideoRight"), VideoTexture);
+            CameraRef->PostProcessSettings.WeightedBlendables.Array.Add(
+                FWeightedBlendable(1.0f, PostProcessMID_));
+        }
+        else
+        {
+            UE_LOG(LogTemp, Warning, TEXT("VideoFeed: stereo mode but StereoVideoMaterial not set — no video will render"));
+        }
+
+        UE_LOG(LogTemp, Log, TEXT("VideoFeed: post-process stereo material applied (side-by-side combined texture)"));
+        return;
     }
 
-    StereoLayer = NewObject<UStereoLayerComponent>(Owner, TEXT("VideoStereoLayer"));
+    StereoLayer = MakeLayer(TEXT("VideoStereoLayer"));
     StereoLayer->SetTexture(VideoTexture);
-    StereoLayer->SetPriority(0);
-    StereoLayer->bLiveTexture = true;
-    StereoLayer->AttachToComponent(CameraRef, FAttachmentTransformRules::KeepRelativeTransform);
-    StereoLayer->SetRelativeLocation(FVector(PlaneDistance, 0.0f, 0.0f));
     StereoLayer->RegisterComponent();
-
-    UpdateLayerSize(1280, 720);
+    UpdateLayerSize(1280, 960);
     UE_LOG(LogTemp, Log, TEXT("VideoFeed: stereo layer created at %.0f cm"), PlaneDistance);
 }
 
@@ -164,4 +233,18 @@ void UVideoFeedComponent::UpdateLayerSize(int32 Width, int32 Height)
     float HalfHeight = HalfWidth / AspectRatio;
 
     StereoLayer->SetQuadSize(FVector2D(HalfWidth * 2.0f, HalfHeight * 2.0f));
+}
+
+void UVideoFeedComponent::SetGhostTextures(UTextureRenderTarget2D* Left, UTextureRenderTarget2D* Right)
+{
+    if (!PostProcessMID_)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("VideoFeed: SetGhostTextures called but PostProcessMID_ is null — ghost won't show"));
+        return;
+    }
+    PostProcessMID_->SetTextureParameterValue(TEXT("GhostLeft"),  Left);
+    PostProcessMID_->SetTextureParameterValue(TEXT("GhostRight"), Right);
+    UE_LOG(LogTemp, Log, TEXT("VideoFeed: ghost eye RTs bound to video material (L=%s R=%s)"),
+        Left  ? *Left->GetName()  : TEXT("null"),
+        Right ? *Right->GetName() : TEXT("null"));
 }

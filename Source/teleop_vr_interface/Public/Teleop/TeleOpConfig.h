@@ -28,18 +28,23 @@ struct FStreamConfig
 {
     GENERATED_BODY()
     FString RemoteIP = TEXT("127.0.0.1");
-    int32   Port = 5004;
-    int32   FeedbackPort = 5005;
-    int32   TimestampPort = 5006;
-    int32   StatusPort = 5007;
+    bool    bStereo          = false;
+    int32   Port             = 5004;
+    int32   FeedbackPort     = 5005;
+    int32   TimestampPort    = 5006;
+    int32   StatusPort       = 5007;
     int32   ReportIntervalMs = 500;
+    int32   RightPort             = 5006;
+    int32   RightFeedbackPort     = 5008;
+    int32   RightStatusPort       = 5009;
 };
 
 USTRUCT()
 struct FHudConfig
 {
     GENERATED_BODY()
-    float LatencyWarningMs = 80.0f;
+    float LatencyWarningMs = 140.0f;
+    float DataLatencyWarningMs = 120.0f;
     float LossWarningPercent = 0.001f;
     float FpsWarningFloor = 20.0f;
     float MetricEntryWindowSec = 5.0f;

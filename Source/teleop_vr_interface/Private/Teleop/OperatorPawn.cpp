@@ -43,7 +43,6 @@ AOperatorPawn::AOperatorPawn() {
 	Gaze = CreateDefaultSubobject<UGazeComponent>(TEXT("Gaze"));
 	SoundFeedback = CreateDefaultSubobject<USoundFeedback>(TEXT("SoundFeedback"));
 	UIBinder = CreateDefaultSubobject<UWidgetBinder>(TEXT("UIBinder"));
-	TrayBinder = CreateDefaultSubobject<UWidgetBinder>(TEXT("TrayBinder"));
 	LeftTracked = CreateDefaultSubobject<UTrackedControllerComponent>(TEXT("LeftTracked"));
 	RightTracked = CreateDefaultSubobject<UTrackedControllerComponent>(TEXT("RightTracked"));
 	VoiceAnnotator = CreateDefaultSubobject<UVoiceAnnotatorComponent>(TEXT("VoiceAnnotator"));
@@ -88,14 +87,6 @@ AOperatorPawn::AOperatorPawn() {
 	else {
 		UE_LOG(LogTemp, Warning, TEXT("OperatorPawn: WBP_DebugPanel not found"));
 	}
-
-	static ConstructorHelpers::FClassFinder<UUserWidget> TrayClass(TEXT("/Game/UI/WBP_TrayPanel.WBP_TrayPanel_C"));
-	if (TrayClass.Succeeded()) {
-		TrayWidgetClass = TrayClass.Class;
-	}
-	else {
-		UE_LOG(LogTemp, Warning, TEXT("OperatorPawn: WBP_TrayPanel not found"));
-	}
 }
 
 void AOperatorPawn::BeginPlay() {
@@ -119,12 +110,22 @@ void AOperatorPawn::BeginPlay() {
 	FReceiverConfig GstConfig;
 	GstConfig.Port = Config->Stream.Port;
 	GstConfig.FeedbackPort = Config->Stream.FeedbackPort;
-	GstConfig.SenderIP = Config->Stream.RemoteIP;
+	GstConfig.SenderIP         = Config->Stream.RemoteIP;
 	GstConfig.ReportIntervalMs = Config->Stream.ReportIntervalMs;
-	GstConfig.StatusPort = Config->Stream.StatusPort;
+	GstConfig.StatusPort       = Config->Stream.StatusPort;
 	VideoFeed->RegisterSource(TEXT("AvatarStream"), MakeUnique<FGStreamerSource>(GstConfig));
+	// In stereo mode a single side-by-side stream (left|right composited 2560×960)
+	// arrives on the main port.  No second source needed — the post-process material
+	// crops the left/right halves per eye.
+	VideoFeed->SetStereoMode(Config->Stream.bStereo);
+	GhostOverlay->SetStereoMode(Config->Stream.bStereo);
 
-	Super::BeginPlay();
+	Super::BeginPlay();  // ← initialises all components (VideoFeed and GhostOverlay BeginPlay run here)
+
+	// Bind ghost eye RTs to the video material now that both components are initialised.
+	// Done here rather than inside each component to avoid ordering dependencies.
+	if (Config->Stream.bStereo)
+		VideoFeed->SetGhostTextures(GhostOverlay->GetRenderTargetLeft(), GhostOverlay->GetRenderTargetRight());
 
 	VoiceAnnotator->OnAnnotationReceived.AddUObject(this, &AOperatorPawn::HandleVoiceAnnotation);
 
@@ -138,14 +139,14 @@ void AOperatorPawn::BeginPlay() {
 	RightTracked->bDrawDebugRay = true;
 
 	UIBinder->Initialize(UIWidgetClass, VRCamera, FVector2D(1280.0f, 720.0f), 690.0f, 1);
-	UIBinder->BindPlot(FName("videoLatencyPlot"), LatencyHistory.GetSamplesPtr(), nullptr, LatencyHistory.Capacity(), LatencyHistory.GetHeadPtr(), 0.0f, 40.0f);
-	UIBinder->BindPlot(FName("dataLatencyPlot"), JitterHistory.GetSamplesPtr(), nullptr, JitterHistory.Capacity(), JitterHistory.GetHeadPtr(), 0.0f, 40.0f);
+	
+	const float LatencyWarn = Config->Hud.LatencyWarningMs;
+	UIBinder->BindPlot(FName("videoLatencyPlot"), LatencyHistory.GetSamplesPtr(), nullptr, LatencyHistory.Capacity(), LatencyHistory.GetHeadPtr(), 0.0f, LatencyWarn * 2.0f);
+	UIBinder->SetPlotThreshold(FName("videoLatencyPlot"), LatencyWarn);
 
-	if (TrayWidgetClass) {
-		TrayBinder->Initialize(TrayWidgetClass, VRCamera, FVector2D(1280.0f, 720.0f), Tray.LayerDistance, 2, Tray.CollapsedWidth, Tray.ExpandedWidth, Tray.VerticalOffset);
-		TrayBinder->SetExpansion(0.0f);
-		TrayBinder->SetLayerOpacity(Tray.CollapsedOpacity);
-	}
+	const float DataLatencyWarn = Config->Hud.DataLatencyWarningMs;
+	UIBinder->BindPlot(FName("dataLatencyPlot"), JitterHistory.GetSamplesPtr(), nullptr, JitterHistory.Capacity(), JitterHistory.GetHeadPtr(), 0.0f, DataLatencyWarn * 2.0f);
+	UIBinder->SetPlotThreshold(FName("dataLatencyPlot"), DataLatencyWarn);
 
 	ComLink->RegisterHandler("device_event", [this](const FReliableEnvelope& Env) {
 		std::map<std::string, msgpack::object> Fields;
@@ -230,7 +231,17 @@ void AOperatorPawn::Tick(float DeltaTime) {
 
 	const FGazeData& GazeData = Gaze->GetGazeData();
 	UIBinder->SetGazeInput(GazeData);
-	UpdateTray(DeltaTime, GazeData);
+
+	UIBinder->SetImageColor(FName("avatar_torso"), ComLink->IsAvatarAlive() ? FLinearColor::Green : FLinearColor::Red);
+	UIBinder->SetImageColor(FName("avatar_eye"), VideoFeed->IsReceiving() ? FLinearColor::Green : FLinearColor::Red);
+	UIBinder->SetImageColor(FName("avatar_left_arm"), ComLink->GetArmRemoteState(0) == SysState::ENGAGED ? FLinearColor::Green : FLinearColor::Red);
+	UIBinder->SetImageColor(FName("avatar_right_arm"), ComLink->GetArmRemoteState(1) == SysState::ENGAGED ? FLinearColor::Green : FLinearColor::Red);
+	UIBinder->SetImageColor(FName("avatar_head"), ComLink->IsHeadAlive() ? FLinearColor::Green : FLinearColor::Red);
+
+	UIBinder->SetImageColor(FName("operator_eye"), Gaze->IsTrackerConnected() ? FLinearColor::Green : FLinearColor::Red);
+	UIBinder->SetImageColor(FName("operator_left_arm"), LeftTracked->IsTracking() ? FLinearColor::Green : FLinearColor::Red);
+	UIBinder->SetImageColor(FName("operator_right_arm"), RightTracked->IsTracking() ? FLinearColor::Green : FLinearColor::Red);
+	UIBinder->SetImageColor(FName("operator_head"), bHMDOriginValid_ ? FLinearColor::Green : FLinearColor::Red);
 
 	bool bVideoLive = VideoFeed->IsReceiving();
 	UIBinder->SetText(FName("video_value"), bVideoLive ? TEXT("LIVE") : TEXT("OFFLINE"));
@@ -243,11 +254,6 @@ void AOperatorPawn::Tick(float DeltaTime) {
 
 	UIBinder->SetText(FName("operator_state_value"), StateToString(OperatorState_));
 	UIBinder->SetText(FName("avatar_state_value"), StateToString(ComLink->GetAvatarState()));
-
-	UIBinder->SetText(FName("LeftGearValue"), FString::Printf(TEXT("%d"), LeftTracked->GetScaleFactor()));
-	UIBinder->SetText(FName("LeftClutchValue"), FString::Printf(TEXT("%.0f%%"), LeftTracked->GetClutchFactor() * 100.0f));
-	UIBinder->SetText(FName("RightGearValue"), FString::Printf(TEXT("%d"), RightTracked->GetScaleFactor()));
-	UIBinder->SetText(FName("RightClutchValue"), FString::Printf(TEXT("%.0f%%"), RightTracked->GetClutchFactor() * 100.0f));
 
 	static const TArray<FString> HealthLabels = { TEXT("NO SIGNAL"), TEXT("NORMAL"), TEXT("DEGRADED"), TEXT("CRITICAL"), TEXT("STALE") };
 	static const TArray<FLinearColor> HealthColors = { FLinearColor::Gray, FLinearColor::Green, FLinearColor::Yellow, FLinearColor::Red, FLinearColor::Gray };
@@ -354,25 +360,6 @@ void AOperatorPawn::Tick(float DeltaTime) {
 
 void AOperatorPawn::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) {
 	Super::SetupPlayerInputComponent(PlayerInputComponent);
-}
-
-
-// ============================================================
-// Tray
-// ============================================================
-void AOperatorPawn::UpdateTray(float DeltaTime, const FGazeData& GazeData) {
-	if (!TrayBinder) return;
-	Tray.Update(DeltaTime, GazeData, TrayBinder);
-	TrayBinder->SetGazeInput(GazeData);
-	FName TrayPressed = TrayBinder->ConsumePress();
-	if (TrayPressed != FName()) {
-		HandleTrayPress(TrayPressed);
-	}
-}
-
-void AOperatorPawn::HandleTrayPress(FName ButtonPressed) {
-	UE_LOG(LogTemp, Log, TEXT("TrayBinder: press=%s"), *ButtonPressed.ToString());
-	if (Logger_) Logger_->LogEvent(TEXT("TRAY_PRESS button=") + ButtonPressed.ToString());
 }
 
 
@@ -537,8 +524,7 @@ void AOperatorPawn::UpdateStateMachine() {
 void AOperatorPawn::TransitionTo(ESysState NewState) {
 	UE_LOG(LogTemp, Log, TEXT("OperatorPawn: %d -> %d"), static_cast<int>(OperatorState_), static_cast<int>(NewState));
 	if (Logger_) {
-		Logger_->LogEvent(FString::Printf(TEXT("STATE_TRANSITION old=%s new=%s"),
-			*StateToString(OperatorState_), *StateToString(NewState)));
+		Logger_->LogEvent(FString::Printf(TEXT("STATE_TRANSITION old=%s new=%s"),*StateToString(OperatorState_), *StateToString(NewState)));
 	}
 	if (NewState == ESysState::Idle) {
 		bPendingVoiceReengage_ = false;
@@ -662,7 +648,7 @@ void AOperatorPawn::SendArmCommands() {
 	if (bLeftActive && LeftTracked->IsTracking() && !LeftTracked->IsFullClutch()) {
 		ArmCommandMsg Msg{};
 		FControllerDeltaPose Delta = LeftTracked->GetDeltaPose();
-		FVector LocalTranslation = HMDYawQuat.UnrotateVector(Delta.Translation); // <-- key line
+		FVector LocalTranslation = HMDYawQuat.UnrotateVector(Delta.Translation);
 		CoordConvert::UnrealToProtocolFloat(LocalTranslation, Msg.position[0], Msg.position[1], Msg.position[2]);
 		CoordConvert::UnrealToProtocolQuatFloat(Delta.Rotation, Msg.quaternion[0], Msg.quaternion[1], Msg.quaternion[2], Msg.quaternion[3]);
 		Msg.gripper = LeftTracked->IsGraspHeld() ? 1.0f : 0.0f;
@@ -672,7 +658,7 @@ void AOperatorPawn::SendArmCommands() {
 	if (bRightActive && RightTracked->IsTracking() && !RightTracked->IsFullClutch()) {
 		ArmCommandMsg Msg{};
 		FControllerDeltaPose Delta = RightTracked->GetDeltaPose();
-		FVector LocalTranslation = HMDYawQuat.UnrotateVector(Delta.Translation); // <-- key line
+		FVector LocalTranslation = HMDYawQuat.UnrotateVector(Delta.Translation);
 		CoordConvert::UnrealToProtocolFloat(LocalTranslation, Msg.position[0], Msg.position[1], Msg.position[2]);
 		CoordConvert::UnrealToProtocolQuatFloat(Delta.Rotation, Msg.quaternion[0], Msg.quaternion[1], Msg.quaternion[2], Msg.quaternion[3]);
 		Msg.gripper = RightTracked->IsGraspHeld() ? 1.0f : 0.0f;
@@ -719,8 +705,7 @@ void AOperatorPawn::SendResetAll() {
 	if (Logger_) Logger_->LogEvent(TEXT("ARM_RESET device=all"));
 }
 
-void AOperatorPawn::SendGazeSample()
-{
+void AOperatorPawn::SendGazeSample(){
 	uint64 FrameId = VideoFeed->GetLastFrameId();
 	if (FrameId == 0) return;
 
@@ -730,8 +715,7 @@ void AOperatorPawn::SendGazeSample()
 	if (!VRCamera) return;
 
 	FVector2D GazeUV;
-	if (!FGazeProjection::Project(GazeData, VRCamera->GetComponentTransform(),
-	                               VideoFeed->PlaneDistance, VideoQuadWidth_, VideoQuadHeight_, GazeUV))
+	if (!FGazeProjection::Project(GazeData, VRCamera->GetComponentTransform(), VideoFeed->PlaneDistance, VideoQuadWidth_, VideoQuadHeight_, GazeUV))
 		return;
 
 	UTexture2D* Tex = VideoFeed->GetVideoTexture();

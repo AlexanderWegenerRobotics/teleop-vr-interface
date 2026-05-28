@@ -1,5 +1,5 @@
 {
-    "latency_warning_ms":     80.0,
+    "latency_warning_ms":     140.0,
     "loss_warning_percent":   0.001,
     "fps_warning_floor":      20.0,
     "metric_entry_window_s":  5.0,

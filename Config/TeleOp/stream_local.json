@@ -1,11 +1,11 @@
 {
-    "remote_ip":            "10.112.24.72",
+    "remote_ip":            "127.0.0.1",
     "port":                 5004,
     "feedback_port":        5005,
     "timestamp_port":       5006,
     "status_port":          5007,
     "report_interval_ms":   500,
-    "stereo":               false,
+    "stereo":               true,
     "right_port":           5006,
     "right_feedback_port":  5008,
     "right_status_port":    5009

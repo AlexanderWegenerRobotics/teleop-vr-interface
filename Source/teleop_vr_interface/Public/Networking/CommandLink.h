@@ -89,4 +89,5 @@ private:
 
     TMap<FString, FMsgHandler> Handlers_;
     TArray<TUniquePtr<msgpack::object_handle>> IncomingZones_;
+    UdpSocket::Config SocketCfg;
 };

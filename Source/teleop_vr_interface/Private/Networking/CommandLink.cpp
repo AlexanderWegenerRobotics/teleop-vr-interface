@@ -10,7 +10,6 @@ CommandLink::~CommandLink() {
 bool CommandLink::Open(const Config& Cfg) {
     Config_ = Cfg;
 
-    UdpSocket::Config SocketCfg;
     SocketCfg.RemoteIP = Cfg.RemoteIP;
     SocketCfg.SendPort = Cfg.SendPort;
     SocketCfg.ReceivePort = Cfg.ReceivePort;
@@ -97,12 +96,6 @@ void CommandLink::HandleReceive(const uint8* Data, int32 Size) {
         FReliableEnvelope Env;
         Oh->get().convert(Env);
 
-        {
-            FScopeLock Lock(&SendMtx_);
-            RemoteState_ = static_cast<SysState>(Env.state);
-            RemoteFaultCode_ = Env.fault_code;
-        }
-
         if (Env.msg_type == "ack") {
             std::map<std::string, msgpack::object> Fields;
             Env.payload.convert(Fields);
@@ -111,6 +104,12 @@ void CommandLink::HandleReceive(const uint8* Data, int32 Size) {
                 HandleAck(It->second.as<uint32_t>());
             }
             return;
+        }
+
+        {
+            FScopeLock Lock(&SendMtx_);
+            RemoteState_ = static_cast<SysState>(Env.state);
+            RemoteFaultCode_ = Env.fault_code;
         }
 
         if (Env.ack_requested && Socket_) {

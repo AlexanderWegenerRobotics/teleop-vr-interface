@@ -94,6 +94,11 @@ uint64 FGStreamerVideoReceiver::GetLastFrameId() const
     return FramePullRunnable_ ? FramePullRunnable_->GetLastFrameId() : 0;
 }
 
+uint64 FGStreamerVideoReceiver::GetPendingFrameId() const
+{
+    return FramePullRunnable_ ? FramePullRunnable_->GetPendingFrameId() : 0;
+}
+
 // ---------------------------------------------------------------------------
 // FFramePullRunnable::Run
 // ---------------------------------------------------------------------------
@@ -102,14 +107,33 @@ uint32 FFramePullRunnable::Run()
 {
     UE_LOG(LogTemp, Log, TEXT("GStreamer: frame pull thread started"));
 
+    int32 IdleCount   = 0;
+    int32 FrameCount  = 0;
+
     while (!bShouldStop)
     {
         void* Sample = GStreamerTryPullSample(AppSink, 0.016);
         if (!Sample)
         {
+            ++IdleCount;
+
+            char ErrBuf[512]; bool bWarn = false;
+            while (GStreamerPopBusError(Bus, ErrBuf, sizeof(ErrBuf), &bWarn))
+            {
+                if (bWarn)
+                {
+                    UE_LOG(LogTemp, Warning, TEXT("GStreamer recv pipeline: %s"), ANSI_TO_TCHAR(ErrBuf));
+                }
+                else
+                {
+                    UE_LOG(LogTemp, Error, TEXT("GStreamer recv pipeline: %s"), ANSI_TO_TCHAR(ErrBuf));
+                }
+            }
+
             FPlatformProcess::Sleep(0.001f);
             continue;
         }
+        ++FrameCount;
 
         void* Buffer = GStreamerGetSampleBuffer(Sample);
         void* Caps   = GStreamerGetSampleCaps(Sample);
@@ -139,7 +163,9 @@ uint32 FFramePullRunnable::Run()
                     FVideoFrame Discard;
                     while (FrameQueue.Dequeue(Discard)) {}
 
+                    uint64 EnqueuedId = Frame.FrameId;
                     FrameQueue.Enqueue(MoveTemp(Frame));
+                    PendingFrameId.Store(EnqueuedId); // visible to game thread for stereo sync
 
                     if (Stats) Stats->OnFrameDecoded();
 
@@ -177,7 +203,10 @@ uint32 FFramePullRunnable::Run()
 
 bool FFramePullRunnable::PopFrame(FVideoFrame& OutFrame)
 {
-    return FrameQueue.Dequeue(OutFrame);
+    bool bGot = FrameQueue.Dequeue(OutFrame);
+    if (bGot)
+        PendingFrameId.Store(0); // queue now empty
+    return bGot;
 }
 
 // ---------------------------------------------------------------------------
@@ -202,13 +231,21 @@ bool FGStreamerVideoReceiver::Initialize(const FReceiverConfig& Config)
 {
     if (bIsInitialized) return true;
 
+    // Always use avdec_h264 on the receive side — nvh264dec in UE5's bundled
+    // GStreamer context fails silently during PLAYING state transition and causes
+    // udpsrc to release its socket.  CPU decode is cheap; the real CPU saving
+    // comes from nvh264enc on the avatar/sender side.
+    UE_LOG(LogTemp, Log, TEXT("GStreamer: decoder: avdec_h264 (CPU)"));
+    std::string DecodeStep = "avdec_h264";
+
     std::string PipelineStr =
         "udpsrc port=" + std::to_string(Config.Port) +
         " caps=\"application/x-rtp,media=video,encoding-name=H264,payload=96\""
+        " ! rtpjitterbuffer latency=50"
         " ! rtpulpfecdec name=fecdec"
         " ! rtph264depay name=depay"
         " ! h264parse"
-        " ! avdec_h264"
+        " ! " + DecodeStep +
         " ! videoconvert"
         " ! video/x-raw,format=BGRA"
         " ! appsink name=sink emit-signals=false sync=false max-buffers=2 drop=true";
@@ -277,7 +314,7 @@ bool FGStreamerVideoReceiver::Start()
 
     if (Stats_) Stats_->Start();
 
-    FramePullRunnable_ = MakeUnique<FFramePullRunnable>(AppSink, Stats_.Get());
+    FramePullRunnable_ = MakeUnique<FFramePullRunnable>(AppSink, Stats_.Get(), Bus);
     FramePullThread_   = TUniquePtr<FRunnableThread>(
         FRunnableThread::Create(
             FramePullRunnable_.Get(),
@@ -346,7 +383,7 @@ bool FGStreamerVideoReceiver::UpdateTexture(UTexture2D*& OutTexture)
         UTexture2D* NewTex = UTexture2D::CreateTransient(
             Frame.Width, Frame.Height, PF_B8G8R8A8);
         if (!NewTex) return false;
-        NewTex->SRGB = true;
+        NewTex->SRGB = false;
         NewTex->UpdateResource();
         OutTexture = NewTex;
     }

@@ -30,7 +30,10 @@ public:
 
     void SetCamera(UCameraComponent* InCamera) { CameraRef = InCamera; }
     void SetComLink(UComLink* InComLink) { ComLinkRef = InComLink; }
-    UTextureRenderTarget2D* GetRenderTarget() const { return CaptureRT; }
+    void SetStereoMode(bool bStereo) { bStereo_ = bStereo; }
+    UTextureRenderTarget2D* GetRenderTarget()      const { return CaptureRT; }
+    UTextureRenderTarget2D* GetRenderTargetLeft()  const { return CaptureRTLeft; }
+    UTextureRenderTarget2D* GetRenderTargetRight() const { return CaptureRTRight; }
 
     // Right arm VR controller fallback refs.
     void SetRightHand   (USceneComponent*            h) { RightHandRef    = h; }
@@ -76,7 +79,16 @@ public:
     float FOVCoverage = 0.85f;
 
     UPROPERTY(EditAnywhere, Category = "Ghost|Capture")
-    float CaptureFOV = 75.2f;
+    float CaptureFOV = 75.2f;          // mono mode capture FOV
+
+    // Stereo mode: SceneCapture FOV for each eye — should match the video camera fovy (110°).
+    UPROPERTY(EditAnywhere, Category = "Ghost|Capture")
+    float StereoCaptureFOV = 75.2f;
+
+    // Stereo mode: half-IPD in cm (distance from center to each eye).
+    // Match your headset's IPD setting ÷ 2.  Default = 61 mm ÷ 2 = 3.05 cm.
+    UPROPERTY(EditAnywhere, Category = "Ghost|Capture")
+    float StereoEyeOffsetCm = 3.05f;
 
     UPROPERTY(EditAnywhere, Category = "Ghost|Capture")
     FIntPoint RenderTargetSize = FIntPoint(1280, 960);
@@ -110,6 +122,11 @@ public:
     UPROPERTY(EditAnywhere, Category = "Ghost|Assets")
     TObjectPtr<UMaterialInterface> PostProcessMaterial;
 
+    // Stereo mode: post-process material applied to the VR camera that composites
+    // left/right ghost RTs over the scene per eye (like M_StereoVideoFeed but with alpha).
+    UPROPERTY(EditAnywhere, Category = "Ghost|Assets")
+    TObjectPtr<UMaterialInterface> StereoGhostPostProcessMaterial;
+
     UPROPERTY(EditAnywhere, Category = "Ghost|Assets")
     TObjectPtr<UStaticMesh> GhostHandMesh;
 
@@ -137,6 +154,7 @@ private:
     void UpdateLeftArmPose();     // left  arm (index 0)
     void UpdateFingerPose(UStaticMeshComponent* LFinger, UStaticMeshComponent* RFinger,
                           UTrackedControllerComponent* Tracked);
+    FQuat UpdateCaptureTransforms(const FQuat& R_HW_Protocol);
     void UpdateLatencyState(float DeltaTime);
     void ApplyLatencyColor();       // pushes tint to GhostMID_ based on LatencyLevel_
 
@@ -193,6 +211,24 @@ private:
     TObjectPtr<UMaterialInstanceDynamic> GhostMID_;
 
     bool bPipelineReady = false;
+    bool bStereo_       = false;
+
+    // Stereo eye captures and render targets (null in mono mode).
+    UPROPERTY()
+    TObjectPtr<USceneCaptureComponent2D> SceneCaptureLeft;
+
+    UPROPERTY()
+    TObjectPtr<USceneCaptureComponent2D> SceneCaptureRight;
+
+    UPROPERTY()
+    TObjectPtr<UTextureRenderTarget2D> CaptureRTLeft;
+
+    UPROPERTY()
+    TObjectPtr<UTextureRenderTarget2D> CaptureRTRight;
+
+    // Post-process MID for stereo ghost composite (null in mono mode).
+    UPROPERTY()
+    TObjectPtr<UMaterialInstanceDynamic> PostProcessGhostMID_;
 
     // Latency state — written by SetVideoLatencyMs (pawn thread), consumed in Tick.
     float RawLatencyMs_      = 0.f;

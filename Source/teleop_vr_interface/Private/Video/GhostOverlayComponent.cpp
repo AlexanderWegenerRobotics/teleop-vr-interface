@@ -32,8 +32,12 @@ void UGhostOverlayComponent::BeginPlay(){
     CreateSceneCapture();
     CreateStereoLayer();
 
-    bPipelineReady = CaptureRT && SceneCapture && GhostMeshComp && StereoLayer;
-    UE_LOG(LogTemp, Log, TEXT("GhostOverlay: BeginPlay complete — pipeline %s"), bPipelineReady ? TEXT("READY") : TEXT("NOT READY"));
+    if (bStereo_)
+        bPipelineReady = CaptureRTLeft && CaptureRTRight && SceneCaptureLeft && SceneCaptureRight && GhostMeshComp;
+    else
+        bPipelineReady = CaptureRT && SceneCapture && GhostMeshComp && StereoLayer;
+    UE_LOG(LogTemp, Log, TEXT("GhostOverlay: BeginPlay complete — pipeline %s (stereo=%s)"),
+        bPipelineReady ? TEXT("READY") : TEXT("NOT READY"), bStereo_ ? TEXT("true") : TEXT("false"));
 
     if (bPipelineReady)
         CreateLatencyMaterial();
@@ -41,6 +45,11 @@ void UGhostOverlayComponent::BeginPlay(){
 
 // Component teardown hook.
 void UGhostOverlayComponent::EndPlay(const EEndPlayReason::Type EndPlayReason){
+    if (bStereo_ && PostProcessGhostMID_ && CameraRef)
+    {
+        auto& Blendables = CameraRef->PostProcessSettings.WeightedBlendables.Array;
+        Blendables.RemoveAll([this](const FWeightedBlendable& B) { return B.Object == PostProcessGhostMID_; });
+    }
     Super::EndPlay(EndPlayReason);
 }
 
@@ -76,22 +85,39 @@ void UGhostOverlayComponent::LoadAssets() {
     }
 }
 
-// Allocate the RGBA8 render target the SceneCapture writes into.
+// Allocate the RGBA8 render target(s) the SceneCapture(s) write into.
 void UGhostOverlayComponent::CreateRenderTarget() {
-    CaptureRT = NewObject<UTextureRenderTarget2D>(GetOwner(), TEXT("GhostCaptureRT"));
-    CaptureRT->RenderTargetFormat = ETextureRenderTargetFormat::RTF_RGBA8;
-    CaptureRT->ClearColor         = FLinearColor(0.f, 0.f, 0.f, 0.f);
-    CaptureRT->bAutoGenerateMips  = false;
-    CaptureRT->InitAutoFormat(RenderTargetSize.X, RenderTargetSize.Y);
-    CaptureRT->UpdateResourceImmediate(true);
+    auto MakeRT = [&](const TCHAR* Name) -> UTextureRenderTarget2D*
+    {
+        UTextureRenderTarget2D* RT = NewObject<UTextureRenderTarget2D>(GetOwner(), Name);
+        RT->RenderTargetFormat = ETextureRenderTargetFormat::RTF_RGBA8;
+        RT->ClearColor         = FLinearColor(0.f, 0.f, 0.f, 0.f);
+        RT->bAutoGenerateMips  = false;
+        RT->InitAutoFormat(RenderTargetSize.X, RenderTargetSize.Y);
+        RT->UpdateResourceImmediate(true);
+        return RT;
+    };
 
-    UE_LOG(LogTemp, Log, TEXT("GhostOverlay: RT created (%dx%d, RGBA8)"), RenderTargetSize.X, RenderTargetSize.Y);
+    if (bStereo_)
+    {
+        CaptureRTLeft  = MakeRT(TEXT("GhostCaptureRT_L"));
+        CaptureRTRight = MakeRT(TEXT("GhostCaptureRT_R"));
+        UE_LOG(LogTemp, Log, TEXT("GhostOverlay: stereo RTs created (%dx%d, RGBA8 × 2)"), RenderTargetSize.X, RenderTargetSize.Y);
+    }
+    else
+    {
+        CaptureRT = MakeRT(TEXT("GhostCaptureRT"));
+        UE_LOG(LogTemp, Log, TEXT("GhostOverlay: mono RT created (%dx%d, RGBA8)"), RenderTargetSize.X, RenderTargetSize.Y);
+    }
 }
 
 // Spawn the world-rotation-locked SceneCapture and the ghost hand/finger meshes it sees.
 void UGhostOverlayComponent::CreateSceneCapture() {
     AActor* Owner = GetOwner();
-    if (!Owner || !CaptureRT) return;
+    if (!Owner) return;
+    // In stereo mode CaptureRT is null; check the eye RTs instead.
+    if (bStereo_ && (!CaptureRTLeft || !CaptureRTRight)) return;
+    if (!bStereo_ && !CaptureRT) return;
 
     SceneCapture = NewObject<USceneCaptureComponent2D>(Owner, TEXT("GhostSceneCapture"));
     SceneCapture->SetupAttachment(Owner->GetRootComponent());
@@ -183,8 +209,6 @@ void UGhostOverlayComponent::CreateSceneCapture() {
         SceneCapture->ShowOnlyComponents.Add(GhostLeftMeshComp);
     }
 
-    // Left arm fingers — created attached to SceneCapture initially (same lambda above),
-    // then re-parented to GhostLeftMeshComp so they move with the left hand.
     LeftArmLeftFingerMeshComp  = CreateFingerMesh(TEXT("GhostLeftArmLFinger"), GhostLeftFingerMesh,  LeftFingerOpenOffset);
     LeftArmRightFingerMeshComp = CreateFingerMesh(TEXT("GhostLeftArmRFinger"), GhostRightFingerMesh, RightFingerOpenOffset);
     LeftArmLeftFingerMeshComp->DetachFromComponent(FDetachmentTransformRules::KeepRelativeTransform);
@@ -192,21 +216,74 @@ void UGhostOverlayComponent::CreateSceneCapture() {
     LeftArmRightFingerMeshComp->DetachFromComponent(FDetachmentTransformRules::KeepRelativeTransform);
     LeftArmRightFingerMeshComp->AttachToComponent(GhostLeftMeshComp, FAttachmentTransformRules::KeepRelativeTransform);
 
-    UE_LOG(LogTemp, Log,
-        TEXT("GhostOverlay: fingers created — left '%s'  right '%s'  ShowOnly count: %d"),
-        GhostLeftFingerMesh  ? *GhostLeftFingerMesh->GetName()  : TEXT("none"),
-        GhostRightFingerMesh ? *GhostRightFingerMesh->GetName() : TEXT("none"),
-        SceneCapture->ShowOnlyComponents.Num());
+    // ---- Stereo: create per-eye captures at ±IPD offset from the centre anchor ----
+    if (bStereo_)
+    {
+        // Centre capture is now just an anchor for the mesh hierarchy — disable its render.
+        SceneCapture->bCaptureEveryFrame = false;
+        SceneCapture->bCaptureOnMovement = false;
+        SceneCapture->TextureTarget      = nullptr;
 
-    UE_LOG(LogTemp, Log,
-        TEXT("GhostOverlay: scene capture created — mesh '%s'  PP '%s'"),
-        GhostHandMesh     ? *GhostHandMesh->GetName()     : TEXT("none"),
-        PostProcessMaterial ? *PostProcessMaterial->GetName() : TEXT("none"));
+        auto MakeEyeCapture = [&](const TCHAR* Name, UTextureRenderTarget2D* RT, float EyeY)
+            -> USceneCaptureComponent2D*
+        {
+            USceneCaptureComponent2D* Cap = NewObject<USceneCaptureComponent2D>(Owner, Name);
+            Cap->SetupAttachment(Owner->GetRootComponent());
+            Cap->RegisterComponent();
+            Cap->SetUsingAbsoluteRotation(true);
+            Cap->SetWorldRotation(FRotator::ZeroRotator);
+            Cap->SetRelativeLocation(FVector(0.f, EyeY, 0.f));
+
+            Cap->TextureTarget               = RT;
+            Cap->CaptureSource               = ESceneCaptureSource::SCS_FinalColorLDR;
+            Cap->PrimitiveRenderMode         = ESceneCapturePrimitiveRenderMode::PRM_UseShowOnlyList;
+            Cap->FOVAngle                    = StereoCaptureFOV;
+            Cap->bCaptureEveryFrame          = true;
+            Cap->bCaptureOnMovement          = false;
+            Cap->bAlwaysPersistRenderingState = true;
+            Cap->CompositeMode               = SCCM_Overwrite;
+
+            Cap->ShowFlags.SetAtmosphere(false);
+            Cap->ShowFlags.SetFog(false);
+            Cap->ShowFlags.SetSkyLighting(false);
+            Cap->ShowFlags.SetDynamicShadows(false);
+
+            if (PostProcessMaterial)
+                Cap->PostProcessSettings.WeightedBlendables.Array.Emplace(1.0f, PostProcessMaterial);
+
+            // Mirror the same ShowOnly list that was built for the mono capture.
+            for (auto& Comp : SceneCapture->ShowOnlyComponents)
+                Cap->ShowOnlyComponents.Add(Comp);
+
+            return Cap;
+        };
+
+        // Left eye = -Y in camera-local space (camera faces +X, right = +Y).
+        SceneCaptureLeft  = MakeEyeCapture(TEXT("GhostCapL"), CaptureRTLeft,  -StereoEyeOffsetCm);
+        SceneCaptureRight = MakeEyeCapture(TEXT("GhostCapR"), CaptureRTRight, +StereoEyeOffsetCm);
+
+        UE_LOG(LogTemp, Log, TEXT("GhostOverlay: stereo eye captures created (±%.2f cm, FOV=%.0f°, %d meshes each)"),
+            StereoEyeOffsetCm, StereoCaptureFOV, SceneCaptureLeft->ShowOnlyComponents.Num());
+    }
 }
 
-// Spawn the face-locked stereo layer that displays the capture RT to the operator.
+// Spawn the face-locked stereo layer (mono) or post-process blendable (stereo).
 void UGhostOverlayComponent::CreateStereoLayer(){
     AActor* Owner = GetOwner();
+
+    // ---- Stereo path: ghost RTs are composited inside the video PP material ----
+    // VR/OpenXR drops all but the first post-process blendable on the camera.
+    // We side-step this by binding the ghost eye RTs to GhostLeft/GhostRight params
+    // on the video material (M_StereoVideoFeed).  The binding is done by OperatorPawn
+    // after Super::BeginPlay() so both VideoFeed and GhostOverlay are initialised.
+    // PostProcessGhostMID_ is left null; bPipelineReady relies on the RTs alone.
+    if (bStereo_)
+    {
+        UE_LOG(LogTemp, Log, TEXT("GhostOverlay: stereo mode — ghost RTs will be bound to video material by OperatorPawn"));
+        return;
+    }
+
+    // ---- Mono path: face-locked StereoLayer ----
     if (!Owner || !CaptureRT) return;
 
     USceneComponent* AttachTo = CameraRef ? Cast<USceneComponent>(CameraRef) : Owner->GetRootComponent();
@@ -224,15 +301,12 @@ void UGhostOverlayComponent::CreateStereoLayer(){
     StereoLayer->SetTexture(CaptureRT);
     if (FByteProperty* TypeProp = FindFProperty<FByteProperty>(StereoLayer->GetClass(), TEXT("StereoLayerType"))){
         TypeProp->SetPropertyValue_InContainer(StereoLayer, static_cast<uint8>(SLT_FaceLocked));
-        UE_LOG(LogTemp, Log, TEXT("GhostOverlay: StereoLayerType → FaceLocked (via reflection)"));
     }
     else{
         UE_LOG(LogTemp, Warning, TEXT("GhostOverlay: StereoLayerType property not found — layer may be world-locked"));
     }
 
     UpdateLayerSize();
-
-    UE_LOG(LogTemp, Log, TEXT("GhostOverlay: stereo layer created at %.0f cm, priority 1"),PlaneDistance);
 }
 
 // Size the stereo layer quad from PlaneDistance, FOVCoverage and RT aspect.
@@ -254,6 +328,26 @@ void UGhostOverlayComponent::UpdateFingerPose(UStaticMeshComponent* LFinger, USt
     const bool bGrasping = Tracked && Tracked->IsGraspHeld();
     LFinger->SetRelativeLocation(bGrasping ? LeftFingerClosedOffset  : LeftFingerOpenOffset);
     RFinger->SetRelativeLocation(bGrasping ? RightFingerClosedOffset : RightFingerOpenOffset);
+}
+
+FQuat UGhostOverlayComponent::UpdateCaptureTransforms(const FQuat& R_HW_Protocol)
+{
+    const FQuat CamRotUE = CoordConvert::ProtocolToUnrealQuat(
+        R_HW_Protocol.W, R_HW_Protocol.X, R_HW_Protocol.Y, R_HW_Protocol.Z);
+
+    if (bStereo_ && SceneCaptureLeft && SceneCaptureRight)
+    {
+        SceneCaptureLeft->SetWorldRotation(CamRotUE);
+        SceneCaptureRight->SetWorldRotation(CamRotUE);
+
+        const FVector PawnPos = GetOwner()->GetActorLocation();
+        SceneCaptureLeft->SetWorldLocation(
+            PawnPos + CamRotUE.RotateVector(FVector(0.f, -StereoEyeOffsetCm, 0.f)));
+        SceneCaptureRight->SetWorldLocation(
+            PawnPos + CamRotUE.RotateVector(FVector(0.f, +StereoEyeOffsetCm, 0.f)));
+    }
+
+    return CamRotUE;
 }
 
 // Project the right-arm EE world pose (index 1) into the SceneCapture-local frame.
@@ -287,9 +381,19 @@ void UGhostOverlayComponent::UpdateGhostPose()
 
         const FVector posUE = CoordConvert::ProtocolToUnreal(p_cam.X, p_cam.Y, p_cam.Z);
         const FQuat   rotUE = CoordConvert::ProtocolToUnrealQuat(q_cam.W, q_cam.X, q_cam.Y, q_cam.Z);
-
         const FQuat finalRot = rotUE * FQuat(EEFrameOffset);
-        GhostMeshComp->SetRelativeLocationAndRotation(posUE, finalRot);
+
+        if (bStereo_)
+        {
+            const FQuat CamRotUE = UpdateCaptureTransforms(R_HW);
+            GhostMeshComp->SetWorldLocationAndRotation(
+                GetOwner()->GetActorLocation() + CamRotUE.RotateVector(posUE),
+                CamRotUE * finalRot);
+        }
+        else
+        {
+            GhostMeshComp->SetRelativeLocationAndRotation(posUE, finalRot);
+        }
         UpdateFingerPose(LeftFingerMeshComp, RightFingerMeshComp, RightTrackedRef);
         return;
     }
@@ -297,14 +401,22 @@ void UGhostOverlayComponent::UpdateGhostPose()
     if (ComLinkRef && ComLinkRef->IsArmAlive(kRightArm)) return;
     if (!RightHandRef || !CameraRef) return;
 
-    const FTransform& CaptureTM = SceneCapture->GetComponentTransform();
-    const FTransform& HandTM    = RightHandRef->GetComponentTransform();
-    const FTransform& CamTM     = CameraRef->GetComponentTransform();
+    const FTransform& HandTM  = RightHandRef->GetComponentTransform();
+    const FTransform& CamTM   = CameraRef->GetComponentTransform();
 
-    const FVector RelPos  = CaptureTM.InverseTransformPosition(HandTM.GetLocation());
-    const FQuat   RelRot  = CaptureTM.GetRotation().Inverse() * (CamTM.GetRotation().Inverse() * HandTM.GetRotation()) * FQuat(EEFrameOffset);
-
-    GhostMeshComp->SetRelativeLocationAndRotation(RelPos, RelRot);
+    if (bStereo_)
+    {
+        GhostMeshComp->SetWorldLocationAndRotation(
+            HandTM.GetLocation(),
+            (CamTM.GetRotation().Inverse() * HandTM.GetRotation()) * FQuat(EEFrameOffset));
+    }
+    else
+    {
+        const FTransform& RefTM = SceneCapture->GetComponentTransform();
+        const FVector RelPos = RefTM.InverseTransformPosition(HandTM.GetLocation());
+        const FQuat   RelRot = RefTM.GetRotation().Inverse() * (CamTM.GetRotation().Inverse() * HandTM.GetRotation()) * FQuat(EEFrameOffset);
+        GhostMeshComp->SetRelativeLocationAndRotation(RelPos, RelRot);
+    }
     UpdateFingerPose(LeftFingerMeshComp, RightFingerMeshComp, RightTrackedRef);
 }
 
@@ -341,7 +453,6 @@ void UGhostOverlayComponent::CreateLatencyMaterial()
     ApplyMID(LeftArmRightFingerMeshComp);
 
     ApplyLatencyColor();
-    UE_LOG(LogTemp, Log, TEXT("GhostOverlay: latency MID created, param='%s'"), *LatencyColorParam.ToString());
 }
 
 // ---------------------------------------------------------------------------
@@ -433,9 +544,19 @@ void UGhostOverlayComponent::UpdateLeftArmPose()
 
         const FVector posUE = CoordConvert::ProtocolToUnreal(p_cam.X, p_cam.Y, p_cam.Z);
         const FQuat   rotUE = CoordConvert::ProtocolToUnrealQuat(q_cam.W, q_cam.X, q_cam.Y, q_cam.Z);
-
         const FQuat finalRot = rotUE * FQuat(LeftEEFrameOffset);
-        GhostLeftMeshComp->SetRelativeLocationAndRotation(posUE, finalRot);
+
+        if (bStereo_)
+        {
+            const FQuat CamRotUE = UpdateCaptureTransforms(R_HW);
+            GhostLeftMeshComp->SetWorldLocationAndRotation(
+                GetOwner()->GetActorLocation() + CamRotUE.RotateVector(posUE),
+                CamRotUE * finalRot);
+        }
+        else
+        {
+            GhostLeftMeshComp->SetRelativeLocationAndRotation(posUE, finalRot);
+        }
         UpdateFingerPose(LeftArmLeftFingerMeshComp, LeftArmRightFingerMeshComp, LeftTrackedRef);
         return;
     }
@@ -443,15 +564,23 @@ void UGhostOverlayComponent::UpdateLeftArmPose()
     if (ComLinkRef && ComLinkRef->IsArmAlive(kLeftArm)) return;
     if (!LeftHandRef || !CameraRef) return;
 
-    const FTransform& CaptureTM = SceneCapture->GetComponentTransform();
-    const FTransform& HandTM    = LeftHandRef->GetComponentTransform();
-    const FTransform& CamTM     = CameraRef->GetComponentTransform();
+    const FTransform& HandTM = LeftHandRef->GetComponentTransform();
+    const FTransform& CamTM  = CameraRef->GetComponentTransform();
 
-    const FVector RelPos = CaptureTM.InverseTransformPosition(HandTM.GetLocation());
-    const FQuat   RelRot = CaptureTM.GetRotation().Inverse()
-                         * (CamTM.GetRotation().Inverse() * HandTM.GetRotation())
-                         * FQuat(LeftEEFrameOffset);
-
-    GhostLeftMeshComp->SetRelativeLocationAndRotation(RelPos, RelRot);
+    if (bStereo_)
+    {
+        GhostLeftMeshComp->SetWorldLocationAndRotation(
+            HandTM.GetLocation(),
+            (CamTM.GetRotation().Inverse() * HandTM.GetRotation()) * FQuat(LeftEEFrameOffset));
+    }
+    else
+    {
+        const FTransform& RefTM = SceneCapture->GetComponentTransform();
+        const FVector RelPos = RefTM.InverseTransformPosition(HandTM.GetLocation());
+        const FQuat   RelRot = RefTM.GetRotation().Inverse()
+                             * (CamTM.GetRotation().Inverse() * HandTM.GetRotation())
+                             * FQuat(LeftEEFrameOffset);
+        GhostLeftMeshComp->SetRelativeLocationAndRotation(RelPos, RelRot);
+    }
     UpdateFingerPose(LeftArmLeftFingerMeshComp, LeftArmRightFingerMeshComp, LeftTrackedRef);
 }

@@ -14,7 +14,7 @@ bool UTeleOpConfig::Load(const FString& RootConfigPath) {
 
     TSharedPtr<FJsonObject> Root;
     if (!ReadJsonFile(RootConfigPath, Root)) {
-        UE_LOG(LogTemp, Error, TEXT("TeleOpConfig: FAILED — root config not found or invalid JSON: %s"), *RootConfigPath);
+        UE_LOG(LogTemp, Error, TEXT("TeleOpConfig: FAILED ï¿½ root config not found or invalid JSON: %s"), *RootConfigPath);
         return false;
     }
 
@@ -30,9 +30,12 @@ bool UTeleOpConfig::Load(const FString& RootConfigPath) {
     if (!LoadHud(BaseDir / HudPath))         return false;
 
     UE_LOG(LogTemp, Log, TEXT("TeleOpConfig: Loaded successfully"));
-    UE_LOG(LogTemp, Log, TEXT("  Network  — remote: %s  avatar: %d/%d"), *Network.RemoteIP, Network.Avatar.Send, Network.Avatar.Receive);
-    UE_LOG(LogTemp, Log, TEXT("  Stream   — %s:%d  feedback: %d  timestamp: %d  status: %d"), *Stream.RemoteIP, Stream.Port, Stream.FeedbackPort, Stream.TimestampPort, Stream.StatusPort);
-    UE_LOG(LogTemp, Log, TEXT("  HUD      — latency: %.0fms  loss: %.3f%%  fps: %.0f"), Hud.LatencyWarningMs, Hud.LossWarningPercent, Hud.FpsWarningFloor);
+    UE_LOG(LogTemp, Log, TEXT("  Network  ï¿½ remote: %s  avatar: %d/%d"), *Network.RemoteIP, Network.Avatar.Send, Network.Avatar.Receive);
+    UE_LOG(LogTemp, Log, TEXT("  Stream(right)  stereo: %s  port: %d  feedback: %d  status: %d"),
+        Stream.bStereo ? TEXT("true") : TEXT("false"),
+        Stream.RightPort, Stream.RightFeedbackPort, Stream.RightStatusPort);
+    UE_LOG(LogTemp, Log, TEXT("  Streamï¿½ %s:%d  feedback: %d  timestamp: %d  status: %d"), *Stream.RemoteIP, Stream.Port, Stream.FeedbackPort, Stream.TimestampPort, Stream.StatusPort);
+    UE_LOG(LogTemp, Log, TEXT("  HUD      ï¿½ latency: %.0fms  loss: %.3f%%  fps: %.0f"), Hud.LatencyWarningMs, Hud.LossWarningPercent, Hud.FpsWarningFloor);
 
     return true;
 }
@@ -41,7 +44,7 @@ bool UTeleOpConfig::LoadNetwork(const FString& Path) {
     TSharedPtr<FJsonObject> Obj;
     if (!ReadJsonFile(Path, Obj))
     {
-        UE_LOG(LogTemp, Error, TEXT("TeleOpConfig: FAILED — cannot read network config: %s"), *Path);
+        UE_LOG(LogTemp, Error, TEXT("TeleOpConfig: FAILED ï¿½ cannot read network config: %s"), *Path);
         return false;
     }
 
@@ -59,7 +62,7 @@ bool UTeleOpConfig::LoadStream(const FString& Path) {
     TSharedPtr<FJsonObject> Obj;
     if (!ReadJsonFile(Path, Obj))
     {
-        UE_LOG(LogTemp, Error, TEXT("TeleOpConfig: FAILED — cannot read stream config: %s"), *Path);
+        UE_LOG(LogTemp, Error, TEXT("TeleOpConfig: FAILED ï¿½ cannot read stream config: %s"), *Path);
         return false;
     }
 
@@ -71,6 +74,11 @@ bool UTeleOpConfig::LoadStream(const FString& Path) {
     if (!RequireInt(Obj, TEXT("report_interval_ms"), Stream.ReportIntervalMs, Context)) return false;
     if (!RequireInt(Obj, TEXT("status_port"), Stream.StatusPort, Context)) return false;
 
+    Obj->TryGetBoolField(TEXT("stereo"), Stream.bStereo);
+    Obj->TryGetNumberField(TEXT("right_port"),          Stream.RightPort);
+    Obj->TryGetNumberField(TEXT("right_feedback_port"), Stream.RightFeedbackPort);
+    Obj->TryGetNumberField(TEXT("right_status_port"),   Stream.RightStatusPort);
+
     return true;
 }
 
@@ -78,7 +86,7 @@ bool UTeleOpConfig::LoadHud(const FString& Path) {
     TSharedPtr<FJsonObject> Obj;
     if (!ReadJsonFile(Path, Obj))
     {
-        UE_LOG(LogTemp, Error, TEXT("TeleOpConfig: FAILED — cannot read hud config: %s"), *Path);
+        UE_LOG(LogTemp, Error, TEXT("TeleOpConfig: FAILED ï¿½ cannot read hud config: %s"), *Path);
         return false;
     }
 
@@ -105,7 +113,7 @@ bool UTeleOpConfig::ReadJsonFile(const FString& Path, TSharedPtr<FJsonObject>& O
 
 bool UTeleOpConfig::RequireString(const TSharedPtr<FJsonObject>& Obj, const FString& Key, FString& OutValue, const FString& Context) {
     if (!Obj->TryGetStringField(Key, OutValue)) {
-        UE_LOG(LogTemp, Error, TEXT("TeleOpConfig: FAILED — missing or invalid field '%s' in %s"), *Key, *Context);
+        UE_LOG(LogTemp, Error, TEXT("TeleOpConfig: FAILED ï¿½ missing or invalid field '%s' in %s"), *Key, *Context);
         return false;
     }
     return true;
@@ -113,7 +121,7 @@ bool UTeleOpConfig::RequireString(const TSharedPtr<FJsonObject>& Obj, const FStr
 
 bool UTeleOpConfig::RequireInt(const TSharedPtr<FJsonObject>& Obj, const FString& Key, int32& OutValue, const FString& Context) {
     if (!Obj->TryGetNumberField(Key, OutValue)) {
-        UE_LOG(LogTemp, Error, TEXT("TeleOpConfig: FAILED — missing or invalid field '%s' in %s"), *Key, *Context);
+        UE_LOG(LogTemp, Error, TEXT("TeleOpConfig: FAILED ï¿½ missing or invalid field '%s' in %s"), *Key, *Context);
         return false;
     }
     return true;
@@ -122,7 +130,7 @@ bool UTeleOpConfig::RequireInt(const TSharedPtr<FJsonObject>& Obj, const FString
 bool UTeleOpConfig::RequireFloat(const TSharedPtr<FJsonObject>& Obj, const FString& Key, float& OutValue, const FString& Context) {
     double Temp = 0.0;
     if (!Obj->TryGetNumberField(Key, Temp)) {
-        UE_LOG(LogTemp, Error, TEXT("TeleOpConfig: FAILED — missing or invalid field '%s' in %s"), *Key, *Context);
+        UE_LOG(LogTemp, Error, TEXT("TeleOpConfig: FAILED ï¿½ missing or invalid field '%s' in %s"), *Key, *Context);
         return false;
     }
     OutValue = static_cast<float>(Temp);
@@ -132,7 +140,7 @@ bool UTeleOpConfig::RequireFloat(const TSharedPtr<FJsonObject>& Obj, const FStri
 bool UTeleOpConfig::RequireObject(const TSharedPtr<FJsonObject>& Obj, const FString& Key, TSharedPtr<FJsonObject>& OutObject, const FString& Context) {
     const TSharedPtr<FJsonObject>* Found = nullptr;
     if (!Obj->TryGetObjectField(Key, Found) || !Found || !(*Found).IsValid()) {
-        UE_LOG(LogTemp, Error, TEXT("TeleOpConfig: FAILED — missing or invalid object '%s' in %s"), *Key, *Context);
+        UE_LOG(LogTemp, Error, TEXT("TeleOpConfig: FAILED ï¿½ missing or invalid object '%s' in %s"), *Key, *Context);
         return false;
     }
     OutObject = *Found;

@@ -9,10 +9,10 @@
 #include "Camera/CameraComponent.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "Blueprint/UserWidget.h"
+#include "Components/Image.h"
 #include "Slate/WidgetRenderer.h"
 
-// windows.h (pulled in transitively) defines UpdateResource as UpdateResourceW,
-// which shadows UTextureRenderTarget2D::UpdateResource.
+
 #ifdef UpdateResource
     #undef UpdateResource
 #endif
@@ -105,6 +105,7 @@ void UWidgetBinder::DiscoverWidgets() {
 	CachedButtons_.Empty();
 	CachedTextBlocks_.Empty();
 	CachedPlots_.Empty();
+	CachedImages_.Empty();
 	MessageLog_ = nullptr;
 
 	Widget_->WidgetTree->ForEachWidget([this](UWidget* W) {
@@ -119,6 +120,9 @@ void UWidgetBinder::DiscoverWidgets() {
 		}
 		else if (UTimeSeriesWidget* Plot = Cast<UTimeSeriesWidget>(W)) {
 			CachedPlots_.Add(W->GetFName(), Plot);
+		}
+		else if (UImage* Img = Cast<UImage>(W)) {
+			CachedImages_.Add(W->GetFName(), Img);
 		}
 		});
 }
@@ -399,6 +403,15 @@ void UWidgetBinder::BindPlot(FName WidgetName, const float* Samples, const float
 	}
 }
 
+void UWidgetBinder::SetPlotThreshold(FName WidgetName, float ThresholdHi, float ThresholdLo){
+	if (auto* Found = CachedPlots_.Find(WidgetName)){
+		if (*Found) {
+			(*Found)->Config.ThresholdHi = ThresholdHi;
+			(*Found)->Config.ThresholdLo = ThresholdLo;
+		}
+	}
+}
+
 void UWidgetBinder::SetExpansion(float Alpha) {
 	if (!Layer_ || !bIsBound_) return;
 	if (CollapsedWidth_ <= 0.0f || ExpandedWidth_ <= CollapsedWidth_) return;
@@ -426,5 +439,11 @@ void UWidgetBinder::SetVisibility(FName WidgetName, bool bVisible)
 	{
 		if (*Found)
 			(*Found)->SetVisibility(bVisible ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
+	}
+}
+
+void UWidgetBinder::SetImageColor(FName WidgetName, const FLinearColor& Color) {
+	if (auto* Found = CachedImages_.Find(WidgetName)) {
+		if (*Found) (*Found)->SetColorAndOpacity(Color);
 	}
 }

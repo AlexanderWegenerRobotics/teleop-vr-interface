@@ -502,3 +502,35 @@ extern "C" bool GStreamerGetSRTStats(void* pipeline,
     gst_object_unref(srtsrc);
     return false;
 }
+
+extern "C" bool GStreamerPopBusError(void* bus, char* OutMsg, int OutMsgLen, bool* bOutIsWarning)
+{
+    if (!bus) return false;
+    GstMessage* msg = gst_bus_pop_filtered(GST_BUS(bus),
+        (GstMessageType)(GST_MESSAGE_ERROR | GST_MESSAGE_WARNING));
+    if (!msg) return false;
+
+    GError* err = nullptr; gchar* dbg = nullptr;
+    bool bWarn = (GST_MESSAGE_TYPE(msg) == GST_MESSAGE_WARNING);
+    if (bWarn)
+        gst_message_parse_warning(msg, &err, &dbg);
+    else
+        gst_message_parse_error(msg, &err, &dbg);
+
+    if (err && OutMsg && OutMsgLen > 0)
+        snprintf(OutMsg, OutMsgLen, "%s  [debug: %s]", err->message, dbg ? dbg : "none");
+
+    if (err) g_error_free(err);
+    if (dbg) g_free(dbg);
+    gst_message_unref(msg);
+
+    if (bOutIsWarning) *bOutIsWarning = bWarn;
+    return true;
+}
+
+extern "C" bool GStreamerNvdecAvailable()
+{
+    GstElementFactory* f = gst_element_factory_find("nvh264dec");
+    if (f) { gst_object_unref(f); return true; }
+    return false;
+}
