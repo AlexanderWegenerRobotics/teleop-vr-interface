@@ -74,11 +74,16 @@ namespace CoordConvert {
         OutZ = static_cast<float>(In.Z / 100.0);
     }
 
+    // Forward path: UE (X-fwd, Y-right, Z-up)  →  protocol (X-fwd, Y-left, Z-up).
+    // The Y-axis flip is a similarity transform R_proto = R_flip * R_UE * R_flip
+    // where R_flip = diag(1,-1,1).  For a quaternion this negates the X and Z
+    // imaginary components (Y is unchanged because its axis is the flip axis).
+    // This is the exact inverse of ProtocolToUnrealQuat below.
     inline void UnrealToProtocolQuatFloat(const FQuat& Q, float& Q0, float& Q1, float& Q2, float& Q3) {
-        Q0 = static_cast<float>(Q.W);   // w
-        Q1 = static_cast<float>(Q.X);   // x
-        Q2 = static_cast<float>(Q.Y);   // y
-        Q3 = static_cast<float>(Q.Z);   // z
+        Q0 =  static_cast<float>(Q.W);   // w — unchanged
+        Q1 = -static_cast<float>(Q.X);   // x — negated  (roll axis)
+        Q2 =  static_cast<float>(Q.Y);   // y — unchanged (pitch axis, same in both frames)
+        Q3 = -static_cast<float>(Q.Z);   // z — negated  (yaw axis)
     }
 
     inline FVector ProtocolToUnreal(float X, float Y, float Z) {

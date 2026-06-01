@@ -114,18 +114,14 @@ void AOperatorPawn::BeginPlay() {
 	GstConfig.ReportIntervalMs = Config->Stream.ReportIntervalMs;
 	GstConfig.StatusPort       = Config->Stream.StatusPort;
 	VideoFeed->RegisterSource(TEXT("AvatarStream"), MakeUnique<FGStreamerSource>(GstConfig));
-	// In stereo mode a single side-by-side stream (left|right composited 2560×960)
-	// arrives on the main port.  No second source needed — the post-process material
-	// crops the left/right halves per eye.
 	VideoFeed->SetStereoMode(Config->Stream.bStereo);
 	GhostOverlay->SetStereoMode(Config->Stream.bStereo);
 
-	Super::BeginPlay();  // ← initialises all components (VideoFeed and GhostOverlay BeginPlay run here)
+	Super::BeginPlay();
 
-	// Bind ghost eye RTs to the video material now that both components are initialised.
-	// Done here rather than inside each component to avoid ordering dependencies.
-	if (Config->Stream.bStereo)
+	if (Config->Stream.bStereo) {
 		VideoFeed->SetGhostTextures(GhostOverlay->GetRenderTargetLeft(), GhostOverlay->GetRenderTargetRight());
+	}
 
 	VoiceAnnotator->OnAnnotationReceived.AddUObject(this, &AOperatorPawn::HandleVoiceAnnotation);
 
@@ -159,8 +155,7 @@ void AOperatorPawn::BeginPlay() {
 		std::string Event = EvtIt->second.as<std::string>();
 
 		if (Event == "reset_complete") {
-			if (Logger_) Logger_->LogEvent(FString::Printf(TEXT("ARM_RESET_COMPLETE device=%s"),
-				UTF8_TO_TCHAR(Device.c_str())));
+			if (Logger_) Logger_->LogEvent(FString::Printf(TEXT("ARM_RESET_COMPLETE device=%s"), UTF8_TO_TCHAR(Device.c_str())));
 			if (Device == "arm_left") {
 				LeftTracked->CaptureOrigin();
 				SendArmResume("arm_left");
@@ -209,12 +204,8 @@ void AOperatorPawn::BeginPlay() {
 
 
 void AOperatorPawn::EndPlay(const EEndPlayReason::Type EndPlayReason) {
-	if (VideoLogger_) {
-		VideoLogger_->StopLogging(TEXT("EndPlay"));
-	}
-	if (Logger_) {
-		Logger_->Close();
-	}
+	if (VideoLogger_) VideoLogger_->StopLogging(TEXT("EndPlay"));
+	if (Logger_) Logger_->Close();
 	Super::EndPlay(EndPlayReason);
 }
 
@@ -232,35 +223,33 @@ void AOperatorPawn::Tick(float DeltaTime) {
 	const FGazeData& GazeData = Gaze->GetGazeData();
 	UIBinder->SetGazeInput(GazeData);
 
-	UIBinder->SetImageColor(FName("avatar_torso"), ComLink->IsAvatarAlive() ? FLinearColor::Green : FLinearColor::Red);
+	if (Avatar == ESysState::Engaged) UIBinder->SetImageColor(FName("avatar_torso"), FLinearColor::Green); 
+	else if (OperatorState_ == ESysState::Homing || OperatorState_ == ESysState::Awaiting)
+		UIBinder->SetImageColor(FName("avatar_torso"), FLinearColor(255, 128, 13));
+	else UIBinder->SetImageColor(FName("avatar_torso"), FLinearColor::Red);
+
 	UIBinder->SetImageColor(FName("avatar_eye"), VideoFeed->IsReceiving() ? FLinearColor::Green : FLinearColor::Red);
 	UIBinder->SetImageColor(FName("avatar_left_arm"), ComLink->GetArmRemoteState(0) == SysState::ENGAGED ? FLinearColor::Green : FLinearColor::Red);
 	UIBinder->SetImageColor(FName("avatar_right_arm"), ComLink->GetArmRemoteState(1) == SysState::ENGAGED ? FLinearColor::Green : FLinearColor::Red);
 	UIBinder->SetImageColor(FName("avatar_head"), ComLink->IsHeadAlive() ? FLinearColor::Green : FLinearColor::Red);
+	UIBinder->SetVisibility(FName("videoLost"), !VideoFeed->IsReceiving());
 
 	UIBinder->SetImageColor(FName("operator_eye"), Gaze->IsTrackerConnected() ? FLinearColor::Green : FLinearColor::Red);
 	UIBinder->SetImageColor(FName("operator_left_arm"), LeftTracked->IsTracking() ? FLinearColor::Green : FLinearColor::Red);
 	UIBinder->SetImageColor(FName("operator_right_arm"), RightTracked->IsTracking() ? FLinearColor::Green : FLinearColor::Red);
 	UIBinder->SetImageColor(FName("operator_head"), bHMDOriginValid_ ? FLinearColor::Green : FLinearColor::Red);
 
-	bool bVideoLive = VideoFeed->IsReceiving();
-	UIBinder->SetText(FName("video_value"), bVideoLive ? TEXT("LIVE") : TEXT("OFFLINE"));
-	UIBinder->SetTextColor(FName("video_value"), bVideoLive ? FLinearColor::Green : FLinearColor::Red);
-	UIBinder->SetVisibility(FName("videoLost"), !bVideoLive);
-
-	bool bGazeConnected = Gaze->IsTrackerConnected();
-	UIBinder->SetText(FName("input_value"), bGazeConnected ? TEXT("CONNECTED") : TEXT("NOT FOUND"));
-	UIBinder->SetTextColor(FName("input_value"), bGazeConnected ? FLinearColor::Green : FLinearColor::Red);
-
-	UIBinder->SetText(FName("operator_state_value"), StateToString(OperatorState_));
-	UIBinder->SetText(FName("avatar_state_value"), StateToString(ComLink->GetAvatarState()));
+	ESysState av_state = ComLink->GetAvatarState();
+	if (av_state == ESysState::Engaged) UIBinder->SetImageColor(FName("operator_torso"), FLinearColor::Green);
+	else if (av_state == ESysState::Homing || av_state == ESysState::Awaiting)
+		UIBinder->SetImageColor(FName("operator_torso"), FLinearColor(255, 128, 13));
+	else UIBinder->SetImageColor(FName("operator_torso"), FLinearColor::Red);
 
 	static const TArray<FString> HealthLabels = { TEXT("NO SIGNAL"), TEXT("NORMAL"), TEXT("DEGRADED"), TEXT("CRITICAL"), TEXT("STALE") };
 	static const TArray<FLinearColor> HealthColors = { FLinearColor::Gray, FLinearColor::Green, FLinearColor::Yellow, FLinearColor::Red, FLinearColor::Gray };
 
 	uint8 HealthIdx = Stats.StreamHealthState;
-	if (HealthIdx < HealthLabels.Num())
-	{
+	if (HealthIdx < HealthLabels.Num()) {
 		UIBinder->SetText(FName("stream_health_value"), *HealthLabels[HealthIdx]);
 		UIBinder->SetTextColor(FName("stream_health_value"), HealthColors[HealthIdx]);
 	}
@@ -292,13 +281,11 @@ void AOperatorPawn::Tick(float DeltaTime) {
 		bool bLeftClutch  = LeftTracked->IsFullClutch();
 		bool bRightClutch = RightTracked->IsFullClutch();
 		if (bLeftClutch != bPrevLeftClutch_) {
-			Logger_->LogEvent(FString::Printf(TEXT("CLUTCH side=left state=%s"),
-				bLeftClutch ? TEXT("engaged") : TEXT("disengaged")));
+			Logger_->LogEvent(FString::Printf(TEXT("CLUTCH side=left state=%s"), bLeftClutch ? TEXT("engaged") : TEXT("disengaged")));
 			bPrevLeftClutch_ = bLeftClutch;
 		}
 		if (bRightClutch != bPrevRightClutch_) {
-			Logger_->LogEvent(FString::Printf(TEXT("CLUTCH side=right state=%s"),
-				bRightClutch ? TEXT("engaged") : TEXT("disengaged")));
+			Logger_->LogEvent(FString::Printf(TEXT("CLUTCH side=right state=%s"), bRightClutch ? TEXT("engaged") : TEXT("disengaged")));
 			bPrevRightClutch_ = bRightClutch;
 		}
 
