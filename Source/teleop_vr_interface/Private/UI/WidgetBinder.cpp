@@ -134,7 +134,8 @@ void UWidgetBinder::DiscoverWidgets() {
 			CachedTextBlocks_.Add(W->GetFName(), Txt);
 		}
 		else if (UVerticalBox* VBox = Cast<UVerticalBox>(W)) {
-			if (!MessageLog_) MessageLog_ = VBox;
+			if (W->GetFName() == FName("cameraMenuList")) CameraMenuList_ = VBox;
+			else if (!MessageLog_) MessageLog_ = VBox;
 		}
 		else if (UTimeSeriesWidget* Plot = Cast<UTimeSeriesWidget>(W)) {
 			CachedPlots_.Add(W->GetFName(), Plot);
@@ -328,6 +329,23 @@ void UWidgetBinder::TickComponent(float DeltaTime, ELevelTick TickType, FActorCo
 
 	RenderWidget();
 
+	if (bMenuRectsDirty_) {
+		bool bAllReady = true;
+		for (const FName& Name : DynamicMenuItems_) {
+			UWidget** W = CachedWidgets_.Find(Name);
+			if (!W || !*W) { bAllReady = false; continue; }
+			const FGeometry Geom = (*W)->GetCachedGeometry();
+			const FVector2D AbsSize = Geom.GetAbsoluteSize();
+			if (AbsSize.IsNearlyZero()) { bAllReady = false; continue; }
+			FWidgetRect Rect;
+			Rect.Position = Geom.GetAbsolutePosition();
+			Rect.Size     = AbsSize;
+			WidgetRects_.Add(Name, Rect);
+			ButtonRects_.Add(Name, Rect);
+		}
+		if (bAllReady) bMenuRectsDirty_ = false;
+	}
+
 	if (bPrintDebugInfo && FPlatformTime::Seconds() - LastLogTime_ > 0.5) {
 		FVector2D PixelPos = bGazeOnPanel ? UV * RenderSize_ : FVector2D::ZeroVector;
 		UE_LOG(LogTemp, Log, TEXT("WidgetBinder: pixel=(%.1f,%.1f) hovered=%s blinking=%d"),
@@ -394,6 +412,133 @@ void UWidgetBinder::SetButtonToHovered(FName Name) {
 	ApplyButtonStyle(Name, Brush);
 }
 
+
+void UWidgetBinder::ShowCameraMenu(const TArray<FString>& StreamNames, const FString& ActiveStream) {
+	if (!CameraMenuList_ || !Widget_) return;
+
+	HideMenu();
+
+	constexpr float R = 8.f;
+	auto MakeRoundedBrush = [](const FLinearColor& Color) -> FSlateBrush {
+		FSlateBrush B;
+		B.DrawAs    = ESlateBrushDrawType::RoundedBox;
+		B.TintColor = FSlateColor(Color);
+		B.OutlineSettings.CornerRadii = FVector4(R, R, R, R);
+		B.OutlineSettings.RoundingType = ESlateBrushRoundingType::FixedRadius;
+		return B;
+	};
+
+	FButtonStyle ItemStyle;
+	ItemStyle.Normal  = MakeRoundedBrush(FLinearColor(0.32f, 0.32f, 0.32f, 0.95f));
+	ItemStyle.Hovered = MakeRoundedBrush(FLinearColor(0.14f, 0.14f, 0.14f, 1.0f));
+	ItemStyle.Pressed = MakeRoundedBrush(FLinearColor(0.08f, 0.08f, 0.08f, 1.0f));
+
+	auto AddItem = [&](const FName& BtnName, const FString& Label, const FLinearColor& LabelColor)
+	{
+		UButton*    Btn = NewObject<UButton>(Widget_->WidgetTree);
+		UTextBlock* Lbl = NewObject<UTextBlock>(Widget_->WidgetTree);
+
+		FSlateFontInfo Font = Lbl->GetFont();
+		Font.Size = 15;
+		Lbl->SetFont(Font);
+		Lbl->SetText(FText::FromString(Label));
+		Lbl->SetColorAndOpacity(FSlateColor(LabelColor));
+		Lbl->SetJustification(ETextJustify::Center);
+
+		Btn->AddChild(Lbl);
+		FButtonStyle Style = ItemStyle;
+		Style.SetNormalPadding(FMargin(16.f, 5.f));
+		Style.SetPressedPadding(FMargin(16.f, 4.f));
+		Btn->SetStyle(Style);
+
+		UVerticalBoxSlot* Slot = CameraMenuList_->AddChildToVerticalBox(Btn);
+		if (Slot) {
+			Slot->SetPadding(FMargin(0.f, 2.f));
+			Slot->SetHorizontalAlignment(HAlign_Fill);
+			Slot->SetSize(FSlateChildSize(ESlateSizeRule::Automatic));
+		}
+
+		CachedWidgets_.Add(BtnName, Btn);
+		CachedButtons_.Add(BtnName, Btn);
+		OriginalStyles_.Add(BtnName, Style);
+		DynamicMenuItems_.Add(BtnName);
+	};
+
+	for (int32 i = 0; i < StreamNames.Num(); ++i) {
+		FName Name = FName(*FString::Printf(TEXT("__menu_%d"), i));
+		bool  bActive = (StreamNames[i] == ActiveStream);
+		FString Label = bActive ? FString::Printf(TEXT("• %s"), *StreamNames[i]) : StreamNames[i];
+		AddItem(Name, Label, bActive ? FLinearColor(0.4f, 0.8f, 1.f) : FLinearColor::White);
+	}
+
+	if (!ActiveStream.IsEmpty())
+		AddItem(FName("__menu_off"), TEXT("turn off"), FLinearColor(1.f, 0.35f, 0.35f));
+
+	SetVisibility(FName("cameraMenu"), true);
+
+	// Compute rects analytically — no Slate tick dependency.
+	// ForceLayoutPrepass populates GetDesiredSize() on all widgets immediately.
+	if (Widget_) Widget_->ForceLayoutPrepass();
+
+	UWidget*          MenuWidget   = CachedWidgets_.FindRef(FName("cameraMenu"));
+	UCanvasPanelSlot* MenuSlot     = MenuWidget ? Cast<UCanvasPanelSlot>(MenuWidget->Slot) : nullptr;
+
+	if (MenuSlot) {
+		const FVector2D DesiredSize = MenuWidget->GetDesiredSize();
+		const FVector2D SlotPos     = MenuSlot->GetPosition();
+		const FVector2D Alignment   = MenuSlot->GetAlignment();
+		const FAnchors  Anchors     = MenuSlot->GetAnchors();
+
+		const FVector2D AnchorPos(RenderSize_.X * Anchors.Minimum.X, RenderSize_.Y * Anchors.Minimum.Y);
+		const FVector2D MenuTL(
+			AnchorPos.X + SlotPos.X - DesiredSize.X * Alignment.X,
+			AnchorPos.Y + SlotPos.Y - DesiredSize.Y * Alignment.Y);
+
+		// Match the content padding set on cameraMenuBorder in the Blueprint.
+		constexpr float PadH  = 12.f;
+		constexpr float PadV  = 8.f;
+		constexpr float SlotV = 2.f;
+		float Y = MenuTL.Y + PadV;
+
+		for (const FName& Name : DynamicMenuItems_) {
+			UWidget* Item = CachedWidgets_.FindRef(Name);
+			if (!Item) continue;
+			Y += SlotV;
+			FWidgetRect Rect;
+			Rect.Position = FVector2D(MenuTL.X + PadH, Y);
+			Rect.Size     = FVector2D(DesiredSize.X - PadH * 2.f, Item->GetDesiredSize().Y);
+			WidgetRects_.Add(Name, Rect);
+			ButtonRects_.Add(Name, Rect);
+			Y += Rect.Size.Y + SlotV;
+		}
+		bMenuRectsDirty_ = false;
+	} else {
+		bMenuRectsDirty_ = true;
+	}
+
+}
+
+void UWidgetBinder::HideMenu() {
+	SetVisibility(FName("cameraMenu"), false);
+
+	if (HoveredButton_ != FName() && DynamicMenuItems_.Contains(HoveredButton_)) {
+		SetButtonToNormal(HoveredButton_);
+		HoveredButton_ = FName();
+	}
+
+	for (const FName& Name : DynamicMenuItems_) {
+		CachedButtons_.Remove(Name);
+		CachedWidgets_.Remove(Name);
+		ButtonRects_.Remove(Name);
+		WidgetRects_.Remove(Name);
+		OriginalStyles_.Remove(Name);
+		ToggledButtons_.Remove(Name);
+		LockedButtons_.Remove(Name);
+	}
+	DynamicMenuItems_.Empty();
+
+	if (CameraMenuList_) CameraMenuList_->ClearChildren();
+}
 
 void UWidgetBinder::UpdateMessages(float DeltaTime) {
 	if (!MessageLog_) return;

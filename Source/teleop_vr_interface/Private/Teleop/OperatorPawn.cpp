@@ -136,7 +136,8 @@ void AOperatorPawn::BeginPlay() {
 
 	UIBinder->Initialize(UIWidgetClass, VRCamera, FVector2D(1280.0f, 800.0f), 690.0f, 1);
 	UIBinder->SetVisibility(FName("statsPanel"), false);
-	UIBinder->SetVisibility(FName("pip_image"), false);
+	UIBinder->SetVisibility(FName("pip_canvas"), false);
+	UIBinder->SetVisibility(FName("cameraMenu"), false);
 
 	if (Config->Stream.bPiPEnabled) {
 		FReceiverConfig PiPConfig;
@@ -283,12 +284,16 @@ void AOperatorPawn::Tick(float DeltaTime) {
 
 	UpdateInfoBar();
 
-	if (PiPSource_) {
+	if (PiPSource_ && !ActivePiPStreamName_.IsEmpty()) {
 		PiPSource_->UpdateTexture(PiPTexture_);
 		const bool bReceiving = PiPSource_->GetStats().bIsReceiving;
-		UIBinder->SetVisibility(FName("pip_image"), bReceiving);
+		UIBinder->SetVisibility(FName("pip_canvas"), bReceiving);
 		if (bReceiving && PiPTexture_)
 			UIBinder->SetImageTexture(FName("pip_image"), PiPTexture_);
+		if (!bReceiving) {
+			ActivePiPStreamName_ = TEXT("");
+			UIBinder->SetVisibility(FName("pip_canvas"), false);
+		}
 	}
 
 	bool bLeftGrasping  = LeftTracked->IsGraspHeld();
@@ -547,6 +552,38 @@ void AOperatorPawn::UpdateStateMachine() {
 	if (ButtonPressed == FName("statisticsButton")) {
 		bStatsVisible_ = !bStatsVisible_;
 		UIBinder->SetVisibility(FName("statsPanel"), bStatsVisible_);
+	}
+
+	if (ButtonPressed == FName("viewpointButton")) {
+		if (bMenuOpen_) {
+			UIBinder->HideMenu();
+			bMenuOpen_ = false;
+			UIBinder->SetButtonToggled(FName("viewpointButton"), !ActivePiPStreamName_.IsEmpty());
+		} else {
+			CurrentMenuStreams_.Empty();
+			if (PiPSource_) CurrentMenuStreams_.Add(TEXT("camera right"));
+			UIBinder->ShowCameraMenu(CurrentMenuStreams_, ActivePiPStreamName_);
+			bMenuOpen_ = true;
+			UIBinder->SetButtonToggled(FName("viewpointButton"), true);
+		}
+	}
+
+	if (ButtonPressed != FName() && ButtonPressed.ToString().StartsWith(TEXT("__menu_"))) {
+		if (ButtonPressed == FName("__menu_off")) {
+			ActivePiPStreamName_ = TEXT("");
+			UIBinder->SetVisibility(FName("pip_canvas"), false);
+			UIBinder->SetButtonToggled(FName("viewpointButton"), false);
+		} else {
+			for (int32 i = 0; i < CurrentMenuStreams_.Num(); ++i) {
+				if (ButtonPressed == FName(*FString::Printf(TEXT("__menu_%d"), i))) {
+					ActivePiPStreamName_ = CurrentMenuStreams_[i];
+					break;
+				}
+			}
+			UIBinder->SetButtonToggled(FName("viewpointButton"), true);
+		}
+		UIBinder->HideMenu();
+		bMenuOpen_ = false;
 	}
 }
 

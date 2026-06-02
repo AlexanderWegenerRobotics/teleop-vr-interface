@@ -120,5 +120,8 @@ private:
 	bool  bStatsVisible_    = false;
 
 	TUniquePtr<IVideoSource> PiPSource_;
-	UTexture2D*              PiPTexture_ = nullptr;
+	UTexture2D*              PiPTexture_          = nullptr;
+	FString                  ActivePiPStreamName_;
+	TArray<FString>          CurrentMenuStreams_;
+	bool                     bMenuOpen_            = false;
 };

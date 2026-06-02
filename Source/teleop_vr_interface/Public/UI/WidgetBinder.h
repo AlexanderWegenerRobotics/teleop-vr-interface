@@ -64,6 +64,9 @@ public:
 	void SetImageColor(FName WidgetName, const FLinearColor& Color);
 	void SetImageTexture(FName WidgetName, UTexture2D* Texture);
 
+	void ShowCameraMenu(const TArray<FString>& StreamNames, const FString& ActiveStream);
+	void HideMenu();
+
 	FName GetHoveredButton() const { return HoveredButton_; }
 	FName ConsumePress();
 	FName ConsumeRejection();
@@ -119,7 +122,11 @@ private:
 	UPROPERTY() TMap<FName, FWidgetRect> WidgetRects_;
 	UPROPERTY() TMap<FName, FWidgetRect> ButtonRects_;
 	UPROPERTY() TMap<FName, UImage*> CachedImages_;
-	UVerticalBox* MessageLog_ = nullptr;
+	UVerticalBox* MessageLog_      = nullptr;
+	UVerticalBox* CameraMenuList_  = nullptr;
+
+	TArray<FName> DynamicMenuItems_;
+	bool          bMenuRectsDirty_ = false;
 
 	TSet<FName> LockedButtons_;
 	TSet<FName> ToggledButtons_;
