@@ -234,6 +234,7 @@ void AOperatorPawn::BeginPlay() {
 
 
 void AOperatorPawn::EndPlay(const EEndPlayReason::Type EndPlayReason) {
+	FlushRenderingCommands();
 	for (auto& Src : PiPSources_) if (Src) Src->Stop();
 	if (VideoLogger_) VideoLogger_->StopLogging(TEXT("EndPlay"));
 	if (Logger_) Logger_->Close();
