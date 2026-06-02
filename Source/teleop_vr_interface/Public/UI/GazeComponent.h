@@ -31,7 +31,7 @@ public:
     virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 
     const FGazeData& GetGazeData() const { return GazeData_; }
-    bool IsTrackerConnected() const { return bIsDeviceConnected; }
+    bool IsTrackerConnected() const { return bTrackerReady_ && bIsDeviceConnected; }
 
     UPROPERTY(EditAnywhere, Category = "Gaze")
     float ConfidenceThreshold = 0.5f;
@@ -50,6 +50,9 @@ private:
     bool bIsDeviceConnected = false;
 
     TArray<FVector> DirectionHistory_;
-    int32 SmoothingFrames_ = 5;
-    double LastLogTime_ = 0.0;
+    int32  SmoothingFrames_   = 5;
+    double LastLogTime_       = 0.0;
+    bool   bTrackerReady_     = false;
+    float  RetryAccum_        = 0.0f;
+    static constexpr float RetryInterval_ = 2.0f;
 };

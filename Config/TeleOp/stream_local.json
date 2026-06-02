@@ -9,8 +9,8 @@
     "right_port":           5006,
     "right_feedback_port":  5008,
     "right_status_port":    5009,
-    "pip_enabled":          true,
-    "pip_port":             5010,
-    "pip_feedback_port":    5011,
-    "pip_status_port":      5012
+    "pip_streams": [
+        { "name": "camera right", "port": 5010, "feedback_port": 5011, "status_port": 5012 },
+        { "name": "camera left",  "port": 5013, "feedback_port": 5014, "status_port": 5015 }
+    ]
 }

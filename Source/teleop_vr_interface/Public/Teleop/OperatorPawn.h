@@ -119,8 +119,9 @@ private:
 	bool  bPrevRightClutch_ = false;
 	bool  bStatsVisible_    = false;
 
-	TUniquePtr<IVideoSource> PiPSource_;
-	UTexture2D*              PiPTexture_          = nullptr;
+	TArray<TUniquePtr<IVideoSource>> PiPSources_;
+	TArray<UTexture2D*>              PiPTextures_;
+	TArray<FString>                  PiPSourceNames_;
 	FString                  ActivePiPStreamName_;
 	TArray<FString>          CurrentMenuStreams_;
 	bool                     bMenuOpen_            = false;

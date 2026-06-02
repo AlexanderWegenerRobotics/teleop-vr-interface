@@ -139,16 +139,19 @@ void AOperatorPawn::BeginPlay() {
 	UIBinder->SetVisibility(FName("pip_canvas"), false);
 	UIBinder->SetVisibility(FName("cameraMenu"), false);
 
-	if (Config->Stream.bPiPEnabled) {
-		FReceiverConfig PiPConfig;
-		PiPConfig.Port             = Config->Stream.PiPPort;
-		PiPConfig.FeedbackPort     = Config->Stream.PiPFeedbackPort;
-		PiPConfig.SenderIP         = Config->Stream.RemoteIP;
-		PiPConfig.ReportIntervalMs = Config->Stream.ReportIntervalMs;
-		PiPConfig.StatusPort       = Config->Stream.PiPStatusPort;
-		PiPSource_ = MakeUnique<FGStreamerSource>(PiPConfig);
-		PiPSource_->Initialize();
-		PiPSource_->Start();
+	for (const FPiPStreamConfig& S : Config->Stream.PiPStreams) {
+		FReceiverConfig Cfg;
+		Cfg.Port             = S.Port;
+		Cfg.FeedbackPort     = S.FeedbackPort;
+		Cfg.SenderIP         = Config->Stream.RemoteIP;
+		Cfg.ReportIntervalMs = Config->Stream.ReportIntervalMs;
+		Cfg.StatusPort       = S.StatusPort;
+		auto Src = MakeUnique<FGStreamerSource>(Cfg);
+		Src->Initialize();
+		Src->Start();
+		PiPSources_.Add(MoveTemp(Src));
+		PiPTextures_.Add(nullptr);
+		PiPSourceNames_.Add(S.Name);
 	}
 	
 	const float LatencyWarn = Config->Hud.LatencyWarningMs;
@@ -231,7 +234,7 @@ void AOperatorPawn::BeginPlay() {
 
 
 void AOperatorPawn::EndPlay(const EEndPlayReason::Type EndPlayReason) {
-	if (PiPSource_) PiPSource_->Stop();
+	for (auto& Src : PiPSources_) if (Src) Src->Stop();
 	if (VideoLogger_) VideoLogger_->StopLogging(TEXT("EndPlay"));
 	if (Logger_) Logger_->Close();
 	Super::EndPlay(EndPlayReason);
@@ -284,15 +287,18 @@ void AOperatorPawn::Tick(float DeltaTime) {
 
 	UpdateInfoBar();
 
-	if (PiPSource_ && !ActivePiPStreamName_.IsEmpty()) {
-		PiPSource_->UpdateTexture(PiPTexture_);
-		const bool bReceiving = PiPSource_->GetStats().bIsReceiving;
-		UIBinder->SetVisibility(FName("pip_canvas"), bReceiving);
-		if (bReceiving && PiPTexture_)
-			UIBinder->SetImageTexture(FName("pip_image"), PiPTexture_);
-		if (!bReceiving) {
-			ActivePiPStreamName_ = TEXT("");
-			UIBinder->SetVisibility(FName("pip_canvas"), false);
+	if (!ActivePiPStreamName_.IsEmpty()) {
+		const int32 Idx = PiPSourceNames_.IndexOfByKey(ActivePiPStreamName_);
+		if (Idx != INDEX_NONE) {
+			PiPSources_[Idx]->UpdateTexture(PiPTextures_[Idx]);
+			const bool bReceiving = PiPSources_[Idx]->GetStats().bIsReceiving;
+			UIBinder->SetVisibility(FName("pip_canvas"), bReceiving);
+			if (bReceiving && PiPTextures_[Idx])
+				UIBinder->SetImageTexture(FName("pip_image"), PiPTextures_[Idx]);
+			if (!bReceiving) {
+				ActivePiPStreamName_ = TEXT("");
+				UIBinder->SetVisibility(FName("pip_canvas"), false);
+			}
 		}
 	}
 
@@ -560,8 +566,7 @@ void AOperatorPawn::UpdateStateMachine() {
 			bMenuOpen_ = false;
 			UIBinder->SetButtonToggled(FName("viewpointButton"), !ActivePiPStreamName_.IsEmpty());
 		} else {
-			CurrentMenuStreams_.Empty();
-			if (PiPSource_) CurrentMenuStreams_.Add(TEXT("camera right"));
+			CurrentMenuStreams_ = PiPSourceNames_;
 			UIBinder->ShowCameraMenu(CurrentMenuStreams_, ActivePiPStreamName_);
 			bMenuOpen_ = true;
 			UIBinder->SetButtonToggled(FName("viewpointButton"), true);

@@ -12,16 +12,30 @@ UGazeComponent::UGazeComponent() {
 
 void UGazeComponent::BeginPlay() {
     Super::BeginPlay();
-    if (!UEyeTrackerFunctionLibrary::IsEyeTrackerConnected()) {
-        UE_LOG(LogTemp, Warning, TEXT("GazeComponent: no eye tracking device found"));
-    }
-    else {
+    bTrackerReady_ = UEyeTrackerFunctionLibrary::IsEyeTrackerConnected();
+    if (bTrackerReady_) {
         UE_LOG(LogTemp, Log, TEXT("GazeComponent: eye tracking device ready"));
+    } else {
+        UE_LOG(LogTemp, Warning, TEXT("GazeComponent: eye tracker not ready at BeginPlay - will retry every %.0fs"), RetryInterval_);
     }
 }
 
 void UGazeComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) {
     Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
+
+    if (!bTrackerReady_) {
+        RetryAccum_ += DeltaTime;
+        if (RetryAccum_ >= RetryInterval_) {
+            RetryAccum_ = 0.0f;
+            bTrackerReady_ = UEyeTrackerFunctionLibrary::IsEyeTrackerConnected();
+            if (bTrackerReady_) {
+                UE_LOG(LogTemp, Log, TEXT("GazeComponent: eye tracker connected on retry"));
+            } else {
+                UE_LOG(LogTemp, Warning, TEXT("GazeComponent: eye tracker still not ready - retrying..."));
+            }
+        }
+        return;
+    }
 
     FEyeTrackerGazeData RawGaze;
     if (!UEyeTrackerFunctionLibrary::GetGazeData(RawGaze)) return;

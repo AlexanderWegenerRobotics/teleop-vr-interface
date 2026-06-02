@@ -78,10 +78,20 @@ bool UTeleOpConfig::LoadStream(const FString& Path) {
     Obj->TryGetNumberField(TEXT("right_port"),          Stream.RightPort);
     Obj->TryGetNumberField(TEXT("right_feedback_port"), Stream.RightFeedbackPort);
     Obj->TryGetNumberField(TEXT("right_status_port"),   Stream.RightStatusPort);
-    Obj->TryGetBoolField  (TEXT("pip_enabled"),         Stream.bPiPEnabled);
-    Obj->TryGetNumberField(TEXT("pip_port"),            Stream.PiPPort);
-    Obj->TryGetNumberField(TEXT("pip_feedback_port"),   Stream.PiPFeedbackPort);
-    Obj->TryGetNumberField(TEXT("pip_status_port"),     Stream.PiPStatusPort);
+    Stream.PiPStreams.Empty();
+    const TArray<TSharedPtr<FJsonValue>>* PiPArray = nullptr;
+    if (Obj->TryGetArrayField(TEXT("pip_streams"), PiPArray) && PiPArray) {
+        for (const auto& Val : *PiPArray) {
+            const TSharedPtr<FJsonObject>* Entry = nullptr;
+            if (!Val->TryGetObject(Entry) || !Entry) continue;
+            FPiPStreamConfig S;
+            (*Entry)->TryGetStringField(TEXT("name"),          S.Name);
+            (*Entry)->TryGetNumberField(TEXT("port"),          S.Port);
+            (*Entry)->TryGetNumberField(TEXT("feedback_port"), S.FeedbackPort);
+            (*Entry)->TryGetNumberField(TEXT("status_port"),   S.StatusPort);
+            Stream.PiPStreams.Add(S);
+        }
+    }
 
     return true;
 }

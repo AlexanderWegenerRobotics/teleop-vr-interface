@@ -24,6 +24,16 @@ struct FNetworkConfig
 };
 
 USTRUCT()
+struct FPiPStreamConfig
+{
+    GENERATED_BODY()
+    FString Name;
+    int32   Port             = 5010;
+    int32   FeedbackPort     = 5011;
+    int32   StatusPort       = 5012;
+};
+
+USTRUCT()
 struct FStreamConfig
 {
     GENERATED_BODY()
@@ -37,10 +47,7 @@ struct FStreamConfig
     int32   RightPort             = 5006;
     int32   RightFeedbackPort     = 5008;
     int32   RightStatusPort       = 5009;
-    bool    bPiPEnabled           = false;
-    int32   PiPPort               = 5010;
-    int32   PiPFeedbackPort       = 5011;
-    int32   PiPStatusPort         = 5012;
+    TArray<FPiPStreamConfig> PiPStreams;
 };
 
 USTRUCT()
