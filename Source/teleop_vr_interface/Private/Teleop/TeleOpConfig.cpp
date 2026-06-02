@@ -78,6 +78,10 @@ bool UTeleOpConfig::LoadStream(const FString& Path) {
     Obj->TryGetNumberField(TEXT("right_port"),          Stream.RightPort);
     Obj->TryGetNumberField(TEXT("right_feedback_port"), Stream.RightFeedbackPort);
     Obj->TryGetNumberField(TEXT("right_status_port"),   Stream.RightStatusPort);
+    Obj->TryGetBoolField  (TEXT("pip_enabled"),         Stream.bPiPEnabled);
+    Obj->TryGetNumberField(TEXT("pip_port"),            Stream.PiPPort);
+    Obj->TryGetNumberField(TEXT("pip_feedback_port"),   Stream.PiPFeedbackPort);
+    Obj->TryGetNumberField(TEXT("pip_status_port"),     Stream.PiPStatusPort);
 
     return true;
 }

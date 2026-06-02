@@ -470,3 +470,17 @@ void UWidgetBinder::SetImageColor(FName WidgetName, const FLinearColor& Color) {
 		if (*Found) (*Found)->SetColorAndOpacity(Color);
 	}
 }
+
+void UWidgetBinder::SetImageTexture(FName WidgetName, UTexture2D* Texture) {
+	if (!Texture) return;
+	if (auto* Found = CachedImages_.Find(WidgetName)) {
+		if (!*Found) return;
+		const int32 W = Texture->GetSizeX();
+		const int32 H = Texture->GetSizeY();
+		FSlateBrush Brush;
+		Brush.SetResourceObject(Texture);
+		Brush.ImageSize = FVector2D(W, H);
+		Brush.DrawAs   = ESlateBrushDrawType::Image;
+		(*Found)->SetBrush(Brush);
+	}
+}

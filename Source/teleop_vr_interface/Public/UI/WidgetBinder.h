@@ -62,6 +62,7 @@ public:
 	void SetVisibility(FName WidgetName, bool bVisible);
 	UTextureRenderTarget2D* GetRenderTarget() const { return RenderTarget_; }
 	void SetImageColor(FName WidgetName, const FLinearColor& Color);
+	void SetImageTexture(FName WidgetName, UTexture2D* Texture);
 
 	FName GetHoveredButton() const { return HoveredButton_; }
 	FName ConsumePress();

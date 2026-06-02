@@ -136,6 +136,19 @@ void AOperatorPawn::BeginPlay() {
 
 	UIBinder->Initialize(UIWidgetClass, VRCamera, FVector2D(1280.0f, 800.0f), 690.0f, 1);
 	UIBinder->SetVisibility(FName("statsPanel"), false);
+	UIBinder->SetVisibility(FName("pip_image"), false);
+
+	if (Config->Stream.bPiPEnabled) {
+		FReceiverConfig PiPConfig;
+		PiPConfig.Port             = Config->Stream.PiPPort;
+		PiPConfig.FeedbackPort     = Config->Stream.PiPFeedbackPort;
+		PiPConfig.SenderIP         = Config->Stream.RemoteIP;
+		PiPConfig.ReportIntervalMs = Config->Stream.ReportIntervalMs;
+		PiPConfig.StatusPort       = Config->Stream.PiPStatusPort;
+		PiPSource_ = MakeUnique<FGStreamerSource>(PiPConfig);
+		PiPSource_->Initialize();
+		PiPSource_->Start();
+	}
 	
 	const float LatencyWarn = Config->Hud.LatencyWarningMs;
 	UIBinder->BindPlot(FName("videoLatencyPlot"), LatencyHistory.GetSamplesPtr(), nullptr, LatencyHistory.Capacity(), LatencyHistory.GetHeadPtr(), 0.0f, LatencyWarn * 2.0f);
@@ -217,6 +230,7 @@ void AOperatorPawn::BeginPlay() {
 
 
 void AOperatorPawn::EndPlay(const EEndPlayReason::Type EndPlayReason) {
+	if (PiPSource_) PiPSource_->Stop();
 	if (VideoLogger_) VideoLogger_->StopLogging(TEXT("EndPlay"));
 	if (Logger_) Logger_->Close();
 	Super::EndPlay(EndPlayReason);
@@ -268,6 +282,14 @@ void AOperatorPawn::Tick(float DeltaTime) {
 	}
 
 	UpdateInfoBar();
+
+	if (PiPSource_) {
+		PiPSource_->UpdateTexture(PiPTexture_);
+		const bool bReceiving = PiPSource_->GetStats().bIsReceiving;
+		UIBinder->SetVisibility(FName("pip_image"), bReceiving);
+		if (bReceiving && PiPTexture_)
+			UIBinder->SetImageTexture(FName("pip_image"), PiPTexture_);
+	}
 
 	bool bLeftGrasping  = LeftTracked->IsGraspHeld();
 	bool bRightGrasping = RightTracked->IsGraspHeld();

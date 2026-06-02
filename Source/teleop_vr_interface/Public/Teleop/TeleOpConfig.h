@@ -37,6 +37,10 @@ struct FStreamConfig
     int32   RightPort             = 5006;
     int32   RightFeedbackPort     = 5008;
     int32   RightStatusPort       = 5009;
+    bool    bPiPEnabled           = false;
+    int32   PiPPort               = 5010;
+    int32   PiPFeedbackPort       = 5011;
+    int32   PiPStatusPort         = 5012;
 };
 
 USTRUCT()

@@ -9,6 +9,7 @@
 #include "EnhancedInputSubsystems.h"
 #include "Input/TrackedControllerComponent.h"
 #include "Video/VideoFeedComponent.h"
+#include "Video/IVideoSource.h"
 #include "Networking/ComLink.h"
 #include "UI/GazeComponent.h"
 #include "UI/WidgetBinder.h"
@@ -117,4 +118,7 @@ private:
 	bool  bPrevLeftClutch_  = false;
 	bool  bPrevRightClutch_ = false;
 	bool  bStatsVisible_    = false;
+
+	TUniquePtr<IVideoSource> PiPSource_;
+	UTexture2D*              PiPTexture_ = nullptr;
 };
