@@ -29,7 +29,9 @@ struct FLogFrame
 struct FLayerSource
 {
     TFunction<UTexture* ()> GetTexture;
-    int32 Priority = 0;
+    int32     Priority  = 0;
+    FVector2D UVOffset  = FVector2D::ZeroVector;
+    FVector2D UVSize    = FVector2D::UnitVector;
 };
 
 UCLASS()
@@ -42,7 +44,9 @@ public:
     virtual ~AVideoLogger() override;
 
     TArray<FLayerSource> LayerSources;
-    void AddLayerSource(TFunction<UTexture* ()> Getter, int32 Priority);
+    void AddLayerSource(TFunction<UTexture* ()> Getter, int32 Priority,
+                        FVector2D UVOffset = FVector2D::ZeroVector,
+                        FVector2D UVSize   = FVector2D::UnitVector);
 
     // Output control — set before StartLogging.
     UPROPERTY(EditAnywhere, Category = "VideoLogger") bool bEnableRawVideo = true;

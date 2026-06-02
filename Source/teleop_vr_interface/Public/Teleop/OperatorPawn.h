@@ -102,6 +102,12 @@ private:
 	float VideoQuadWidth_  = 0.f;
 	float VideoQuadHeight_ = 0.f;
 
+	void UpdateInfoBar();
+
+	// Session tracking
+	double SessionStartTime_ = 0.0;
+	int32  EpisodeCount_     = 0;
+
 	// Logging
 	TUniquePtr<FTeleOpLogger> Logger_;
 	float LastHeadPan_   = 0.f;
@@ -110,4 +116,5 @@ private:
 	uint8 PrevRightGear_ = 255;
 	bool  bPrevLeftClutch_  = false;
 	bool  bPrevRightClutch_ = false;
+	bool  bStatsVisible_    = false;
 };

@@ -220,7 +220,7 @@ void AVideoLogger::CaptureFrame(const FFrameBundle& Bundle)
             EBlendMode Blend = (Src.Priority == 0) ? BLEND_Opaque : BLEND_Translucent;
             Canvas->K2_DrawTexture(Tex, FVector2D::ZeroVector,
                 FVector2D((float)LogW, (float)LogH),
-                FVector2D::ZeroVector, FVector2D::UnitVector,
+                Src.UVOffset, Src.UVSize,
                 FLinearColor::White, Blend);
         }
     }
@@ -416,14 +416,15 @@ void AVideoLogger::AppendFrameJsonl(const FFrameBundle& B)
         FFileHelper::EEncodingOptions::AutoDetect, &IFileManager::Get(), FILEWRITE_Append);
 }
 
-void AVideoLogger::AddLayerSource(TFunction<UTexture* ()> Getter, int32 Priority)
+void AVideoLogger::AddLayerSource(TFunction<UTexture* ()> Getter, int32 Priority,
+                                   FVector2D UVOffset, FVector2D UVSize)
 {
     FLayerSource Src;
     Src.GetTexture = MoveTemp(Getter);
-    Src.Priority = Priority;
+    Src.Priority   = Priority;
+    Src.UVOffset   = UVOffset;
+    Src.UVSize     = UVSize;
     LayerSources.Add(MoveTemp(Src));
     LayerSources.Sort([](const FLayerSource& A, const FLayerSource& B)
-        {
-            return A.Priority < B.Priority;
-        });
+        { return A.Priority < B.Priority; });
 }

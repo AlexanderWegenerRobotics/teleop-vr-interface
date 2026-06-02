@@ -45,7 +45,7 @@ AOperatorPawn::AOperatorPawn() {
 	UIBinder = CreateDefaultSubobject<UWidgetBinder>(TEXT("UIBinder"));
 	LeftTracked = CreateDefaultSubobject<UTrackedControllerComponent>(TEXT("LeftTracked"));
 	RightTracked = CreateDefaultSubobject<UTrackedControllerComponent>(TEXT("RightTracked"));
-	VoiceAnnotator = CreateDefaultSubobject<UVoiceAnnotatorComponent>(TEXT("VoiceAnnotator"));
+	//VoiceAnnotator = CreateDefaultSubobject<UVoiceAnnotatorComponent>(TEXT("VoiceAnnotator"));
 	GhostOverlay = CreateDefaultSubobject<UGhostOverlayComponent>(TEXT("GhostOverlay"));
 	GhostOverlay->SetCamera(VRCamera);
 	GhostOverlay->SetComLink(ComLink);
@@ -123,7 +123,7 @@ void AOperatorPawn::BeginPlay() {
 		VideoFeed->SetGhostTextures(GhostOverlay->GetRenderTargetLeft(), GhostOverlay->GetRenderTargetRight());
 	}
 
-	VoiceAnnotator->OnAnnotationReceived.AddUObject(this, &AOperatorPawn::HandleVoiceAnnotation);
+	//VoiceAnnotator->OnAnnotationReceived.AddUObject(this, &AOperatorPawn::HandleVoiceAnnotation);
 
 	if (APlayerController* PC = Cast<APlayerController>(GetController())) {
 		if (UEnhancedInputLocalPlayerSubsystem* Subsystem = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(PC->GetLocalPlayer())) {
@@ -134,7 +134,8 @@ void AOperatorPawn::BeginPlay() {
 	LeftTracked->bDrawDebugRay = true;
 	RightTracked->bDrawDebugRay = true;
 
-	UIBinder->Initialize(UIWidgetClass, VRCamera, FVector2D(1280.0f, 720.0f), 690.0f, 1);
+	UIBinder->Initialize(UIWidgetClass, VRCamera, FVector2D(1280.0f, 800.0f), 690.0f, 1);
+	UIBinder->SetVisibility(FName("statsPanel"), false);
 	
 	const float LatencyWarn = Config->Hud.LatencyWarningMs;
 	UIBinder->BindPlot(FName("videoLatencyPlot"), LatencyHistory.GetSamplesPtr(), nullptr, LatencyHistory.Capacity(), LatencyHistory.GetHeadPtr(), 0.0f, LatencyWarn * 2.0f);
@@ -182,8 +183,18 @@ void AOperatorPawn::BeginPlay() {
 	}
 
 	if (VideoLogger_) {
-		VideoLogger_->AddLayerSource([this]() -> UTexture* { return VideoFeed->GetVideoTexture(); }, 0);
-		VideoLogger_->AddLayerSource([this]() -> UTexture* { return static_cast<UTexture*>(GhostOverlay->GetRenderTarget()); }, 1);
+		FVector2D VideoUVOffset = FVector2D::ZeroVector;
+		FVector2D VideoUVSize   = FVector2D::UnitVector;
+		if (VideoFeed->IsStereoMode()) {
+			VideoUVOffset = FVector2D(0.0f, 0.0f);
+			VideoUVSize   = FVector2D(0.5f, 1.0f);
+		}
+		VideoLogger_->AddLayerSource([this]() -> UTexture* { return VideoFeed->GetVideoTexture(); }, 0, VideoUVOffset, VideoUVSize);
+		if (VideoFeed->IsStereoMode()) {
+			VideoLogger_->AddLayerSource([this]() -> UTexture* { return static_cast<UTexture*>(GhostOverlay->GetRenderTargetLeft()); }, 1);
+		} else {
+			VideoLogger_->AddLayerSource([this]() -> UTexture* { return static_cast<UTexture*>(GhostOverlay->GetRenderTarget()); }, 1);
+		}
 		VideoLogger_->AddLayerSource([this]() -> UTexture* { return static_cast<UTexture*>(UIBinder->GetRenderTarget()); }, 2);
 
 		VideoLogger_->QuadWidth = VideoQuadWidth_;
@@ -200,6 +211,8 @@ void AOperatorPawn::BeginPlay() {
 	Logger_ = MakeUnique<FTeleOpLogger>();
 	FString SessionDir = Logger_->Open(FPaths::ProjectDir() / LogBaseDirectory);
 	UE_LOG(LogTemp, Log, TEXT("OperatorPawn: logging to %s"), *SessionDir);
+
+	SessionStartTime_ = FPlatformTime::Seconds();
 }
 
 
@@ -223,7 +236,7 @@ void AOperatorPawn::Tick(float DeltaTime) {
 	const FGazeData& GazeData = Gaze->GetGazeData();
 	UIBinder->SetGazeInput(GazeData);
 
-	if (Avatar == ESysState::Engaged) UIBinder->SetImageColor(FName("avatar_torso"), FLinearColor::Green); 
+	if (ComLink->GetAvatarState() == ESysState::Engaged) UIBinder->SetImageColor(FName("avatar_torso"), FLinearColor::Green);
 	else if (OperatorState_ == ESysState::Homing || OperatorState_ == ESysState::Awaiting)
 		UIBinder->SetImageColor(FName("avatar_torso"), FLinearColor(255, 128, 13));
 	else UIBinder->SetImageColor(FName("avatar_torso"), FLinearColor::Red);
@@ -232,7 +245,7 @@ void AOperatorPawn::Tick(float DeltaTime) {
 	UIBinder->SetImageColor(FName("avatar_left_arm"), ComLink->GetArmRemoteState(0) == SysState::ENGAGED ? FLinearColor::Green : FLinearColor::Red);
 	UIBinder->SetImageColor(FName("avatar_right_arm"), ComLink->GetArmRemoteState(1) == SysState::ENGAGED ? FLinearColor::Green : FLinearColor::Red);
 	UIBinder->SetImageColor(FName("avatar_head"), ComLink->IsHeadAlive() ? FLinearColor::Green : FLinearColor::Red);
-	UIBinder->SetVisibility(FName("videoLost"), !VideoFeed->IsReceiving());
+	UIBinder->SetVisibility(FName("videoLostInfo"), !VideoFeed->IsReceiving());
 
 	UIBinder->SetImageColor(FName("operator_eye"), Gaze->IsTrackerConnected() ? FLinearColor::Green : FLinearColor::Red);
 	UIBinder->SetImageColor(FName("operator_left_arm"), LeftTracked->IsTracking() ? FLinearColor::Green : FLinearColor::Red);
@@ -253,6 +266,8 @@ void AOperatorPawn::Tick(float DeltaTime) {
 		UIBinder->SetText(FName("stream_health_value"), *HealthLabels[HealthIdx]);
 		UIBinder->SetTextColor(FName("stream_health_value"), HealthColors[HealthIdx]);
 	}
+
+	UpdateInfoBar();
 
 	bool bLeftGrasping  = LeftTracked->IsGraspHeld();
 	bool bRightGrasping = RightTracked->IsGraspHeld();
@@ -506,6 +521,38 @@ void AOperatorPawn::UpdateStateMachine() {
 	default:
 		break;
 	}
+
+	if (ButtonPressed == FName("statisticsButton")) {
+		bStatsVisible_ = !bStatsVisible_;
+		UIBinder->SetVisibility(FName("statsPanel"), bStatsVisible_);
+	}
+}
+
+void AOperatorPawn::UpdateInfoBar() {
+	// Episode number
+	UIBinder->SetText(FName("ep_value"), FString::Printf(TEXT("%03d"), EpisodeCount_));
+
+	// Session elapsed time formatted as H:MM:SS
+	int32 ElapsedSec = static_cast<int32>(FPlatformTime::Seconds() - SessionStartTime_);
+	int32 Hours      = ElapsedSec / 3600;
+	int32 Minutes    = (ElapsedSec % 3600) / 60;
+	int32 Seconds    = ElapsedSec % 60;
+	UIBinder->SetText(FName("session_time_value"), FString::Printf(TEXT("%d:%02d:%02d"), Hours, Minutes, Seconds));
+
+	// Use first arm that has live data (right=1 preferred, fall back to left=0)
+	float LatencyMs = ComLink->GetArmStateLatencyMs(1);
+	if (LatencyMs <= 0.f) LatencyMs = ComLink->GetArmStateLatencyMs(0);
+	if (LatencyMs > 0.f)
+		UIBinder->SetText(FName("latency_value"), FString::Printf(TEXT("%.1f ms"), LatencyMs));
+	else
+		UIBinder->SetText(FName("latency_value"), TEXT("-- ms"));
+
+	FLinearColor DotColor;
+	if      (LatencyMs <= 0.f) DotColor = FLinearColor::Gray;
+	else if (LatencyMs < 30.f) DotColor = FLinearColor::Green;
+	else if (LatencyMs < 80.f) DotColor = FLinearColor::Yellow;
+	else                       DotColor = FLinearColor::Red;
+	UIBinder->SetTextColor(FName("latency_dot"), DotColor);
 }
 
 void AOperatorPawn::TransitionTo(ESysState NewState) {
@@ -513,9 +560,8 @@ void AOperatorPawn::TransitionTo(ESysState NewState) {
 	if (Logger_) {
 		Logger_->LogEvent(FString::Printf(TEXT("STATE_TRANSITION old=%s new=%s"),*StateToString(OperatorState_), *StateToString(NewState)));
 	}
-	if (NewState == ESysState::Idle) {
-		bPendingVoiceReengage_ = false;
-	}
+	if (NewState == ESysState::Engaged) ++EpisodeCount_;
+	if (NewState == ESysState::Idle)    bPendingVoiceReengage_ = false;
 	SoundFeedback->Play(ESoundType::Transition);
 	OperatorState_ = NewState;
 	UpdateButtonStates();
@@ -529,14 +575,13 @@ void AOperatorPawn::UpdateButtonStates() {
 	auto ApplyResetButton = [&](FName Button, FName Label, EArmResetState ResetState, const TCHAR* Side) {
 		switch (ResetState) {
 		case EArmResetState::Idle:
+			UIBinder->SetButtonToggled(Button, false);
 			UIBinder->SetButtonLocked(Button, !bCanReset);
 			UIBinder->SetText(Label, FString::Printf(TEXT("Reset %s"), Side));
 			break;
 		case EArmResetState::Recovering:
-			UIBinder->SetButtonLocked(Button, true);
-			UIBinder->SetText(Label, FString::Printf(TEXT("Resetting %s..."), Side));
-			break;
 		case EArmResetState::AwaitingResume:
+			UIBinder->SetButtonToggled(Button, true);   // shows Pressed image (amber tint)
 			UIBinder->SetButtonLocked(Button, true);
 			UIBinder->SetText(Label, FString::Printf(TEXT("Resetting %s..."), Side));
 			break;
@@ -547,7 +592,9 @@ void AOperatorPawn::UpdateButtonStates() {
 	ApplyResetButton(FName("resetButtonRight"), FName("resetLabelRight"), RightArmResetState_, TEXT("R"));
 
 	bool bBothIdle = LeftArmResetState_ == EArmResetState::Idle && RightArmResetState_ == EArmResetState::Idle;
-	UIBinder->SetButtonLocked(FName("resetButton"), !bCanReset || !bBothIdle);
+	bool bResetting = !bBothIdle;
+	UIBinder->SetButtonToggled(FName("resetButton"), bResetting);
+	UIBinder->SetButtonLocked(FName("resetButton"), !bCanReset || bResetting);
 	UIBinder->SetText(FName("resetLabel"), TEXT("Reset All"));
 
 	switch (OperatorState_) {

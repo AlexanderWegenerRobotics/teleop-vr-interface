@@ -33,15 +33,15 @@ void UTrackedControllerComponent::TickComponent(float DeltaTime, ELevelTick Tick
         FVector Pos = MotionController->GetComponentLocation();
         FVector Fwd = MotionController->GetForwardVector();
         FColor RayColor = bFullClutch ? FColor::Orange : (bOriginValid ? FColor::Green : FColor::Yellow);
-        DrawDebugLine(GetWorld(), Pos, Pos + Fwd * DebugRayLength, RayColor, false, -1.0f, 0, 0.5f);
+        //DrawDebugLine(GetWorld(), Pos, Pos + Fwd * DebugRayLength, RayColor, false, -1.0f, 0, 0.5f);
 
-        DrawDebugLine(GetWorld(), Pos, Pos + MotionController->GetForwardVector() * 10.f, FColor::Red, false, -1.f, 0, 0.5f);
-        DrawDebugLine(GetWorld(), Pos, Pos + MotionController->GetRightVector() * 10.f, FColor::Green, false, -1.f, 0, 0.5f);
-        DrawDebugLine(GetWorld(), Pos, Pos + MotionController->GetUpVector() * 10.f, FColor::Blue, false, -1.f, 0, 0.5f);
+        //DrawDebugLine(GetWorld(), Pos, Pos + MotionController->GetForwardVector() * 10.f, FColor::Red, false, -1.f, 0, 0.5f);
+        //DrawDebugLine(GetWorld(), Pos, Pos + MotionController->GetRightVector() * 10.f, FColor::Green, false, -1.f, 0, 0.5f);
+        //DrawDebugLine(GetWorld(), Pos, Pos + MotionController->GetUpVector() * 10.f, FColor::Blue, false, -1.f, 0, 0.5f);
 
-        if (bOriginValid) {
-            DrawDebugPoint(GetWorld(), Origin.GetLocation(), 8.0f, FColor::Red, false, -1.0f);
-        }
+        //if (bOriginValid) {
+        //    DrawDebugPoint(GetWorld(), Origin.GetLocation(), 8.0f, FColor::Red, false, -1.0f);
+        //}
     }
 
     if (bPrintDebugInfo && FPlatformTime::Seconds() - LastLogTime > 0.5) {

@@ -26,6 +26,7 @@ public:
     FString GetActiveSourceName() const;
     FVideoSourceStats GetStreamStats() const;
     bool IsReceiving() const;
+    bool IsStereoMode() const { return bStereo_; }
     UTexture2D* GetVideoTexture() const { return VideoTexture; }
     int64  GetSenderTimeNs() const { return ActiveSource_ ? ActiveSource_->GetLastSenderTimeNs() : 0; }
     uint64 GetLastFrameId() const  { return ActiveSource_ ? ActiveSource_->GetLastFrameId()      : 0; }

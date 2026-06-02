@@ -54,6 +54,11 @@ public:
 
 	void SetButtonLocked(FName ButtonName, bool bLocked);
 	bool IsButtonLocked(FName ButtonName) const;
+
+	// Programmatically set or clear the persistent toggled (pressed) visual state.
+	void SetButtonToggled(FName ButtonName, bool bToggled);
+	bool IsButtonToggled(FName ButtonName) const;
+
 	void SetVisibility(FName WidgetName, bool bVisible);
 	UTextureRenderTarget2D* GetRenderTarget() const { return RenderTarget_; }
 	void SetImageColor(FName WidgetName, const FLinearColor& Color);
@@ -64,9 +69,6 @@ public:
 	bool IsWinkActive() const;
 	void SetExpansion(float Alpha);
 	void SetLayerOpacity(float Opacity);
-
-	UPROPERTY(EditAnywhere, Category = "Gaze")
-	float PressFlashDuration_ = 0.5f;
 
 	UPROPERTY(EditAnywhere, Category = "Debug")
 	bool bPrintDebugInfo = false;
@@ -80,7 +82,7 @@ private:
 	void SetButtonToNormal(FName Name);
 	void SetButtonToHovered(FName Name);
 	void SetButtonToLocked(FName Name);
-	void UpdatePressFlash(float DeltaTime);
+	void ApplyButtonStyle(FName Name, const FSlateBrush& Brush);
 	void UpdateMessages(float DeltaTime);
 	void RebuildMessageLog();
 
@@ -109,6 +111,7 @@ private:
 
 	TSharedPtr<FWidgetRenderer> WidgetRenderer_;
 
+	UPROPERTY() TMap<FName, UWidget*> CachedWidgets_;
 	UPROPERTY() TMap<FName, UButton*> CachedButtons_;
 	UPROPERTY() TMap<FName, UTextBlock*> CachedTextBlocks_;
 	UPROPERTY() TMap<FName, UTimeSeriesWidget*> CachedPlots_;
@@ -118,13 +121,14 @@ private:
 	UVerticalBox* MessageLog_ = nullptr;
 
 	TSet<FName> LockedButtons_;
+	TSet<FName> ToggledButtons_;
 
-	FName HoveredButton_ = FName();
-	FName PressedButton_ = FName();
+	// Original button styles cached at discovery time; used to build per-state overrides.
+	TMap<FName, FButtonStyle> OriginalStyles_;
+
+	FName HoveredButton_  = FName();
+	FName PressedButton_  = FName();
 	FName RejectedButton_ = FName();
-
-	FName FlashingButton_ = FName();
-	float FlashRemaining_ = 0.0f;
 
 	TArray<FPendingMessage> MessageQueue_;
 	bool bMessagesDirty_ = false;

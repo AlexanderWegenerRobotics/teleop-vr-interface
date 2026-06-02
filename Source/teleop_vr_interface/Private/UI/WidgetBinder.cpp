@@ -29,24 +29,32 @@ void UWidgetBinder::BeginPlay() {
 void UWidgetBinder::EndPlay(const EEndPlayReason::Type EndPlayReason) {
 	bIsBound_ = false;
 
+	// Remove from Slate first — stops any new paint/tick commands being queued.
 	if (Widget_) {
 		Widget_->RemoveFromParent();
 		Widget_ = nullptr;
 	}
 
+	// Stereo layer off next — stops GPU sampling the render target texture.
+	if (Layer_) {
+		Layer_->DestroyComponent();
+		Layer_ = nullptr;
+	}
+
+	// First flush: drain commands queued before we reset the renderer.
+	FlushRenderingCommands();
+
+	// Reset renderer — may itself queue cleanup commands on the render thread.
 	if (WidgetRenderer_) {
-		FlushRenderingCommands();
 		WidgetRenderer_.Reset();
 	}
+
+	// Second flush: drain those cleanup commands before releasing the texture.
+	FlushRenderingCommands();
 
 	if (RenderTarget_) {
 		RenderTarget_->ReleaseResource();
 		RenderTarget_ = nullptr;
-	}
-
-	if (Layer_) {
-		Layer_->DestroyComponent();
-		Layer_ = nullptr;
 	}
 
 	Super::EndPlay(EndPlayReason);
@@ -95,6 +103,11 @@ void UWidgetBinder::Initialize(TSubclassOf<UUserWidget> WidgetClass, UCameraComp
 	Layer_->RegisterComponent();
 
 	DiscoverWidgets();
+
+	// Pre-render so Slate runs a full layout pass; nested widget geometries
+	// (HBox/VBox children) are zero until at least one DrawWidget call.
+	WidgetRenderer_->DrawWidget(RenderTarget_, Widget_->TakeWidget(), RenderSize_, 0.0f, true);
+
 	CacheWidgetRects();
 	bIsBound_ = true;
 }
@@ -102,15 +115,20 @@ void UWidgetBinder::Initialize(TSubclassOf<UUserWidget> WidgetClass, UCameraComp
 void UWidgetBinder::DiscoverWidgets() {
 	if (!Widget_ || !Widget_->WidgetTree) return;
 
+	CachedWidgets_.Empty();
 	CachedButtons_.Empty();
 	CachedTextBlocks_.Empty();
 	CachedPlots_.Empty();
 	CachedImages_.Empty();
+	OriginalStyles_.Empty();
 	MessageLog_ = nullptr;
 
 	Widget_->WidgetTree->ForEachWidget([this](UWidget* W) {
+		CachedWidgets_.Add(W->GetFName(), W);
 		if (UButton* Btn = Cast<UButton>(W)) {
-			CachedButtons_.Add(W->GetFName(), Btn);
+			FName Name = W->GetFName();
+			CachedButtons_.Add(Name, Btn);
+			OriginalStyles_.Add(Name, Btn->GetStyle());
 		}
 		else if (UTextBlock* Txt = Cast<UTextBlock>(W)) {
 			CachedTextBlocks_.Add(W->GetFName(), Txt);
@@ -124,7 +142,7 @@ void UWidgetBinder::DiscoverWidgets() {
 		else if (UImage* Img = Cast<UImage>(W)) {
 			CachedImages_.Add(W->GetFName(), Img);
 		}
-		});
+	});
 }
 
 void UWidgetBinder::CacheWidgetRects() {
@@ -134,27 +152,39 @@ void UWidgetBinder::CacheWidgetRects() {
 	if (!Widget_ || !Widget_->WidgetTree) return;
 
 	Widget_->WidgetTree->ForEachWidget([this](UWidget* W) {
-		UCanvasPanelSlot* Slot = Cast<UCanvasPanelSlot>(W->Slot);
-		if (!Slot) return;
-
-		FWidgetRect Rect;
-		FVector2D SlotPos = Slot->GetPosition();
-		FVector2D SlotSize = Slot->GetSize();
-		FVector2D Alignment = Slot->GetAlignment();
-		FAnchors Anchors = Slot->GetAnchors();
-
-		FVector2D AnchorPos(RenderSize_.X * Anchors.Minimum.X, RenderSize_.Y * Anchors.Minimum.Y);
-		Rect.Position.X = AnchorPos.X + SlotPos.X - (SlotSize.X * Alignment.X);
-		Rect.Position.Y = AnchorPos.Y + SlotPos.Y - (SlotSize.Y * Alignment.Y);
-		Rect.Size = SlotSize;
-
 		FName Name = W->GetFName();
-		WidgetRects_.Add(Name, Rect);
 
-		if (CachedButtons_.Contains(Name)) {
-			ButtonRects_.Add(Name, Rect);
+		if (UCanvasPanelSlot* Slot = Cast<UCanvasPanelSlot>(W->Slot)) {
+			// Direct canvas child — compute rect from slot properties.
+			FWidgetRect Rect;
+			FVector2D SlotPos   = Slot->GetPosition();
+			FVector2D SlotSize  = Slot->GetSize();
+			FVector2D Alignment = Slot->GetAlignment();
+			FAnchors  Anchors   = Slot->GetAnchors();
+
+			FVector2D AnchorPos(RenderSize_.X * Anchors.Minimum.X, RenderSize_.Y * Anchors.Minimum.Y);
+			Rect.Position.X = AnchorPos.X + SlotPos.X - (SlotSize.X * Alignment.X);
+			Rect.Position.Y = AnchorPos.Y + SlotPos.Y - (SlotSize.Y * Alignment.Y);
+			Rect.Size = SlotSize;
+
+			WidgetRects_.Add(Name, Rect);
+			if (CachedButtons_.Contains(Name)) ButtonRects_.Add(Name, Rect);
 		}
-		});
+		else if (CachedButtons_.Contains(Name)) {
+			// Nested button (inside HBox / VBox / etc.) — read Slate geometry.
+			// After FWidgetRenderer::DrawWidget the cached geometry is in render-target
+			// pixel space (virtual window origin = RT top-left, DPI scale = 1.0).
+			const FGeometry Geom = W->GetCachedGeometry();
+			const FVector2D AbsSize = Geom.GetAbsoluteSize();
+			if (!AbsSize.IsNearlyZero()) {
+				FWidgetRect Rect;
+				Rect.Position = Geom.GetAbsolutePosition();
+				Rect.Size     = AbsSize;
+				WidgetRects_.Add(Name, Rect);
+				ButtonRects_.Add(Name, Rect);
+			}
+		}
+	});
 }
 
 void UWidgetBinder::RenderWidget() {
@@ -226,14 +256,36 @@ bool UWidgetBinder::IsButtonLocked(FName ButtonName) const {
 	return LockedButtons_.Contains(ButtonName);
 }
 
+void UWidgetBinder::ApplyButtonStyle(FName Name, const FSlateBrush& Brush) {
+	// Promote the chosen brush into the Normal slot so Slate renders it regardless of interaction state.
+	auto* FoundBtn   = CachedButtons_.Find(Name);
+	auto* FoundStyle = OriginalStyles_.Find(Name);
+	if (!FoundBtn || !*FoundBtn || !FoundStyle) return;
+	FButtonStyle S = *FoundStyle;
+	S.Normal       = Brush;
+	(*FoundBtn)->SetStyle(S);
+}
+
 void UWidgetBinder::SetButtonToLocked(FName Name) {
 	if (Name == FName()) return;
-	if (auto* Found = CachedButtons_.Find(Name)) {
-		if (*Found) {
-			FLinearColor DisabledColor = (*Found)->WidgetStyle.Disabled.TintColor.GetSpecifiedColor();
-			(*Found)->SetBackgroundColor(DisabledColor);
-		}
-	}
+	auto* Style = OriginalStyles_.Find(Name);
+	if (!Style) return;
+	// Keep the Normal image visible; apply the Disabled tint so the button is dimmed but not blank.
+	FSlateBrush Brush = Style->Normal;
+	Brush.TintColor   = Style->Disabled.TintColor;
+	ApplyButtonStyle(Name, Brush);
+}
+
+void UWidgetBinder::SetButtonToggled(FName ButtonName, bool bToggled) {
+	if (bToggled) ToggledButtons_.Add(ButtonName);
+	else          ToggledButtons_.Remove(ButtonName);
+	if (LockedButtons_.Contains(ButtonName))  SetButtonToLocked(ButtonName);
+	else if (ButtonName == HoveredButton_)    SetButtonToHovered(ButtonName);
+	else                                      SetButtonToNormal(ButtonName);
+}
+
+bool UWidgetBinder::IsButtonToggled(FName ButtonName) const {
+	return ToggledButtons_.Contains(ButtonName);
 }
 
 void UWidgetBinder::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) {
@@ -263,18 +315,10 @@ void UWidgetBinder::TickComponent(float DeltaTime, ELevelTick TickType, FActorCo
 		}
 		else {
 			PressedButton_ = HoveredButton_;
-			if (auto* Found = CachedButtons_.Find(HoveredButton_)) {
-				if (*Found) {
-					FLinearColor PressFlashColor = (*Found)->WidgetStyle.Pressed.TintColor.GetSpecifiedColor();
-					(*Found)->SetBackgroundColor(PressFlashColor);
-					FlashingButton_ = HoveredButton_;
-					FlashRemaining_ = PressFlashDuration_;
-				}
-			}
+			// Toggle persistent pressed state; visual follows immediately.
+			SetButtonToggled(HoveredButton_, !ToggledButtons_.Contains(HoveredButton_));
 		}
 	}
-
-	UpdatePressFlash(DeltaTime);
 	UpdateMessages(DeltaTime);
 
 	if (bMessagesDirty_) {
@@ -322,55 +366,34 @@ FName UWidgetBinder::FindButtonAtUV(const FVector2D& UV) const {
 }
 
 void UWidgetBinder::SetButtonToNormal(FName Name) {
-	if (Name == FName() || Name == FlashingButton_) return;
-	if (LockedButtons_.Contains(Name)) {
-		SetButtonToLocked(Name);
-		return;
-	}
-	if (auto* Found = CachedButtons_.Find(Name)) {
-		if (*Found) {
-			FLinearColor NormalColor = (*Found)->WidgetStyle.Normal.TintColor.GetSpecifiedColor();
-			(*Found)->SetBackgroundColor(NormalColor);
-		}
-	}
+	if (Name == FName()) return;
+	if (LockedButtons_.Contains(Name)) { SetButtonToLocked(Name); return; }
+	auto* Style = OriginalStyles_.Find(Name);
+	if (!Style) return;
+	// Toggled buttons rest on the Pressed image; untoggled buttons on Normal.
+	ApplyButtonStyle(Name, ToggledButtons_.Contains(Name) ? Style->Pressed : Style->Normal);
 }
 
 void UWidgetBinder::SetButtonToHovered(FName Name) {
-	if (Name == FName() || Name == FlashingButton_) return;
-	if (auto* Found = CachedButtons_.Find(Name)) {
-		if (*Found) {
-			FLinearColor HoverColor = (*Found)->WidgetStyle.Hovered.TintColor.GetSpecifiedColor();
-			(*Found)->SetBackgroundColor(HoverColor);
-		}
+	if (Name == FName()) return;
+	auto* Style = OriginalStyles_.Find(Name);
+	if (!Style) return;
+	// Keep the current state's image; only change the tint colour for hover feedback.
+	// Hovered.TintColor may be UseColor_Foreground ("Inherit") which has no visible
+	// effect inside a render-target context — fall back to a mild brightness boost.
+	FSlateBrush Brush = ToggledButtons_.Contains(Name) ? Style->Pressed : Style->Normal;
+	if (Style->Hovered.TintColor.IsColorSpecified())
+	{
+		Brush.TintColor = Style->Hovered.TintColor;
 	}
+	else
+	{
+		FLinearColor Base = Brush.TintColor.GetSpecifiedColor();
+		Brush.TintColor   = FSlateColor(FLinearColor(Base.R * 1.25f, Base.G * 1.25f, Base.B * 1.25f, Base.A));
+	}
+	ApplyButtonStyle(Name, Brush);
 }
 
-void UWidgetBinder::UpdatePressFlash(float DeltaTime) {
-	if (FlashingButton_ == FName()) return;
-
-	FlashRemaining_ -= DeltaTime;
-	if (FlashRemaining_ > 0.0f) return;
-
-	if (auto* Found = CachedButtons_.Find(FlashingButton_)) {
-		if (*Found) {
-			if (LockedButtons_.Contains(FlashingButton_)) {
-				FLinearColor LockedColor = (*Found)->WidgetStyle.Disabled.TintColor.GetSpecifiedColor();
-				(*Found)->SetBackgroundColor(LockedColor);
-			}
-			else if (FlashingButton_ == HoveredButton_) {
-				FLinearColor HoverColor = (*Found)->WidgetStyle.Hovered.TintColor.GetSpecifiedColor();
-				(*Found)->SetBackgroundColor(HoverColor);
-			}
-			else {
-				FLinearColor NormalColor = (*Found)->WidgetStyle.Normal.TintColor.GetSpecifiedColor();
-				(*Found)->SetBackgroundColor(NormalColor);
-			}
-		}
-	}
-
-	FlashingButton_ = FName();
-	FlashRemaining_ = 0.0f;
-}
 
 void UWidgetBinder::UpdateMessages(float DeltaTime) {
 	if (!MessageLog_) return;
@@ -435,7 +458,7 @@ void UWidgetBinder::SetLayerOpacity(float Opacity) {
 
 void UWidgetBinder::SetVisibility(FName WidgetName, bool bVisible)
 {
-	if (auto* Found = CachedTextBlocks_.Find(WidgetName))
+	if (auto* Found = CachedWidgets_.Find(WidgetName))
 	{
 		if (*Found)
 			(*Found)->SetVisibility(bVisible ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);

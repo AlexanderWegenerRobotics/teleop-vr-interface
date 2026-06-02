@@ -94,7 +94,7 @@ public:
     FIntPoint RenderTargetSize = FIntPoint(1280, 960);
 
     UPROPERTY(EditAnywhere, Category = "Ghost|HeadCam")
-    FVector HeadBasePosition = FVector(0.f, 0.f, 1.34f);
+    FVector HeadBasePosition = FVector(0.f, 0.f, 1.844f);
 
     UPROPERTY(EditAnywhere, Category = "Ghost|HeadCam")
     FVector CamOffsetInHead = FVector(0.05f, 0.f, 0.035f);
