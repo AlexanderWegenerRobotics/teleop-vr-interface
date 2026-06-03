@@ -749,6 +749,8 @@ void AOperatorPawn::SendArmCommands() {
 		FControllerDeltaPose Delta = LeftTracked->GetDeltaPose();
 		FVector LocalTranslation = HMDYawQuat.UnrotateVector(Delta.Translation);
 		CoordConvert::UnrealToProtocolFloat(LocalTranslation, Msg.position[0], Msg.position[1], Msg.position[2]);
+		//FQuat LocalDeltaRot = HMDYawQuat.Inverse() * Delta.Rotation * HMDYawQuat;
+		//CoordConvert::UnrealToProtocolQuatFloat(LocalDeltaRot, Msg.quaternion[0], Msg.quaternion[1], Msg.quaternion[2], Msg.quaternion[3]);
 		CoordConvert::UnrealToProtocolQuatFloat(Delta.Rotation, Msg.quaternion[0], Msg.quaternion[1], Msg.quaternion[2], Msg.quaternion[3]);
 		Msg.gripper = LeftTracked->IsGraspHeld() ? 1.0f : 0.0f;
 		ComLink->SendArmCommand(Msg, 0);
@@ -759,6 +761,8 @@ void AOperatorPawn::SendArmCommands() {
 		FControllerDeltaPose Delta = RightTracked->GetDeltaPose();
 		FVector LocalTranslation = HMDYawQuat.UnrotateVector(Delta.Translation);
 		CoordConvert::UnrealToProtocolFloat(LocalTranslation, Msg.position[0], Msg.position[1], Msg.position[2]);
+		//FQuat LocalDeltaRot = HMDYawQuat.Inverse() * Delta.Rotation * HMDYawQuat;
+		//CoordConvert::UnrealToProtocolQuatFloat(LocalDeltaRot, Msg.quaternion[0], Msg.quaternion[1], Msg.quaternion[2], Msg.quaternion[3]);
 		CoordConvert::UnrealToProtocolQuatFloat(Delta.Rotation, Msg.quaternion[0], Msg.quaternion[1], Msg.quaternion[2], Msg.quaternion[3]);
 		Msg.gripper = RightTracked->IsGraspHeld() ? 1.0f : 0.0f;
 		ComLink->SendArmCommand(Msg, 1);
