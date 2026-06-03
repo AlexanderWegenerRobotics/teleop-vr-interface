@@ -39,6 +39,11 @@ public:
 	UVideoFeedComponent* GetVideoFeed()  const { return VideoFeed; }
 	void SendResetAll();
 
+	// Console: arm a one-shot wrist-pivot calibration on a controller. Type in the UE
+	// console, then hold that controller's grip, rotate in place, release to solve.
+	UFUNCTION(Exec) void CalibrateWristPivotRight();
+	UFUNCTION(Exec) void CalibrateWristPivotLeft();
+
 protected:
 	UPROPERTY() TObjectPtr<USceneComponent> VROrigin;
 	UPROPERTY() TObjectPtr<UCameraComponent> VRCamera;
@@ -83,8 +88,6 @@ private:
 	void SendArmCommands();
 	void SendHeadCommand();
 	bool CheckEmergencyStop();
-	void UpdateTray(float DeltaTime, const FGazeData& GazeData);
-	void HandleTrayPress(FName ButtonPressed);
 	void SendArmReset(const std::string& DeviceName);
 	void SendArmResume(const std::string& DeviceName);
 	void SendGazeSample();

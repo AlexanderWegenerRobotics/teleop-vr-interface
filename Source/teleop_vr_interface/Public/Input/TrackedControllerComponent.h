@@ -45,6 +45,26 @@ public:
     void ConsumeMenuPress() { bMenuPressed = false; }
     uint8 GetScaleFactor() const { return ScaleFactor; }
 
+    // Arm a one-shot wrist-pivot calibration. While armed, the NEXT grip hold captures
+    // poses instead of toggling grasp; releasing grip solves for ControlPointOffset,
+    // applies it, and logs a ready-to-paste value. Auto-disarms after a timeout.
+    void ArmPivotCalibration();
+
+    // Local-frame offset (cm) from the controller's tracked origin to the operator's
+    // wrist pivot. Applied to translation integration so rotating in place no longer
+    // produces parasitic translation ("the arc"). Found via ArmPivotCalibration, or set
+    // by hand. Zero = use the raw tracked origin (legacy behaviour).
+    UPROPERTY(EditAnywhere, Category = "Controller|Calibration")
+    FVector ControlPointOffset = FVector::ZeroVector;
+
+    // Minimum orientation advance between captured calibration samples (deg).
+    UPROPERTY(EditAnywhere, Category = "Controller|Calibration")
+    float CalibAngularStepDeg = 3.0f;
+
+    // How long a calibration capture runs before auto-solving (s).
+    UPROPERTY(EditAnywhere, Category = "Controller|Calibration")
+    float CalibWindowSec = 12.0f;
+
     UPROPERTY(EditAnywhere, Category = "Controller")
     UMotionControllerComponent* MotionController = nullptr;
 
@@ -126,6 +146,18 @@ private:
     void UpdateTrackingState();
     void RecordSample();
 
+    // Control point = tracked origin shifted by ControlPointOffset (local frame).
+    FVector ControlPointLocation(const FTransform& T) const {
+        return T.GetLocation() + T.TransformVectorNoScale(ControlPointOffset);
+    }
+    void SolvePivotCalibration();
+
+    bool bCalibCapturing  = false;
+    double CalibStartTime = 0.0;
+    double LastCalibProgressTime = 0.0;
+    TArray<FTransform> CalibSamples;
+    FQuat LastCalibQuat = FQuat::Identity;
+
     float ComputeClutchScale(float TriggerRaw) const;
     void PlayClutchHaptic(float Intensity, float Duration);
     EControllerHand GetHand() const;
@@ -142,7 +174,7 @@ private:
     bool bFullClutch = true;
     bool bWasFullClutch = false;
 
-    uint8 ScaleFactor = 3;
+    uint8 ScaleFactor = 1;
 
     FVector ScaledTranslation = FVector::ZeroVector;
     FVector BankedScaledTranslation = FVector::ZeroVector;

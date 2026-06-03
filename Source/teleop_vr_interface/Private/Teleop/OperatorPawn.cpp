@@ -45,6 +45,12 @@ AOperatorPawn::AOperatorPawn() {
 	UIBinder = CreateDefaultSubobject<UWidgetBinder>(TEXT("UIBinder"));
 	LeftTracked = CreateDefaultSubobject<UTrackedControllerComponent>(TEXT("LeftTracked"));
 	RightTracked = CreateDefaultSubobject<UTrackedControllerComponent>(TEXT("RightTracked"));
+
+	// Persisted wrist->pivot lever arm (controller local frame, cm) from pivot calibration
+	// (CalibrateWristPivotRight/Left). Cancels the parasitic translation when twisting in place.
+	RightTracked->ControlPointOffset = FVector(-5.9f, 2.1f, 3.4f);
+	// Left assumed mirror-symmetric to right; only Y flips due to the mirrored grip.
+	LeftTracked->ControlPointOffset  = FVector(-5.9f, -2.1f, 3.4f);
 	//VoiceAnnotator = CreateDefaultSubobject<UVoiceAnnotatorComponent>(TEXT("VoiceAnnotator"));
 	GhostOverlay = CreateDefaultSubobject<UGhostOverlayComponent>(TEXT("GhostOverlay"));
 	GhostOverlay->SetCamera(VRCamera);
@@ -747,10 +753,15 @@ void AOperatorPawn::SendArmCommands() {
 	if (bLeftActive && LeftTracked->IsTracking() && !LeftTracked->IsFullClutch()) {
 		ArmCommandMsg Msg{};
 		FControllerDeltaPose Delta = LeftTracked->GetDeltaPose();
+		// Translation: WORLD-frame referencing. Re-express the delta in the HMD-yaw-aligned
+		// world frame so "move hand right" -> "EE moves right in the camera view".
 		FVector LocalTranslation = HMDYawQuat.UnrotateVector(Delta.Translation);
 		CoordConvert::UnrealToProtocolFloat(LocalTranslation, Msg.position[0], Msg.position[1], Msg.position[2]);
-		//FQuat LocalDeltaRot = HMDYawQuat.Inverse() * Delta.Rotation * HMDYawQuat;
-		//CoordConvert::UnrealToProtocolQuatFloat(LocalDeltaRot, Msg.quaternion[0], Msg.quaternion[1], Msg.quaternion[2], Msg.quaternion[3]);
+		// Orientation: BODY-frame (tool) referencing. Delta.Rotation is already the
+		// controller's delta in its OWN captured frame (R_origin^-1 * R_current); send it
+		// raw (NO HMD conjugation). The avatar maps controller axes -> EE axes via its
+		// constant controller_axis_map (M) and applies it as a body rotation, so wrist
+		// roll -> gripper roll regardless of absolute hand pose.
 		CoordConvert::UnrealToProtocolQuatFloat(Delta.Rotation, Msg.quaternion[0], Msg.quaternion[1], Msg.quaternion[2], Msg.quaternion[3]);
 		Msg.gripper = LeftTracked->IsGraspHeld() ? 1.0f : 0.0f;
 		ComLink->SendArmCommand(Msg, 0);
@@ -759,10 +770,11 @@ void AOperatorPawn::SendArmCommands() {
 	if (bRightActive && RightTracked->IsTracking() && !RightTracked->IsFullClutch()) {
 		ArmCommandMsg Msg{};
 		FControllerDeltaPose Delta = RightTracked->GetDeltaPose();
+		// Translation: WORLD-frame referencing (HMD-yaw-aligned). See arm_left above.
 		FVector LocalTranslation = HMDYawQuat.UnrotateVector(Delta.Translation);
 		CoordConvert::UnrealToProtocolFloat(LocalTranslation, Msg.position[0], Msg.position[1], Msg.position[2]);
-		//FQuat LocalDeltaRot = HMDYawQuat.Inverse() * Delta.Rotation * HMDYawQuat;
-		//CoordConvert::UnrealToProtocolQuatFloat(LocalDeltaRot, Msg.quaternion[0], Msg.quaternion[1], Msg.quaternion[2], Msg.quaternion[3]);
+		// Orientation: BODY-frame (tool) referencing - send the raw controller-frame delta,
+		// no HMD conjugation. Avatar remaps + applies it body-relative. See arm_left above.
 		CoordConvert::UnrealToProtocolQuatFloat(Delta.Rotation, Msg.quaternion[0], Msg.quaternion[1], Msg.quaternion[2], Msg.quaternion[3]);
 		Msg.gripper = RightTracked->IsGraspHeld() ? 1.0f : 0.0f;
 		ComLink->SendArmCommand(Msg, 1);
@@ -806,6 +818,16 @@ void AOperatorPawn::SendResetAll() {
 	ComLink->SendReliable("reset_all", Buf, true);
 	UE_LOG(LogTemp, Log, TEXT("OperatorPawn: reset_all"));
 	if (Logger_) Logger_->LogEvent(TEXT("ARM_RESET device=all"));
+}
+
+// Wrist-pivot calibration helpers. Inert unless WITH_PIVOT_CALIBRATION is enabled in
+// TrackedControllerComponent.cpp (ArmPivotCalibration becomes a no-op stub otherwise).
+void AOperatorPawn::CalibrateWristPivotRight() {
+	if (RightTracked) RightTracked->ArmPivotCalibration();
+}
+
+void AOperatorPawn::CalibrateWristPivotLeft() {
+	if (LeftTracked) LeftTracked->ArmPivotCalibration();
 }
 
 void AOperatorPawn::SendGazeSample(){

@@ -6,6 +6,13 @@
 #include "Framework/Application/SlateApplication.h"
 #include "GenericPlatform/IInputInterface.h"
 
+// Wrist-pivot calibration tool. Disabled (0) for normal operation: the capture/solve
+// code stays compiled out of the hot path and the console commands become no-ops.
+// Set to 1 and recompile to re-run CalibrateWristPivotRight/Left. The resulting offset
+// is persisted via ControlPointOffset (see AOperatorPawn ctor) and is applied regardless
+// of this flag.
+#define WITH_PIVOT_CALIBRATION 0
+
 UTrackedControllerComponent::UTrackedControllerComponent() {
     PrimaryComponentTick.bCanEverTick = true;
     PrimaryComponentTick.TickGroup = TG_PrePhysics;
@@ -22,6 +29,37 @@ void UTrackedControllerComponent::TickComponent(float DeltaTime, ELevelTick Tick
 
     UpdateTrackingState();
 
+    // --- Wrist-pivot calibration capture (timed window, no button needed) ---
+#if WITH_PIVOT_CALIBRATION
+    if (bCalibCapturing) {
+        const FString NameStr = MotionController ? MotionController->GetName() : TEXT("?");
+        const double NowS = FPlatformTime::Seconds();
+
+        if (MotionController && TrackingState == EControllerTrackingState::Tracking) {
+            FTransform T = MotionController->GetComponentTransform();
+            const float AdvanceDeg = FMath::RadiansToDegrees(T.GetRotation().AngularDistance(LastCalibQuat));
+            if (CalibSamples.Num() == 0 || AdvanceDeg >= CalibAngularStepDeg) {
+                CalibSamples.Add(T);
+                LastCalibQuat = T.GetRotation();
+            }
+        }
+
+        // Status every second - reports WHY if no samples (track state / controller).
+        if (NowS - LastCalibProgressTime >= 1.0) {
+            UE_LOG(LogTemp, Warning, TEXT("[PivotCalib %s] capturing... %d samples, %.0fs left  [trackState=%d (0=Tracking,1=Lost,2=Stale), haveController=%d]"),
+                *NameStr, CalibSamples.Num(),
+                FMath::Max(0.0, CalibWindowSec - (NowS - CalibStartTime)),
+                static_cast<int>(TrackingState), MotionController ? 1 : 0);
+            LastCalibProgressTime = NowS;
+        }
+
+        if (NowS - CalibStartTime >= CalibWindowSec || CalibSamples.Num() >= 4000) {
+            bCalibCapturing = false;
+            SolvePivotCalibration();
+        }
+    }
+#endif // WITH_PIVOT_CALIBRATION
+
     if (TrackingState == EControllerTrackingState::Tracking) {
         RecordSample();
     }
@@ -35,9 +73,9 @@ void UTrackedControllerComponent::TickComponent(float DeltaTime, ELevelTick Tick
         FColor RayColor = bFullClutch ? FColor::Orange : (bOriginValid ? FColor::Green : FColor::Yellow);
         //DrawDebugLine(GetWorld(), Pos, Pos + Fwd * DebugRayLength, RayColor, false, -1.0f, 0, 0.5f);
 
-        //DrawDebugLine(GetWorld(), Pos, Pos + MotionController->GetForwardVector() * 10.f, FColor::Red, false, -1.f, 0, 0.5f);
-        //DrawDebugLine(GetWorld(), Pos, Pos + MotionController->GetRightVector() * 10.f, FColor::Green, false, -1.f, 0, 0.5f);
-        //DrawDebugLine(GetWorld(), Pos, Pos + MotionController->GetUpVector() * 10.f, FColor::Blue, false, -1.f, 0, 0.5f);
+        //DrawDebugLine(GetWorld(), Pos, Pos + MotionController->GetForwardVector() * 10.f, FColor::Red, false, -1.f, 0, 0.3f);
+        //DrawDebugLine(GetWorld(), Pos, Pos + MotionController->GetRightVector() * 10.f, FColor::Green, false, -1.f, 0, 0.3f);
+        //DrawDebugLine(GetWorld(), Pos, Pos + MotionController->GetUpVector() * 10.f, FColor::Blue, false, -1.f, 0, 0.3f);
 
         //if (bOriginValid) {
         //    DrawDebugPoint(GetWorld(), Origin.GetLocation(), 8.0f, FColor::Red, false, -1.0f);
@@ -97,6 +135,9 @@ void UTrackedControllerComponent::OnTrigger(const FInputActionValue& Value) {
 }
 
 void UTrackedControllerComponent::OnGripPressed(const FInputActionValue& Value) {
+#if WITH_PIVOT_CALIBRATION
+    if (bCalibCapturing) return;   // ignore grasp toggle while calibrating
+#endif
     bGripHeld = !bGripHeld;
 }
 
@@ -150,7 +191,9 @@ void UTrackedControllerComponent::UpdateScaledTranslation() {
         return;
     }
 
-    FVector CurrentLocation = MotionController->GetComponentLocation();
+    // Integrate the control point (wrist pivot), not the raw tracked origin, so that
+    // rotating in place does not inject parasitic translation.
+    FVector CurrentLocation = ControlPointLocation(MotionController->GetComponentTransform());
 
     if (!bPrevLocationValid) {
         PrevTrackedLocation = CurrentLocation;
@@ -175,7 +218,7 @@ void UTrackedControllerComponent::CaptureOrigin() {
         if (MotionController) {
             Origin = MotionController->GetComponentTransform();
             bOriginValid = true;
-            PrevTrackedLocation = Origin.GetLocation();
+            PrevTrackedLocation = ControlPointLocation(Origin);
             bPrevLocationValid = true;
         }
         return;
@@ -205,7 +248,7 @@ void UTrackedControllerComponent::CaptureOrigin() {
     Origin.SetRotation(AccumQuat);
     Origin.SetScale3D(FVector::OneVector);
     bOriginValid = true;
-    PrevTrackedLocation = AvgPos;
+    PrevTrackedLocation = ControlPointLocation(Origin);
     bPrevLocationValid = true;
 }
 
@@ -251,7 +294,7 @@ void UTrackedControllerComponent::UpdateClutch() {
         PlayClutchHaptic(ClutchDisengageHapticIntensity, ClutchDisengageHapticDuration);
         if (MotionController) {
             Origin = MotionController->GetComponentTransform();
-            PrevTrackedLocation = Origin.GetLocation();
+            PrevTrackedLocation = ControlPointLocation(Origin);
         }
     }
 
@@ -305,4 +348,126 @@ void UTrackedControllerComponent::PlayClutchHaptic(float Intensity, float Durati
     GetWorld()->GetTimerManager().SetTimer(TimerHandle, [PC, Hand]() {
         PC->SetHapticsByValue(0.0f, 0.0f, Hand);
         }, Duration, false);
+}
+
+void UTrackedControllerComponent::ArmPivotCalibration() {
+#if !WITH_PIVOT_CALIBRATION
+    UE_LOG(LogTemp, Warning, TEXT("[PivotCalib] disabled in this build. Set WITH_PIVOT_CALIBRATION=1 in TrackedControllerComponent.cpp and recompile to re-run."));
+    return;
+#else
+    const FString NameStr = MotionController ? MotionController->GetName() : TEXT("?");
+
+    // Second call while running -> finish early and solve.
+    if (bCalibCapturing) {
+        bCalibCapturing = false;
+        SolvePivotCalibration();
+        return;
+    }
+
+    // Start capturing immediately (no button needed).
+    bCalibCapturing       = true;
+    CalibStartTime        = FPlatformTime::Seconds();
+    LastCalibProgressTime = CalibStartTime;
+    CalibSamples.Reset();
+    if (MotionController) LastCalibQuat = MotionController->GetComponentQuat();
+    UE_LOG(LogTemp, Warning, TEXT("[PivotCalib %s] CAPTURING NOW for up to %.0f s - rotate the wand IN PLACE (mix pitch, yaw, roll), keep the wrist fixed. Re-run the command to finish early. trackState=%d (0=Tracking)"),
+        *NameStr, CalibWindowSec, static_cast<int>(TrackingState));
+#endif // WITH_PIVOT_CALIBRATION
+}
+
+// Wrist-pivot (lever-arm) calibration.
+// Model: during a pure in-place rotation the wrist pivot W is fixed, while the tracked
+// pose (p_i, R_i) swings around it: W = p_i + R_i * c, with c a constant local-frame
+// offset (tracked origin -> wrist). Solve the mean-subtracted least squares
+//   min_c  sum_i || (p_i - p_mean) + (R_i - R_mean) c ||^2
+// => A c = b  with  A = sum dR_i^T dR_i ,  b = - sum dR_i^T dP_i   (3x3 solve).
+void UTrackedControllerComponent::SolvePivotCalibration() {
+#if WITH_PIVOT_CALIBRATION
+    const FString Tag = MotionController ? MotionController->GetName() : TEXT("?");
+    const int32 N = CalibSamples.Num();
+    if (N < 20) {
+        UE_LOG(LogTemp, Warning, TEXT("[PivotCalib %s] only %d samples - move more / longer. Aborted."), *Tag, N);
+        return;
+    }
+
+    // Rotation matrix (column-vector convention: v_world = R * v_local) from a quat.
+    auto FillR = [](const FQuat& Q, double R[3][3]) {
+        const FVector X = Q.GetAxisX(), Y = Q.GetAxisY(), Z = Q.GetAxisZ();
+        R[0][0]=X.X; R[1][0]=X.Y; R[2][0]=X.Z;
+        R[0][1]=Y.X; R[1][1]=Y.Y; R[2][1]=Y.Z;
+        R[0][2]=Z.X; R[1][2]=Z.Y; R[2][2]=Z.Z;
+    };
+
+    double pbar[3] = {0,0,0};
+    double Rbar[3][3] = {{0,0,0},{0,0,0},{0,0,0}};
+    for (const FTransform& T : CalibSamples) {
+        const FVector p = T.GetLocation();
+        pbar[0]+=p.X; pbar[1]+=p.Y; pbar[2]+=p.Z;
+        double R[3][3]; FillR(T.GetRotation(), R);
+        for (int i=0;i<3;++i) for (int j=0;j<3;++j) Rbar[i][j]+=R[i][j];
+    }
+    for (int k=0;k<3;++k) pbar[k]/=N;
+    for (int i=0;i<3;++i) for (int j=0;j<3;++j) Rbar[i][j]/=N;
+
+    double A[3][3] = {{0,0,0},{0,0,0},{0,0,0}};
+    double b[3] = {0,0,0};
+    for (const FTransform& T : CalibSamples) {
+        const FVector p = T.GetLocation();
+        double R[3][3]; FillR(T.GetRotation(), R);
+        double dR[3][3], dP[3];
+        for (int i=0;i<3;++i) for (int j=0;j<3;++j) dR[i][j]=R[i][j]-Rbar[i][j];
+        dP[0]=p.X-pbar[0]; dP[1]=p.Y-pbar[1]; dP[2]=p.Z-pbar[2];
+        for (int i=0;i<3;++i) {
+            for (int j=0;j<3;++j) { double s=0; for (int k=0;k<3;++k) s+=dR[k][i]*dR[k][j]; A[i][j]+=s; }
+            double sb=0; for (int k=0;k<3;++k) sb+=dR[k][i]*dP[k]; b[i]-=sb;
+        }
+    }
+
+    const double det =
+        A[0][0]*(A[1][1]*A[2][2]-A[1][2]*A[2][1])
+      - A[0][1]*(A[1][0]*A[2][2]-A[1][2]*A[2][0])
+      + A[0][2]*(A[1][0]*A[2][1]-A[1][1]*A[2][0]);
+    if (FMath::Abs(det) < 1e-3) {
+        UE_LOG(LogTemp, Warning, TEXT("[PivotCalib %s] ill-conditioned (det=%.3e). Rotate about MORE distinct axes (pitch+yaw+roll). Aborted."), *Tag, det);
+        return;
+    }
+    double inv[3][3];
+    inv[0][0]= (A[1][1]*A[2][2]-A[1][2]*A[2][1])/det;
+    inv[0][1]=-(A[0][1]*A[2][2]-A[0][2]*A[2][1])/det;
+    inv[0][2]= (A[0][1]*A[1][2]-A[0][2]*A[1][1])/det;
+    inv[1][0]=-(A[1][0]*A[2][2]-A[1][2]*A[2][0])/det;
+    inv[1][1]= (A[0][0]*A[2][2]-A[0][2]*A[2][0])/det;
+    inv[1][2]=-(A[0][0]*A[1][2]-A[0][2]*A[1][0])/det;
+    inv[2][0]= (A[1][0]*A[2][1]-A[1][1]*A[2][0])/det;
+    inv[2][1]=-(A[0][0]*A[2][1]-A[0][1]*A[2][0])/det;
+    inv[2][2]= (A[0][0]*A[1][1]-A[0][1]*A[1][0])/det;
+
+    const FVector c(
+        inv[0][0]*b[0]+inv[0][1]*b[1]+inv[0][2]*b[2],
+        inv[1][0]*b[0]+inv[1][1]*b[1]+inv[1][2]*b[2],
+        inv[2][0]*b[0]+inv[2][1]*b[1]+inv[2][2]*b[2]);
+
+    double sse=0;
+    for (const FTransform& T : CalibSamples) {
+        const FVector p = T.GetLocation();
+        double R[3][3]; FillR(T.GetRotation(), R);
+        double r[3];
+        for (int i=0;i<3;++i) {
+            double s = (i==0?p.X-pbar[0]:i==1?p.Y-pbar[1]:p.Z-pbar[2]);
+            s += (R[i][0]-Rbar[i][0])*c.X + (R[i][1]-Rbar[i][1])*c.Y + (R[i][2]-Rbar[i][2])*c.Z;
+            r[i]=s;
+        }
+        sse += r[0]*r[0]+r[1]*r[1]+r[2]*r[2];
+    }
+    const double rms_cm = FMath::Sqrt(sse/N);
+
+    ControlPointOffset = c;  // apply immediately so it can be tested right away
+
+    UE_LOG(LogTemp, Warning, TEXT("[PivotCalib %s] DONE  N=%d  offset=(%.2f, %.2f, %.2f) cm  residualRMS=%.1f mm  det=%.2e"),
+        *Tag, N, c.X, c.Y, c.Z, rms_cm*10.0, det);
+    UE_LOG(LogTemp, Warning, TEXT("[PivotCalib %s] applied. To persist: set ControlPointOffset = (X=%.3f, Y=%.3f, Z=%.3f) on this component's defaults."),
+        *Tag, c.X, c.Y, c.Z);
+    if (rms_cm > 1.0)
+        UE_LOG(LogTemp, Warning, TEXT("[PivotCalib %s] WARN residual %.1f mm is high - the wrist likely translated during capture. Redo, keeping the wrist planted."), *Tag, rms_cm*10.0);
+#endif // WITH_PIVOT_CALIBRATION
 }
