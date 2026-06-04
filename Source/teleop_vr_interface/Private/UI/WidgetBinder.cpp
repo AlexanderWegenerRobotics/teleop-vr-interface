@@ -511,7 +511,12 @@ void UWidgetBinder::ShowCameraMenu(const TArray<FString>& StreamNames, const FSt
 			ButtonRects_.Add(Name, Rect);
 			Y += Rect.Size.Y + SlotV;
 		}
-		bMenuRectsDirty_ = false;
+		// Keep dirty: on the FIRST menu open of a session the freshly created buttons
+		// have no valid desired/cached size yet, so the analytic rects above are only a
+		// rough first estimate. Leaving the flag set lets the Tick path (which uses real
+		// GetCachedGeometry and waits for bAllReady) finalize the hit-rects within a frame.
+		// Clearing it here was the bug that made the first menu selection of a session miss.
+		bMenuRectsDirty_ = true;
 	} else {
 		bMenuRectsDirty_ = true;
 	}
@@ -614,6 +619,56 @@ void UWidgetBinder::SetImageColor(FName WidgetName, const FLinearColor& Color) {
 	if (auto* Found = CachedImages_.Find(WidgetName)) {
 		if (*Found) (*Found)->SetColorAndOpacity(Color);
 	}
+}
+
+FVector2D UWidgetBinder::GetWidgetSlotPosition(FName WidgetName) const {
+    // Reads the raw slot position from the widget's UCanvasPanelSlot (widget centre when alignment is 0.5,0.5).
+    UWidget* const* Found = CachedWidgets_.Find(WidgetName);
+    if (!Found || !*Found) return FVector2D::ZeroVector;
+    UCanvasPanelSlot* Slot = Cast<UCanvasPanelSlot>((*Found)->Slot);
+    return Slot ? Slot->GetPosition() : FVector2D::ZeroVector;
+}
+
+FVector2D UWidgetBinder::GetWidgetSize(FName WidgetName) const {
+    // Returns the pixel size of the named widget from the cached rect.
+    const FWidgetRect* R = WidgetRects_.Find(WidgetName);
+    return R ? R->Size : FVector2D::ZeroVector;
+}
+
+bool UWidgetBinder::IsGazeOverWidget(FName WidgetName, float MarginPx) const {
+    // Projects current gaze to render-target pixel space and checks against the widget's cached rect.
+    FVector2D UV;
+    if (!ProjectGazeToUV(UV)) return false;
+    const FWidgetRect* R = WidgetRects_.Find(WidgetName);
+    if (!R) return false;
+    FVector2D P = UV * RenderSize_;
+    return P.X >= R->Position.X - MarginPx && P.X <= R->Position.X + R->Size.X + MarginPx
+        && P.Y >= R->Position.Y - MarginPx && P.Y <= R->Position.Y + R->Size.Y + MarginPx;
+}
+
+void UWidgetBinder::SetWidgetBounds(FName WidgetName, FVector2D BaseSlotPosition, FVector2D NormalSize, FVector2D TargetSize, FVector2D ExpandDirection) {
+    // Moves and resizes a canvas-slot widget; the corner opposite ExpandDirection stays anchored.
+    UWidget* const* Found = CachedWidgets_.Find(WidgetName);
+    if (!Found || !*Found) return;
+    UCanvasPanelSlot* Slot = Cast<UCanvasPanelSlot>((*Found)->Slot);
+    if (!Slot) return;
+    FVector2D NewPos = BaseSlotPosition + (TargetSize - NormalSize) * 0.5f * ExpandDirection;
+    Slot->SetPosition(NewPos);
+    Slot->SetSize(TargetSize);
+    FVector2D AnchorPos(RenderSize_.X * Slot->GetAnchors().Minimum.X, RenderSize_.Y * Slot->GetAnchors().Minimum.Y);
+    FWidgetRect& Rect = WidgetRects_.FindOrAdd(WidgetName);
+    Rect.Position = AnchorPos + NewPos - TargetSize * Slot->GetAlignment();
+    Rect.Size = TargetSize;
+}
+
+void UWidgetBinder::SetWidgetRenderScale(FName WidgetName, FVector2D Scale, FVector2D Pivot) {
+    // Scales the widget and all its children via render transform; pivot controls which corner stays fixed.
+    UWidget* const* Found = CachedWidgets_.Find(WidgetName);
+    if (!Found || !*Found) return;
+    (*Found)->SetRenderTransformPivot(Pivot);
+    FWidgetTransform T = (*Found)->GetRenderTransform();
+    T.Scale = Scale;
+    (*Found)->SetRenderTransform(T);
 }
 
 void UWidgetBinder::SetImageTexture(FName WidgetName, UTexture2D* Texture) {

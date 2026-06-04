@@ -136,13 +136,13 @@ void UTrackedControllerComponent::OnTrigger(const FInputActionValue& Value) {
 
 void UTrackedControllerComponent::OnGripPressed(const FInputActionValue& Value) {
 #if WITH_PIVOT_CALIBRATION
-    if (bCalibCapturing) return;   // ignore grasp toggle while calibrating
+    if (bCalibCapturing) return;
 #endif
     bGripHeld = !bGripHeld;
+    bGripStateDirty_ = true;
 }
 
 void UTrackedControllerComponent::OnGripReleased(const FInputActionValue& Value) {
-    //bGripHeld = false;
 }
 
 void UTrackedControllerComponent::OnMenuPressed(const FInputActionValue& Value) {

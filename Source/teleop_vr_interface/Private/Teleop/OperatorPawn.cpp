@@ -141,6 +141,9 @@ void AOperatorPawn::BeginPlay() {
 	RightTracked->bDrawDebugRay = true;
 
 	UIBinder->Initialize(UIWidgetClass, VRCamera, FVector2D(1280.0f, 800.0f), 690.0f, 1);
+	PiPBaseSlotPos_ = UIBinder->GetWidgetSlotPosition(FName("pip_canvas"));
+	PiPNormalSize_  = UIBinder->GetWidgetSize(FName("pip_canvas"));
+	PiPCurrentSize_ = PiPNormalSize_;
 	UIBinder->SetVisibility(FName("statsPanel"), false);
 	UIBinder->SetVisibility(FName("pip_canvas"), false);
 	UIBinder->SetVisibility(FName("cameraMenu"), false);
@@ -299,14 +302,35 @@ void AOperatorPawn::Tick(float DeltaTime) {
 		if (Idx != INDEX_NONE) {
 			PiPSources_[Idx]->UpdateTexture(PiPTextures_[Idx]);
 			const bool bReceiving = PiPSources_[Idx]->GetStats().bIsReceiving;
+			// Drive visibility from the live receiving state, but do NOT drop the
+			// selection just because frames have not arrived yet. A non-active PiP
+			// source is only pulled (UpdateTexture) once it is selected, so on the
+			// FIRST selection of a session bIsReceiving is still false for a few ticks
+			// until the GStreamer pipeline delivers its first frame. Clearing here made
+			// that first pick silently fail and forced a second selection. Keeping it
+			// active shows the stream as soon as frames flow, and auto-recovers from
+			// transient stream loss. Explicit "turn off" still clears it (__menu_off).
 			UIBinder->SetVisibility(FName("pip_canvas"), bReceiving);
 			if (bReceiving && PiPTextures_[Idx])
 				UIBinder->SetImageTexture(FName("pip_image"), PiPTextures_[Idx]);
-			if (!bReceiving) {
-				ActivePiPStreamName_ = TEXT("");
-				UIBinder->SetVisibility(FName("pip_canvas"), false);
-			}
 		}
+	}
+
+	// Gaze-driven PiP expand: grow toward ExpandDirection when looking at it, shrink after dwell away.
+	if (!ActivePiPStreamName_.IsEmpty() && PiPNormalSize_.X > 0.f) {
+		const bool bOver    = UIBinder->IsGazeOverWidget(FName("pip_canvas"), PiPGazeInnerMarginPx);
+		const bool bFarAway = !UIBinder->IsGazeOverWidget(FName("pip_canvas"), PiPGazeOuterMarginPx);
+		if (!bPiPExpanded_ && bOver)   { bPiPExpanded_ = true;  PiPDwellTimer_ = 0.f; }
+		if (bPiPExpanded_ && bFarAway) { PiPDwellTimer_ += DeltaTime; if (PiPDwellTimer_ >= PiPShrinkDwellTime) bPiPExpanded_ = false; }
+		else if (bPiPExpanded_)         { PiPDwellTimer_ = 0.f; }
+		const FVector2D Target = bPiPExpanded_ ? PiPNormalSize_ * PiPExpandScale : PiPNormalSize_;
+		PiPCurrentSize_.X = FMath::FInterpTo(PiPCurrentSize_.X, Target.X, DeltaTime, PiPLerpSpeed);
+		PiPCurrentSize_.Y = FMath::FInterpTo(PiPCurrentSize_.Y, Target.Y, DeltaTime, PiPLerpSpeed);
+		// Render-transform scale so all children (background, rim, image) scale together.
+		// Pivot is derived from ExpandDirection: (1,1)→top-left fixed, (-1,-1)→bottom-right fixed.
+		FVector2D Scale(PiPCurrentSize_.X / FMath::Max(PiPNormalSize_.X, 1.f), PiPCurrentSize_.Y / FMath::Max(PiPNormalSize_.Y, 1.f));
+		FVector2D Pivot = FVector2D(0.5f, 0.5f) - PiPExpandDirection * 0.5f;
+		UIBinder->SetWidgetRenderScale(FName("pip_canvas"), Scale, Pivot);
 	}
 
 	bool bLeftGrasping  = LeftTracked->IsGraspHeld();
@@ -750,34 +774,42 @@ void AOperatorPawn::SendArmCommands() {
 		HMDYawQuat = FQuat(FRotator(0.f, CaptureYaw, 0.f));
 	}
 
+	auto SendGripperFlush = [&](UTrackedControllerComponent* Tracked, int ArmIdx, bool bActive) {
+		// Sends a zero-delta pose command whose only purpose is to flush a gripper state change
+		// that happened while the arm was clutched. Position=0,Rotation=identity means "hold
+		// current target"; the arm interpolator keeps the EE in place while the gripper state updates.
+		if (bActive && Tracked->IsTracking() && Tracked->ConsumeGripDirty()) {
+			ArmCommandMsg Msg{};
+			Msg.quaternion[0] = 1.f;
+			Msg.gripper = Tracked->IsGraspHeld() ? 1.0f : 0.0f;
+			ComLink->SendArmCommand(Msg, ArmIdx);
+		}
+	};
+
 	if (bLeftActive && LeftTracked->IsTracking() && !LeftTracked->IsFullClutch()) {
 		ArmCommandMsg Msg{};
 		FControllerDeltaPose Delta = LeftTracked->GetDeltaPose();
-		// Translation: WORLD-frame referencing. Re-express the delta in the HMD-yaw-aligned
-		// world frame so "move hand right" -> "EE moves right in the camera view".
 		FVector LocalTranslation = HMDYawQuat.UnrotateVector(Delta.Translation);
 		CoordConvert::UnrealToProtocolFloat(LocalTranslation, Msg.position[0], Msg.position[1], Msg.position[2]);
-		// Orientation: BODY-frame (tool) referencing. Delta.Rotation is already the
-		// controller's delta in its OWN captured frame (R_origin^-1 * R_current); send it
-		// raw (NO HMD conjugation). The avatar maps controller axes -> EE axes via its
-		// constant controller_axis_map (M) and applies it as a body rotation, so wrist
-		// roll -> gripper roll regardless of absolute hand pose.
 		CoordConvert::UnrealToProtocolQuatFloat(Delta.Rotation, Msg.quaternion[0], Msg.quaternion[1], Msg.quaternion[2], Msg.quaternion[3]);
 		Msg.gripper = LeftTracked->IsGraspHeld() ? 1.0f : 0.0f;
+		LeftTracked->ConsumeGripDirty();
 		ComLink->SendArmCommand(Msg, 0);
+	} else {
+		SendGripperFlush(LeftTracked, 0, bLeftActive);
 	}
 
 	if (bRightActive && RightTracked->IsTracking() && !RightTracked->IsFullClutch()) {
 		ArmCommandMsg Msg{};
 		FControllerDeltaPose Delta = RightTracked->GetDeltaPose();
-		// Translation: WORLD-frame referencing (HMD-yaw-aligned). See arm_left above.
 		FVector LocalTranslation = HMDYawQuat.UnrotateVector(Delta.Translation);
 		CoordConvert::UnrealToProtocolFloat(LocalTranslation, Msg.position[0], Msg.position[1], Msg.position[2]);
-		// Orientation: BODY-frame (tool) referencing - send the raw controller-frame delta,
-		// no HMD conjugation. Avatar remaps + applies it body-relative. See arm_left above.
 		CoordConvert::UnrealToProtocolQuatFloat(Delta.Rotation, Msg.quaternion[0], Msg.quaternion[1], Msg.quaternion[2], Msg.quaternion[3]);
 		Msg.gripper = RightTracked->IsGraspHeld() ? 1.0f : 0.0f;
+		RightTracked->ConsumeGripDirty();
 		ComLink->SendArmCommand(Msg, 1);
+	} else {
+		SendGripperFlush(RightTracked, 1, bRightActive);
 	}
 }
 

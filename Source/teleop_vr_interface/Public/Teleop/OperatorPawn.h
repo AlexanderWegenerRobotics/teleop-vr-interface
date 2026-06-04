@@ -128,4 +128,19 @@ private:
 	FString                  ActivePiPStreamName_;
 	TArray<FString>          CurrentMenuStreams_;
 	bool                     bMenuOpen_            = false;
+
+	// PiP gaze-driven expand.
+	// PiPExpandScale: multiplier applied to the widget's normal size when expanded (1.5 = 50% bigger).
+	UPROPERTY(EditAnywhere, Category = "PiP") float     PiPExpandScale        = 1.5f;
+	UPROPERTY(EditAnywhere, Category = "PiP") FVector2D PiPExpandDirection    = FVector2D(1.f, 1.f);
+	UPROPERTY(EditAnywhere, Category = "PiP") float     PiPGazeInnerMarginPx  = 20.f;
+	UPROPERTY(EditAnywhere, Category = "PiP") float     PiPGazeOuterMarginPx  = 15.f;
+	UPROPERTY(EditAnywhere, Category = "PiP") float     PiPShrinkDwellTime    = 0.5f;
+	UPROPERTY(EditAnywhere, Category = "PiP") float     PiPLerpSpeed          = 8.f;
+
+	FVector2D PiPBaseSlotPos_;
+	FVector2D PiPNormalSize_;
+	FVector2D PiPCurrentSize_;
+	float     PiPDwellTimer_ = 0.f;
+	bool      bPiPExpanded_  = false;
 };

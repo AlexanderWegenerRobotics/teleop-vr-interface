@@ -64,6 +64,18 @@ public:
 	void SetImageColor(FName WidgetName, const FLinearColor& Color);
 	void SetImageTexture(FName WidgetName, UTexture2D* Texture);
 
+	// Returns the canvas slot position (widget center when alignment is 0.5,0.5).
+	FVector2D GetWidgetSlotPosition(FName WidgetName) const;
+	// Returns the cached render-target pixel size of a named widget.
+	FVector2D GetWidgetSize(FName WidgetName) const;
+	// True when the projected gaze pixel falls within the named widget's cached rect expanded by MarginPx.
+	bool IsGazeOverWidget(FName WidgetName, float MarginPx = 0.f) const;
+	// Resizes a canvas-panel widget and adjusts its slot position so the corner opposite ExpandDirection stays fixed.
+	// ExpandDirection components: 1=expand right/down, -1=expand left/up, 0=expand from centre.
+	void SetWidgetBounds(FName WidgetName, FVector2D BaseSlotPosition, FVector2D NormalSize, FVector2D TargetSize, FVector2D ExpandDirection);
+	// Applies a render-transform scale to a widget (scales all children). Pivot=(0,0) anchors top-left, (1,1) anchors bottom-right.
+	void SetWidgetRenderScale(FName WidgetName, FVector2D Scale, FVector2D Pivot);
+
 	void ShowCameraMenu(const TArray<FString>& StreamNames, const FString& ActiveStream);
 	void HideMenu();
 
