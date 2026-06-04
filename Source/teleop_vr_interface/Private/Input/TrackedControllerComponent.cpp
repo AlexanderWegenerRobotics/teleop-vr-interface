@@ -139,7 +139,6 @@ void UTrackedControllerComponent::OnGripPressed(const FInputActionValue& Value) 
     if (bCalibCapturing) return;
 #endif
     bGripHeld = !bGripHeld;
-    bGripStateDirty_ = true;
 }
 
 void UTrackedControllerComponent::OnGripReleased(const FInputActionValue& Value) {

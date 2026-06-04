@@ -774,42 +774,24 @@ void AOperatorPawn::SendArmCommands() {
 		HMDYawQuat = FQuat(FRotator(0.f, CaptureYaw, 0.f));
 	}
 
-	auto SendGripperFlush = [&](UTrackedControllerComponent* Tracked, int ArmIdx, bool bActive) {
-		// Sends a zero-delta pose command whose only purpose is to flush a gripper state change
-		// that happened while the arm was clutched. Position=0,Rotation=identity means "hold
-		// current target"; the arm interpolator keeps the EE in place while the gripper state updates.
-		if (bActive && Tracked->IsTracking() && Tracked->ConsumeGripDirty()) {
-			ArmCommandMsg Msg{};
-			Msg.quaternion[0] = 1.f;
-			Msg.gripper = Tracked->IsGraspHeld() ? 1.0f : 0.0f;
-			ComLink->SendArmCommand(Msg, ArmIdx);
-		}
-	};
-
-	if (bLeftActive && LeftTracked->IsTracking() && !LeftTracked->IsFullClutch()) {
+	if (bLeftActive && LeftTracked->IsTracking()) {
 		ArmCommandMsg Msg{};
 		FControllerDeltaPose Delta = LeftTracked->GetDeltaPose();
 		FVector LocalTranslation = HMDYawQuat.UnrotateVector(Delta.Translation);
 		CoordConvert::UnrealToProtocolFloat(LocalTranslation, Msg.position[0], Msg.position[1], Msg.position[2]);
 		CoordConvert::UnrealToProtocolQuatFloat(Delta.Rotation, Msg.quaternion[0], Msg.quaternion[1], Msg.quaternion[2], Msg.quaternion[3]);
 		Msg.gripper = LeftTracked->IsGraspHeld() ? 1.0f : 0.0f;
-		LeftTracked->ConsumeGripDirty();
 		ComLink->SendArmCommand(Msg, 0);
-	} else {
-		SendGripperFlush(LeftTracked, 0, bLeftActive);
 	}
 
-	if (bRightActive && RightTracked->IsTracking() && !RightTracked->IsFullClutch()) {
+	if (bRightActive && RightTracked->IsTracking()) {
 		ArmCommandMsg Msg{};
 		FControllerDeltaPose Delta = RightTracked->GetDeltaPose();
 		FVector LocalTranslation = HMDYawQuat.UnrotateVector(Delta.Translation);
 		CoordConvert::UnrealToProtocolFloat(LocalTranslation, Msg.position[0], Msg.position[1], Msg.position[2]);
 		CoordConvert::UnrealToProtocolQuatFloat(Delta.Rotation, Msg.quaternion[0], Msg.quaternion[1], Msg.quaternion[2], Msg.quaternion[3]);
 		Msg.gripper = RightTracked->IsGraspHeld() ? 1.0f : 0.0f;
-		RightTracked->ConsumeGripDirty();
 		ComLink->SendArmCommand(Msg, 1);
-	} else {
-		SendGripperFlush(RightTracked, 1, bRightActive);
 	}
 }
 

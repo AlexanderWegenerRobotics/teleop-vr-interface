@@ -38,8 +38,6 @@ public:
     EControllerTrackingState GetTrackingState() const;
 
     bool IsGraspHeld() const { return bGripHeld; }
-    // True if grip state changed since last ConsumeGripDirty(); use to flush gripper command on clutch re-engage.
-    bool ConsumeGripDirty() { bool v = bGripStateDirty_; bGripStateDirty_ = false; return v; }
     bool IsMenuPressed() const { return bMenuPressed; }
     float GetClutchFactor() const;
     bool IsFullClutch() const { return bFullClutch; }
@@ -187,7 +185,6 @@ private:
     double LastTrackingTimestamp = 0.0;
     EControllerTrackingState TrackingState = EControllerTrackingState::Lost;
     FQuat BankedRotation = FQuat::Identity;
-    bool  bGripStateDirty_ = false;
 
     double LastLogTime = 0.0;
 
