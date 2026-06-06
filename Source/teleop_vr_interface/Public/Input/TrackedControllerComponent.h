@@ -146,7 +146,6 @@ private:
     void UpdateTrackingState();
     void RecordSample();
 
-    // Control point = tracked origin shifted by ControlPointOffset (local frame).
     FVector ControlPointLocation(const FTransform& T) const {
         return T.GetLocation() + T.TransformVectorNoScale(ControlPointOffset);
     }
@@ -174,7 +173,7 @@ private:
     bool bFullClutch = true;
     bool bWasFullClutch = false;
 
-    uint8 ScaleFactor = 1;
+    uint8 ScaleFactor = 2;
 
     FVector ScaledTranslation = FVector::ZeroVector;
     FVector BankedScaledTranslation = FVector::ZeroVector;
