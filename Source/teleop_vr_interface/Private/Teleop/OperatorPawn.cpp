@@ -46,11 +46,7 @@ AOperatorPawn::AOperatorPawn() {
 	LeftTracked = CreateDefaultSubobject<UTrackedControllerComponent>(TEXT("LeftTracked"));
 	RightTracked = CreateDefaultSubobject<UTrackedControllerComponent>(TEXT("RightTracked"));
 
-	// Persisted wrist->pivot lever arm (controller local frame, cm) from pivot calibration
-	// (CalibrateWristPivotRight/Left). Cancels the parasitic translation when twisting in place.
-	RightTracked->ControlPointOffset = FVector(-5.9f, 2.1f, 3.4f);
-	// Left assumed mirror-symmetric to right; only Y flips due to the mirrored grip.
-	LeftTracked->ControlPointOffset  = FVector(-5.9f, -2.1f, 3.4f);
+	// Wrist pivot offsets are applied in BeginPlay once config is loaded.
 	//VoiceAnnotator = CreateDefaultSubobject<UVoiceAnnotatorComponent>(TEXT("VoiceAnnotator"));
 	GhostOverlay = CreateDefaultSubobject<UGhostOverlayComponent>(TEXT("GhostOverlay"));
 	GhostOverlay->SetCamera(VRCamera);
@@ -103,6 +99,30 @@ void AOperatorPawn::BeginPlay() {
 		return;
 	}
 
+	RightTracked->ControlPointOffset = Config->Robot.WristPivotRight;
+	LeftTracked->ControlPointOffset  = Config->Robot.WristPivotLeft;
+
+	GhostOverlay->GhostNearThresholdM_      = Config->Overlay.NearThresholdM;
+	GhostOverlay->GhostFarThresholdM_       = Config->Overlay.FarThresholdM;
+	GhostOverlay->GhostMinOpacity_          = Config->Overlay.MinOpacity;
+	GhostOverlay->GhostMaxOpacity_          = Config->Overlay.MaxOpacity;
+	GhostOverlay->WorkspaceLowerBoundZ_     = Config->Robot.WorkspaceLowerBoundZ;
+	GhostOverlay->WorkspaceBoundaryMarginM_ = Config->Robot.WorkspaceBoundaryMargin;
+	GhostOverlay->BoundaryPlaneWidthM_  = Config->Overlay.BoundaryPlaneWidthM;
+	GhostOverlay->BoundaryPlaneHeightM_ = Config->Overlay.BoundaryPlaneHeightM;
+	GhostOverlay->LatencyOkMs              = Config->Overlay.LatencyOkMs;
+	GhostOverlay->LatencyWarnMs            = Config->Overlay.LatencyWarnMs;
+	GhostOverlay->LatencyBadMs             = Config->Overlay.LatencyBadMs;
+	GhostOverlay->LatencyBadExitMs         = Config->Overlay.LatencyBadExitMs;
+	GhostOverlay->HeadBasePosition         = Config->Overlay.HeadBasePosition;
+	GhostOverlay->CamOffsetInHead          = Config->Overlay.CamOffsetInHead;
+	GhostOverlay->CaptureFOV               = Config->Overlay.CaptureFOV;
+	GhostOverlay->StereoCaptureFOV         = Config->Overlay.StereoCaptureFOV;
+	GhostOverlay->StereoEyeOffsetCm        = Config->Overlay.StereoEyeOffsetCm;
+	GhostOverlay->PlaneDistance            = Config->Overlay.PlaneDistance;
+	GhostOverlay->FOVCoverage              = Config->Overlay.FOVCoverage;
+	GhostOverlay->RenderTargetSize         = FIntPoint(Config->Overlay.RenderTargetWidth, Config->Overlay.RenderTargetHeight);
+
 	ComLink->RemoteIP = Config->Network.RemoteIP;
 	ComLink->AvatarSendPort = Config->Network.Avatar.Send;
 	ComLink->AvatarReceivePort = Config->Network.Avatar.Receive;
@@ -140,7 +160,7 @@ void AOperatorPawn::BeginPlay() {
 	LeftTracked->bDrawDebugRay = true;
 	RightTracked->bDrawDebugRay = true;
 
-	UIBinder->Initialize(UIWidgetClass, VRCamera, FVector2D(1280.0f, 800.0f), 690.0f, 1);
+	UIBinder->Initialize(UIWidgetClass, VRCamera, FVector2D(Config->Hud.UIWidgetWidth, Config->Hud.UIWidgetHeight), Config->Hud.UIPlaneDistance, 1);
 	PiPBaseSlotPos_ = UIBinder->GetWidgetSlotPosition(FName("pip_canvas"));
 	PiPNormalSize_  = UIBinder->GetWidgetSize(FName("pip_canvas"));
 	PiPCurrentSize_ = PiPNormalSize_;
@@ -187,11 +207,27 @@ void AOperatorPawn::BeginPlay() {
 				LeftTracked->CaptureOrigin();
 				SendArmResume("arm_left");
 				LeftArmResetState_ = EArmResetState::Idle;
+				if (GhostOverlay) {
+					if (ComLink->HasNewArmState(0)) {
+						ArmStateMsg S = ComLink->ReadArmState(0);
+						GhostOverlay->SeedIntentPose(0, S.position, S.quaternion);
+					} else {
+						GhostOverlay->UnseedIntentPose(0);
+					}
+				}
 			}
 			if (Device == "arm_right") {
 				RightTracked->CaptureOrigin();
 				SendArmResume("arm_right");
 				RightArmResetState_ = EArmResetState::Idle;
+				if (GhostOverlay) {
+					if (ComLink->HasNewArmState(1)) {
+						ArmStateMsg S = ComLink->ReadArmState(1);
+						GhostOverlay->SeedIntentPose(1, S.position, S.quaternion);
+					} else {
+						GhostOverlay->UnseedIntentPose(1);
+					}
+				}
 			}
 			UpdateButtonStates();
 			SoundFeedback->Play(ESoundType::Transition);
@@ -275,7 +311,9 @@ void AOperatorPawn::Tick(float DeltaTime) {
 	UIBinder->SetImageColor(FName("avatar_head"), ComLink->IsHeadAlive() ? FLinearColor::Green : FLinearColor::Red);
 	UIBinder->SetVisibility(FName("videoLostInfo"), !VideoFeed->IsReceiving());
 
-	UIBinder->SetImageColor(FName("operator_eye"), Gaze->IsTrackerConnected() ? FLinearColor::Green : FLinearColor::Red);
+	const bool bGazeFresh = Gaze->IsGazeFresh();
+	UIBinder->SetImageColor(FName("operator_eye"), bGazeFresh ? FLinearColor::Green : FLinearColor::Red);
+	UIBinder->SetVisibility(FName("gazeOfflineInfo"), !bGazeFresh);
 	UIBinder->SetImageColor(FName("operator_left_arm"), LeftTracked->IsTracking() ? FLinearColor::Green : FLinearColor::Red);
 	UIBinder->SetImageColor(FName("operator_right_arm"), RightTracked->IsTracking() ? FLinearColor::Green : FLinearColor::Red);
 	UIBinder->SetImageColor(FName("operator_head"), bHMDOriginValid_ ? FLinearColor::Green : FLinearColor::Red);
@@ -527,17 +565,20 @@ void AOperatorPawn::UpdateStateMachine() {
 		else if (ButtonPressed == FName("resetButtonLeft") && LeftArmResetState_ == EArmResetState::Idle) {
 			SendArmReset("arm_left");
 			LeftArmResetState_ = EArmResetState::Recovering;
+			++EpisodeCount_;
 			UpdateButtonStates();
 		}
 		else if (ButtonPressed == FName("resetButtonRight") && RightArmResetState_ == EArmResetState::Idle) {
 			SendArmReset("arm_right");
 			RightArmResetState_ = EArmResetState::Recovering;
+			++EpisodeCount_;
 			UpdateButtonStates();
 		}
 		else if (ButtonPressed == FName("resetButton")) {
 			SendResetAll();
 			if (LeftArmResetState_ == EArmResetState::Idle) LeftArmResetState_ = EArmResetState::Recovering;
 			if (RightArmResetState_ == EArmResetState::Idle) RightArmResetState_ = EArmResetState::Recovering;
+			++EpisodeCount_;
 			UpdateButtonStates();
 		}
 		else if (bAvatarConfirmedEngaged_ && AvatarState == ESysState::Awaiting) {
@@ -567,17 +608,20 @@ void AOperatorPawn::UpdateStateMachine() {
 		else if (ButtonPressed == FName("resetButtonLeft") && LeftArmResetState_ == EArmResetState::Idle) {
 			SendArmReset("arm_left");
 			LeftArmResetState_ = EArmResetState::Recovering;
+			++EpisodeCount_;
 			UpdateButtonStates();
 		}
 		else if (ButtonPressed == FName("resetButtonRight") && RightArmResetState_ == EArmResetState::Idle) {
 			SendArmReset("arm_right");
 			RightArmResetState_ = EArmResetState::Recovering;
+			++EpisodeCount_;
 			UpdateButtonStates();
 		}
 		else if (ButtonPressed == FName("resetButton")) {
 			SendResetAll();
 			if (LeftArmResetState_ == EArmResetState::Idle) LeftArmResetState_ = EArmResetState::Recovering;
 			if (RightArmResetState_ == EArmResetState::Idle) RightArmResetState_ = EArmResetState::Recovering;
+			++EpisodeCount_;
 			UpdateButtonStates();
 		}
 		break;
@@ -762,6 +806,19 @@ void AOperatorPawn::CaptureControllerOrigins() {
 		HMDOrigin_ = VRCamera->GetComponentTransform();
 		bHMDOriginValid_ = true;
 	}
+
+	if (GhostOverlay) {
+		for (uint8 Arm = 0; Arm < 2; ++Arm) {
+			if (ComLink->HasNewArmState(Arm)) {
+				ArmStateMsg S = ComLink->ReadArmState(Arm);
+				GhostOverlay->SeedIntentPose(Arm, S.position, S.quaternion);
+			} else {
+				const float ZeroPos[3]  = {0.f, 0.f, 0.f};
+				const float IdentQuat[4] = {1.f, 0.f, 0.f, 0.f};
+				GhostOverlay->SeedIntentPose(Arm, ZeroPos, IdentQuat);
+			}
+		}
+	}
 }
 
 void AOperatorPawn::SendArmCommands() {
@@ -774,24 +831,30 @@ void AOperatorPawn::SendArmCommands() {
 		HMDYawQuat = FQuat(FRotator(0.f, CaptureYaw, 0.f));
 	}
 
-	if (bLeftActive && LeftTracked->IsTracking()) {
+	if (LeftTracked->IsTracking()) {
 		ArmCommandMsg Msg{};
 		FControllerDeltaPose Delta = LeftTracked->GetDeltaPose();
 		FVector LocalTranslation = HMDYawQuat.UnrotateVector(Delta.Translation);
 		CoordConvert::UnrealToProtocolFloat(LocalTranslation, Msg.position[0], Msg.position[1], Msg.position[2]);
 		CoordConvert::UnrealToProtocolQuatFloat(Delta.Rotation, Msg.quaternion[0], Msg.quaternion[1], Msg.quaternion[2], Msg.quaternion[3]);
 		Msg.gripper = LeftTracked->IsGraspHeld() ? 1.0f : 0.0f;
-		ComLink->SendArmCommand(Msg, 0);
+		if (bLeftActive)
+			ComLink->SendArmCommand(Msg, 0);
+		if (GhostOverlay)
+			GhostOverlay->SetIntentPose(0, Msg.position, Msg.quaternion, Msg.gripper, LeftTracked->IsFullClutch());
 	}
 
-	if (bRightActive && RightTracked->IsTracking()) {
+	if (RightTracked->IsTracking()) {
 		ArmCommandMsg Msg{};
 		FControllerDeltaPose Delta = RightTracked->GetDeltaPose();
 		FVector LocalTranslation = HMDYawQuat.UnrotateVector(Delta.Translation);
 		CoordConvert::UnrealToProtocolFloat(LocalTranslation, Msg.position[0], Msg.position[1], Msg.position[2]);
 		CoordConvert::UnrealToProtocolQuatFloat(Delta.Rotation, Msg.quaternion[0], Msg.quaternion[1], Msg.quaternion[2], Msg.quaternion[3]);
 		Msg.gripper = RightTracked->IsGraspHeld() ? 1.0f : 0.0f;
-		ComLink->SendArmCommand(Msg, 1);
+		if (bRightActive)
+			ComLink->SendArmCommand(Msg, 1);
+		if (GhostOverlay)
+			GhostOverlay->SetIntentPose(1, Msg.position, Msg.quaternion, Msg.gripper, RightTracked->IsFullClutch());
 	}
 }
 

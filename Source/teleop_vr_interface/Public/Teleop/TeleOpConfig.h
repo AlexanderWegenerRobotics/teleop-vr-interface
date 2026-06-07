@@ -61,8 +61,45 @@ struct FHudConfig
     float MetricEntryWindowSec = 5.0f;
     float MetricExitWindowSec = 3.0f;
     float ConfirmationDurationSec = 3.0f;
+    float UIWidgetWidth = 1280.0f;
+    float UIWidgetHeight = 800.0f;
+    float UIPlaneDistance = 690.0f;
 };
 
+USTRUCT()
+struct FRobotConfig
+{
+    GENERATED_BODY()
+    float WorkspaceLowerBoundZ = 0.435f;
+    float WorkspaceBoundaryMargin = 0.05f;
+    FVector WristPivotRight = FVector(-5.9f,  2.1f, 3.4f);
+    FVector WristPivotLeft  = FVector(-5.9f, -2.1f, 3.4f);
+};
+
+USTRUCT()
+struct FOverlayConfig
+{
+    GENERATED_BODY()
+    float NearThresholdM = 0.03f;
+    float FarThresholdM  = 0.15f;
+    float MinOpacity     = 0.15f;
+    float MaxOpacity     = 0.85f;
+    float LatencyOkMs      = 100.0f;
+    float LatencyWarnMs    = 150.0f;
+    float LatencyBadMs     = 300.0f;
+    float LatencyBadExitMs = 200.0f;
+    FVector HeadBasePosition = FVector(0.f, 0.f, 1.844f);
+    FVector CamOffsetInHead  = FVector(0.05f, 0.f, 0.035f);
+    float CaptureFOV         = 75.2f;
+    float StereoCaptureFOV   = 75.2f;
+    float StereoEyeOffsetCm  = 3.05f;
+    int32 RenderTargetWidth  = 1280;
+    int32 RenderTargetHeight = 960;
+    float PlaneDistance      = 700.0f;
+    float FOVCoverage        = 0.85f;
+    float BoundaryPlaneWidthM  = 1.8f;
+    float BoundaryPlaneHeightM = 0.96f;
+};
 
 UCLASS()
 class TELEOP_VR_INTERFACE_API UTeleOpConfig : public UObject
@@ -74,6 +111,8 @@ public:
     FNetworkConfig Network;
     FStreamConfig  Stream;
     FHudConfig     Hud;
+    FRobotConfig   Robot;
+    FOverlayConfig Overlay;
 
     bool Load(const FString& RootConfigPath);
     static FString DefaultConfigPath();
@@ -83,6 +122,8 @@ private:
     bool LoadNetwork(const FString& Path);
     bool LoadStream(const FString& Path);
     bool LoadHud(const FString& Path);
+    bool LoadRobot(const FString& Path);
+    bool LoadOverlay(const FString& Path);
 
     static bool ReadJsonFile(const FString& Path, TSharedPtr<class FJsonObject>& OutObject);
     static bool RequireString(const TSharedPtr<class FJsonObject>& Obj, const FString& Key, FString& OutValue, const FString& Context);

@@ -20,14 +20,18 @@ bool UTeleOpConfig::Load(const FString& RootConfigPath) {
 
     const FString BaseDir = FPaths::GetPath(RootConfigPath);
 
-    FString NetworkPath, StreamPath, HudPath;
+    FString NetworkPath, StreamPath, HudPath, RobotPath, GhostPath;
     if (!RequireString(Root, TEXT("network"), NetworkPath, TEXT("config.json"))) return false;
-    if (!RequireString(Root, TEXT("stream"), StreamPath, TEXT("config.json"))) return false;
-    if (!RequireString(Root, TEXT("hud"), HudPath, TEXT("config.json"))) return false;
+    if (!RequireString(Root, TEXT("stream"),  StreamPath,  TEXT("config.json"))) return false;
+    if (!RequireString(Root, TEXT("hud"),     HudPath,     TEXT("config.json"))) return false;
+    if (!RequireString(Root, TEXT("robot"),   RobotPath,   TEXT("config.json"))) return false;
+    if (!RequireString(Root, TEXT("overlay"), GhostPath,   TEXT("config.json"))) return false;
 
     if (!LoadNetwork(BaseDir / NetworkPath)) return false;
     if (!LoadStream(BaseDir / StreamPath))   return false;
     if (!LoadHud(BaseDir / HudPath))         return false;
+    if (!LoadRobot(BaseDir / RobotPath))     return false;
+    if (!LoadOverlay(BaseDir / GhostPath))   return false;
 
     UE_LOG(LogTemp, Log, TEXT("TeleOpConfig: Loaded successfully"));
     UE_LOG(LogTemp, Log, TEXT("  Network  � remote: %s  avatar: %d/%d"), *Network.RemoteIP, Network.Avatar.Send, Network.Avatar.Receive);
@@ -111,6 +115,64 @@ bool UTeleOpConfig::LoadHud(const FString& Path) {
     if (!RequireFloat(Obj, TEXT("metric_entry_window_s"), Hud.MetricEntryWindowSec, Context)) return false;
     if (!RequireFloat(Obj, TEXT("metric_exit_window_s"), Hud.MetricExitWindowSec, Context)) return false;
     if (!RequireFloat(Obj, TEXT("confirmation_duration_s"), Hud.ConfirmationDurationSec, Context)) return false;
+    if (!RequireFloat(Obj, TEXT("ui_widget_width"),    Hud.UIWidgetWidth,    Context)) return false;
+    if (!RequireFloat(Obj, TEXT("ui_widget_height"),   Hud.UIWidgetHeight,   Context)) return false;
+    if (!RequireFloat(Obj, TEXT("ui_plane_distance"),  Hud.UIPlaneDistance,  Context)) return false;
+
+    return true;
+}
+
+bool UTeleOpConfig::LoadRobot(const FString& Path) {
+    TSharedPtr<FJsonObject> Obj;
+    if (!ReadJsonFile(Path, Obj)) {
+        UE_LOG(LogTemp, Error, TEXT("TeleOpConfig: FAILED — cannot read robot config: %s"), *Path);
+        return false;
+    }
+
+    const FString Context = TEXT("robot.json");
+    if (!RequireFloat(Obj, TEXT("workspace_lower_bound_z"),    Robot.WorkspaceLowerBoundZ,    Context)) return false;
+    if (!RequireFloat(Obj, TEXT("workspace_boundary_margin"),  Robot.WorkspaceBoundaryMargin, Context)) return false;
+
+    const TArray<TSharedPtr<FJsonValue>>* Arr = nullptr;
+    if (Obj->TryGetArrayField(TEXT("wrist_pivot_right"), Arr) && Arr && Arr->Num() == 3)
+        Robot.WristPivotRight = FVector((*Arr)[0]->AsNumber(), (*Arr)[1]->AsNumber(), (*Arr)[2]->AsNumber());
+    if (Obj->TryGetArrayField(TEXT("wrist_pivot_left"), Arr) && Arr && Arr->Num() == 3)
+        Robot.WristPivotLeft  = FVector((*Arr)[0]->AsNumber(), (*Arr)[1]->AsNumber(), (*Arr)[2]->AsNumber());
+
+    return true;
+}
+
+bool UTeleOpConfig::LoadOverlay(const FString& Path) {
+    TSharedPtr<FJsonObject> Obj;
+    if (!ReadJsonFile(Path, Obj)) {
+        UE_LOG(LogTemp, Error, TEXT("TeleOpConfig: FAILED — cannot read ghost config: %s"), *Path);
+        return false;
+    }
+
+    const FString Context = TEXT("ghost.json");
+    if (!RequireFloat(Obj, TEXT("near_threshold_m"),   Overlay.NearThresholdM,   Context)) return false;
+    if (!RequireFloat(Obj, TEXT("far_threshold_m"),    Overlay.FarThresholdM,    Context)) return false;
+    if (!RequireFloat(Obj, TEXT("min_opacity"),        Overlay.MinOpacity,       Context)) return false;
+    if (!RequireFloat(Obj, TEXT("max_opacity"),        Overlay.MaxOpacity,       Context)) return false;
+    if (!RequireFloat(Obj, TEXT("latency_ok_ms"),      Overlay.LatencyOkMs,      Context)) return false;
+    if (!RequireFloat(Obj, TEXT("latency_warn_ms"),    Overlay.LatencyWarnMs,    Context)) return false;
+    if (!RequireFloat(Obj, TEXT("latency_bad_ms"),     Overlay.LatencyBadMs,     Context)) return false;
+    if (!RequireFloat(Obj, TEXT("latency_bad_exit_ms"),Overlay.LatencyBadExitMs, Context)) return false;
+    if (!RequireFloat(Obj, TEXT("capture_fov"),        Overlay.CaptureFOV,       Context)) return false;
+    if (!RequireFloat(Obj, TEXT("stereo_capture_fov"), Overlay.StereoCaptureFOV, Context)) return false;
+    if (!RequireFloat(Obj, TEXT("stereo_eye_offset_cm"),Overlay.StereoEyeOffsetCm,Context)) return false;
+    if (!RequireFloat(Obj, TEXT("plane_distance"),     Overlay.PlaneDistance,    Context)) return false;
+    if (!RequireFloat(Obj, TEXT("fov_coverage"),       Overlay.FOVCoverage,      Context)) return false;
+    if (!RequireFloat(Obj, TEXT("boundary_plane_width_m"), Overlay.BoundaryPlaneWidthM,  Context)) return false;
+    if (!RequireFloat(Obj, TEXT("boundary_plane_height_m"),Overlay.BoundaryPlaneHeightM, Context)) return false;
+    if (!RequireInt(Obj,   TEXT("render_target_width"), Overlay.RenderTargetWidth, Context)) return false;
+    if (!RequireInt(Obj,   TEXT("render_target_height"),Overlay.RenderTargetHeight,Context)) return false;
+
+    const TArray<TSharedPtr<FJsonValue>>* Arr = nullptr;
+    if (Obj->TryGetArrayField(TEXT("head_base_position"), Arr) && Arr && Arr->Num() == 3)
+        Overlay.HeadBasePosition = FVector((*Arr)[0]->AsNumber(), (*Arr)[1]->AsNumber(), (*Arr)[2]->AsNumber());
+    if (Obj->TryGetArrayField(TEXT("cam_offset_in_head"), Arr) && Arr && Arr->Num() == 3)
+        Overlay.CamOffsetInHead  = FVector((*Arr)[0]->AsNumber(), (*Arr)[1]->AsNumber(), (*Arr)[2]->AsNumber());
 
     return true;
 }

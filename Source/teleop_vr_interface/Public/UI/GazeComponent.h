@@ -32,6 +32,7 @@ public:
 
     const FGazeData& GetGazeData() const { return GazeData_; }
     bool IsTrackerConnected() const { return bTrackerReady_ && bIsDeviceConnected; }
+    bool IsGazeFresh(float MaxAgeSec = 0.5f) const { return (FPlatformTime::Seconds() - GazeData_.Timestamp) < MaxAgeSec; }
 
     UPROPERTY(EditAnywhere, Category = "Gaze")
     float ConfidenceThreshold = 0.5f;

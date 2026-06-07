@@ -1,8 +1,11 @@
 {
-    "latency_warning_ms":     140.0,
-    "loss_warning_percent":   0.001,
-    "fps_warning_floor":      20.0,
-    "metric_entry_window_s":  5.0,
-    "metric_exit_window_s":   3.0,
-    "confirmation_duration_s": 3.0
+    "latency_warning_ms":       140.0,
+    "loss_warning_percent":     0.001,
+    "fps_warning_floor":        20.0,
+    "metric_entry_window_s":    5.0,
+    "metric_exit_window_s":     3.0,
+    "confirmation_duration_s":  3.0,
+    "ui_widget_width":          1280.0,
+    "ui_widget_height":         800.0,
+    "ui_plane_distance":        690.0
 }

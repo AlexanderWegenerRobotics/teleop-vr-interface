@@ -1,0 +1,24 @@
+{
+    "near_threshold_m":      0.03,
+    "far_threshold_m":       0.15,
+    "min_opacity":           0.15,
+    "max_opacity":           0.85,
+
+    "latency_ok_ms":         100.0,
+    "latency_warn_ms":       150.0,
+    "latency_bad_ms":        300.0,
+    "latency_bad_exit_ms":   200.0,
+
+    "head_base_position":    [0.0, 0.0, 1.844],
+    "cam_offset_in_head":    [0.05, 0.0, 0.035],
+
+    "capture_fov":           75.2,
+    "stereo_capture_fov":    75.2,
+    "stereo_eye_offset_cm":  3.05,
+    "render_target_width":   1280,
+    "render_target_height":  960,
+    "plane_distance":        700.0,
+    "fov_coverage":          0.85,
+    "boundary_plane_width_m":  1.8,
+    "boundary_plane_height_m": 0.96
+}

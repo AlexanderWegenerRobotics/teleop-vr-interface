@@ -42,15 +42,31 @@ public:
     // Left arm VR controller fallback refs.
     void SetLeftHand   (USceneComponent*            h) { LeftHandRef    = h; }
     void SetLeftTracked(UTrackedControllerComponent* t) { LeftTrackedRef = t; }
-
-    // Called each frame by the pawn with the current video-feed latency (ms).
-    // Thread-safe write; value is consumed and smoothed on the game thread.
     void SetVideoLatencyMs(float Ms) { RawLatencyMs_ = Ms; }
+    // Delta pose in protocol coordinates (same layout as ArmCommandMsg).
+    // Integrated into an absolute pose each tick; ghost freezes on clutch.
+    void SetIntentPose(uint8 ArmIndex, const float DeltaPosition[3], const float DeltaQuaternion[4], float Gripper, bool bClutchActive);
 
-    // ---- Latency feedback ------------------------------------------------- //
-    // Smoothed latency (EMA, τ ≈ 0.2 s) is compared against these thresholds.
-    // Hysteresis prevents rapid flipping: enter Warning above WarnMs, exit below OkMs;
-    // enter Bad above BadMs, exit back to Warning below WarnMs.
+    // Seed absolute EE position from ArmStateMsg so the ghost starts at the right place.
+    // Call whenever the arm transitions to ENGAGED.
+    void SeedIntentPose(uint8 ArmIndex, const float Position[3], const float Quaternion[4]);
+    void UnseedIntentPose(uint8 ArmIndex);
+
+    UPROPERTY(EditAnywhere, Category = "Ghost|Intent")
+    bool bUseIntentPose = true;
+
+    // Opacity driving — set from config
+    float GhostNearThresholdM_ = 0.03f;
+    float GhostFarThresholdM_  = 0.15f;
+    float GhostMinOpacity_     = 0.15f;
+    float GhostMaxOpacity_     = 0.85f;
+
+    // Workspace boundary plane — set from config
+    float WorkspaceLowerBoundZ_    = 0.435f;
+    float WorkspaceBoundaryMarginM_ = 0.05f;
+    float BoundaryPlaneWidthM_  = 1.8f;
+    float BoundaryPlaneHeightM_ = 0.96f;
+
     UPROPERTY(EditAnywhere, Category = "Ghost|Latency")
     float LatencyOkMs   =  100.f;   // smoothed threshold — exit Warning → OK
     UPROPERTY(EditAnywhere, Category = "Ghost|Latency")
@@ -69,7 +85,8 @@ public:
     // Vector/Color parameter name inside M_Ghost to receive the latency tint.
     // Open the material in the editor and check what the parameter is called.
     UPROPERTY(EditAnywhere, Category = "Ghost|Latency")
-    FName LatencyColorParam = TEXT("Color");
+    FName LatencyColorParam = TEXT("EmissiveColor");
+    FLinearColor GhostDefaultColor = FLinearColor(0.2f, 0.5f, 1.0f, 1.0f);
 
     // ---- Overlay / Capture ------------------------------------------------ //
     UPROPERTY(EditAnywhere, Category = "Ghost|Overlay")
@@ -84,8 +101,6 @@ public:
     // Stereo mode: SceneCapture FOV for each eye — should match the video camera fovy (110°).
     UPROPERTY(EditAnywhere, Category = "Ghost|Capture")
     float StereoCaptureFOV = 75.2f;
-
-    // Stereo mode: half-IPD in cm (distance from center to each eye).
     // Match your headset's IPD setting ÷ 2.  Default = 61 mm ÷ 2 = 3.05 cm.
     UPROPERTY(EditAnywhere, Category = "Ghost|Capture")
     float StereoEyeOffsetCm = 3.05f;
@@ -99,8 +114,6 @@ public:
     UPROPERTY(EditAnywhere, Category = "Ghost|HeadCam")
     FVector CamOffsetInHead = FVector(0.05f, 0.f, 0.035f);
 
-    // Per-arm mesh import orientation offset.  Tune in editor if the mesh is
-    // rotated relative to the EE frame reported by the robot.
     UPROPERTY(EditAnywhere, Category = "Ghost|Mesh")
     FRotator EEFrameOffset = FRotator::ZeroRotator;
 
@@ -156,7 +169,11 @@ private:
                           UTrackedControllerComponent* Tracked);
     FQuat UpdateCaptureTransforms(const FQuat& R_HW_Protocol);
     void UpdateLatencyState(float DeltaTime);
-    void ApplyLatencyColor();       // pushes tint to GhostMID_ based on LatencyLevel_
+    void ApplyLatencyColor();
+    void UpdateGhostOpacity();
+    void UpdateBoundaryPlane();
+
+    bool ApplyArmPoseToMesh(UStaticMeshComponent* Mesh, const float Position[3], const float  Quaternion[4], const FRotator&  EEOffset, FQuat* OutR_HW = nullptr);
 
     UPROPERTY()
     TObjectPtr<UTextureRenderTarget2D> CaptureRT;
@@ -230,8 +247,32 @@ private:
     UPROPERTY()
     TObjectPtr<UMaterialInstanceDynamic> PostProcessGhostMID_;
 
+    UPROPERTY()
+    TObjectPtr<UStaticMeshComponent> BoundaryPlaneMeshComp;
+
+    UPROPERTY()
+    TObjectPtr<UMaterialInstanceDynamic> BoundaryPlaneMID_;
+
     // Latency state — written by SetVideoLatencyMs (pawn thread), consumed in Tick.
     float RawLatencyMs_      = 0.f;
     float SmoothedLatencyMs_ = 0.f;
     uint8 LatencyLevel_      = 0;   // 0 = OK  |  1 = Warning  |  2 = Bad
+
+    // Intent pose storage — one slot per arm (index 0 = left, 1 = right).
+    // Always written by SetIntentPose regardless of bUseIntentPose so the data is
+    // available the moment the flag is flipped.
+    struct FIntentPose
+    {
+        // Absolute EE pose at the last CaptureOrigin (set by SeedIntentPose).
+        float SeedPosition[3]   = {0.f, 0.f, 0.f};
+        float SeedQuaternion[4] = {1.f, 0.f, 0.f, 0.f};  // w, x, y, z
+
+        // Current absolute pose = seed + last delta (recomputed each tick, not accumulated).
+        float Position[3]   = {0.f, 0.f, 0.f};
+        float Quaternion[4] = {1.f, 0.f, 0.f, 0.f};
+
+        float Gripper   = 0.f;
+        bool  bSeeded   = false;
+    };
+    FIntentPose IntentPoses_[2];
 };

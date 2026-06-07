@@ -58,6 +58,8 @@ void UGhostOverlayComponent::TickComponent(float DeltaTime, ELevelTick TickType,
     Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
     if (!bPipelineReady) return;
     UpdateLatencyState(DeltaTime);
+    UpdateGhostOpacity();
+    UpdateBoundaryPlane();
     UpdateGhostPose();
     UpdateLeftArmPose();
 }
@@ -211,6 +213,24 @@ void UGhostOverlayComponent::CreateSceneCapture() {
 
     LeftArmLeftFingerMeshComp  = CreateFingerMesh(TEXT("GhostLeftArmLFinger"), GhostLeftFingerMesh,  LeftFingerOpenOffset);
     LeftArmRightFingerMeshComp = CreateFingerMesh(TEXT("GhostLeftArmRFinger"), GhostRightFingerMesh, RightFingerOpenOffset);
+
+    {
+        UStaticMesh* PlaneMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Plane.Plane"));
+        BoundaryPlaneMeshComp = NewObject<UStaticMeshComponent>(Owner, TEXT("GhostBoundaryPlane"));
+        BoundaryPlaneMeshComp->SetupAttachment(SceneCapture);
+        BoundaryPlaneMeshComp->RegisterComponent();
+        if (PlaneMesh) BoundaryPlaneMeshComp->SetStaticMesh(PlaneMesh);
+        BoundaryPlaneMeshComp->SetWorldScale3D(FVector(BoundaryPlaneHeightM_, BoundaryPlaneWidthM_, 1.f));
+        if (GhostHandMaterial) {
+            for (int32 i = 0; i < BoundaryPlaneMeshComp->GetNumMaterials(); ++i)
+                BoundaryPlaneMeshComp->SetMaterial(i, GhostHandMaterial);
+        }
+        BoundaryPlaneMeshComp->SetCastShadow(false);
+        BoundaryPlaneMeshComp->SetVisibleInSceneCaptureOnly(true);
+        BoundaryPlaneMeshComp->SetVisibility(false);
+        SceneCapture->ShowOnlyComponents.Add(BoundaryPlaneMeshComp);
+    }
+
     LeftArmLeftFingerMeshComp->DetachFromComponent(FDetachmentTransformRules::KeepRelativeTransform);
     LeftArmLeftFingerMeshComp->AttachToComponent(GhostLeftMeshComp, FAttachmentTransformRules::KeepRelativeTransform);
     LeftArmRightFingerMeshComp->DetachFromComponent(FDetachmentTransformRules::KeepRelativeTransform);
@@ -350,59 +370,141 @@ FQuat UGhostOverlayComponent::UpdateCaptureTransforms(const FQuat& R_HW_Protocol
     return CamRotUE;
 }
 
-// Project the right-arm EE world pose (index 1) into the SceneCapture-local frame.
+// ---------------------------------------------------------------------------
+// SetIntentPose — called by OperatorPawn::SendArmCommands() every tick.
+// Freezes the stored pose (no-op) while the clutch is active so the ghost
+// holds position during operator repositioning.
+// ---------------------------------------------------------------------------
+void UGhostOverlayComponent::SeedIntentPose(uint8 ArmIndex, const float Position[3], const float Quaternion[4])
+{
+    if (ArmIndex > 1) return;
+    FIntentPose& P = IntentPoses_[ArmIndex];
+    for (int i = 0; i < 3; ++i) P.SeedPosition[i]   = Position[i];
+    for (int i = 0; i < 4; ++i) P.SeedQuaternion[i] = Quaternion[i];
+    for (int i = 0; i < 3; ++i) P.Position[i]        = Position[i];
+    for (int i = 0; i < 4; ++i) P.Quaternion[i]      = Quaternion[i];
+    P.bSeeded = true;
+}
+
+void UGhostOverlayComponent::UnseedIntentPose(uint8 ArmIndex)
+{
+    if (ArmIndex > 1) return;
+    IntentPoses_[ArmIndex].bSeeded = false;
+}
+
+void UGhostOverlayComponent::SetIntentPose(uint8 ArmIndex,
+                                            const float DeltaPosition[3],
+                                            const float DeltaQuaternion[4],
+                                            float       Gripper,
+                                            bool        bClutchActive)
+{
+    if (ArmIndex > 1) return;
+    if (bClutchActive) return;
+
+    FIntentPose& P = IntentPoses_[ArmIndex];
+    if (!P.bSeeded) return;
+
+    // Delta is cumulative from the last CaptureOrigin — recompute absolute each tick,
+    // don't accumulate. Same as: robot_EE = home_pose + delta.
+    for (int i = 0; i < 3; ++i)
+        P.Position[i] = P.SeedPosition[i] + DeltaPosition[i];
+
+    const FQuat SeedQ (P.SeedQuaternion[1],  P.SeedQuaternion[2],  P.SeedQuaternion[3],  P.SeedQuaternion[0]);
+    const FQuat DeltaQ(DeltaQuaternion[1], DeltaQuaternion[2], DeltaQuaternion[3], DeltaQuaternion[0]);
+    const FQuat M_quat = (ArmIndex == 1)
+        ? FQuat( 0.5f, -0.5f, 0.5f,  0.5f)
+        : FQuat( 0.5f,  0.5f, 0.5f, -0.5f);
+    const FQuat NewQ = SeedQ * (M_quat * DeltaQ * M_quat.Inverse());
+    P.Quaternion[0] = NewQ.W; P.Quaternion[1] = NewQ.X;
+    P.Quaternion[2] = NewQ.Y; P.Quaternion[3] = NewQ.Z;
+
+    P.Gripper = Gripper;
+}
+
+// ---------------------------------------------------------------------------
+// ApplyArmPoseToMesh — shared transform kernel used by both the state-driven
+// and intent-driven paths.  Reads head pan/tilt from ComLink (if alive),
+// applies the protocol→camera→UE conversion, and positions the mesh.
+// Returns false if the result is behind the camera (p_cam.X <= 0).
+// OutR_HW is optional; populated for stereo UpdateCaptureTransforms().
+// ---------------------------------------------------------------------------
+bool UGhostOverlayComponent::ApplyArmPoseToMesh(UStaticMeshComponent* Mesh,
+                                                 const float           Position[3],
+                                                 const float           Quaternion[4],
+                                                 const FRotator&       EEOffset,
+                                                 FQuat*                OutR_HW)
+{
+    float Pan = 0.f, Tilt = 0.f;
+    if (ComLinkRef && ComLinkRef->IsHeadAlive())
+    {
+        const HeadStateMsg H = ComLinkRef->ReadHeadState();
+        Pan  = H.pan;
+        Tilt = H.tilt;
+    }
+
+    const FVector p_EE(Position[0],   Position[1],   Position[2]);
+    const FQuat   q_EE(Quaternion[1], Quaternion[2], Quaternion[3], Quaternion[0]);
+
+    const FQuat R_HW_pan (FVector(0,  0, 1), Pan);
+    const FQuat R_HW_tilt(FVector(0, -1, 0), Tilt);
+    const FQuat R_HW = R_HW_pan * R_HW_tilt;
+    const FQuat R_CH = R_HW.Inverse();
+
+    const FVector p_cam = R_CH.RotateVector(p_EE - HeadBasePosition) - CamOffsetInHead;
+    if (p_cam.X <= 0.f) return false;
+
+    const FQuat   q_cam  = R_CH * q_EE;
+    const FVector posUE  = CoordConvert::ProtocolToUnreal(p_cam.X, p_cam.Y, p_cam.Z);
+    const FQuat   rotUE  = CoordConvert::ProtocolToUnrealQuat(q_cam.W, q_cam.X, q_cam.Y, q_cam.Z);
+    const FQuat   finRot = rotUE * FQuat(EEOffset);
+
+    if (bStereo_)
+    {
+        const FQuat CamRotUE = UpdateCaptureTransforms(R_HW);
+        Mesh->SetWorldLocationAndRotation(
+            GetOwner()->GetActorLocation() + CamRotUE.RotateVector(posUE),
+            CamRotUE * finRot);
+    }
+    else
+    {
+        Mesh->SetRelativeLocationAndRotation(posUE, finRot);
+    }
+
+    if (OutR_HW) *OutR_HW = R_HW;
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// UpdateGhostPose — right arm (index 1).
+// Priority: intent pose (if bUseIntentPose) → twin/state → VR controller.
+// ---------------------------------------------------------------------------
 void UGhostOverlayComponent::UpdateGhostPose()
 {
     constexpr uint8 kRightArm = 1;
+
+    // --- Intent cursor path (new) -------------------------------------------
+    if (bUseIntentPose && IntentPoses_[kRightArm].bSeeded)
+    {
+        const FIntentPose& I = IntentPoses_[kRightArm];
+        if (ApplyArmPoseToMesh(GhostMeshComp, I.Position, I.Quaternion, EEFrameOffset))
+            UpdateFingerPose(LeftFingerMeshComp, RightFingerMeshComp, RightTrackedRef);
+        return;
+    }
+
+    // --- Original twin/state path (unchanged) --------------------------------
     if (ComLinkRef && ComLinkRef->HasNewArmState(kRightArm))
     {
         const ArmStateMsg A = ComLinkRef->ReadArmState(kRightArm);
-
-        float Pan  = 0.f;
-        float Tilt = 0.f;
-        if (ComLinkRef->IsHeadAlive()) {
-            const HeadStateMsg H = ComLinkRef->ReadHeadState();
-            Pan  = H.pan;
-            Tilt = H.tilt;
-        }
-
-        FVector p_EE(A.position[0],   A.position[1],   A.position[2]);
-        FQuat   q_EE(A.quaternion[1], A.quaternion[2], A.quaternion[3], A.quaternion[0]);
-
-        const FQuat R_HW_pan(FVector(0, 0, 1), Pan);
-        const FQuat R_HW_tilt(FVector(0, -1, 0), Tilt);
-        const FQuat R_HW = R_HW_pan * R_HW_tilt;
-        const FQuat R_CH = R_HW.Inverse();
-
-        const FVector p_cam = R_CH.RotateVector(p_EE - HeadBasePosition) - CamOffsetInHead;
-        const FQuat   q_cam = R_CH * q_EE;
-
-        if (p_cam.X <= 0.f) return;
-
-        const FVector posUE = CoordConvert::ProtocolToUnreal(p_cam.X, p_cam.Y, p_cam.Z);
-        const FQuat   rotUE = CoordConvert::ProtocolToUnrealQuat(q_cam.W, q_cam.X, q_cam.Y, q_cam.Z);
-        const FQuat finalRot = rotUE * FQuat(EEFrameOffset);
-
-        if (bStereo_)
-        {
-            const FQuat CamRotUE = UpdateCaptureTransforms(R_HW);
-            GhostMeshComp->SetWorldLocationAndRotation(
-                GetOwner()->GetActorLocation() + CamRotUE.RotateVector(posUE),
-                CamRotUE * finalRot);
-        }
-        else
-        {
-            GhostMeshComp->SetRelativeLocationAndRotation(posUE, finalRot);
-        }
-        UpdateFingerPose(LeftFingerMeshComp, RightFingerMeshComp, RightTrackedRef);
+        if (ApplyArmPoseToMesh(GhostMeshComp, A.position, A.quaternion, EEFrameOffset))
+            UpdateFingerPose(LeftFingerMeshComp, RightFingerMeshComp, RightTrackedRef);
         return;
     }
 
     if (ComLinkRef && ComLinkRef->IsArmAlive(kRightArm)) return;
     if (!RightHandRef || !CameraRef) return;
 
-    const FTransform& HandTM  = RightHandRef->GetComponentTransform();
-    const FTransform& CamTM   = CameraRef->GetComponentTransform();
+    const FTransform& HandTM = RightHandRef->GetComponentTransform();
+    const FTransform& CamTM  = CameraRef->GetComponentTransform();
 
     if (bStereo_)
     {
@@ -414,7 +516,9 @@ void UGhostOverlayComponent::UpdateGhostPose()
     {
         const FTransform& RefTM = SceneCapture->GetComponentTransform();
         const FVector RelPos = RefTM.InverseTransformPosition(HandTM.GetLocation());
-        const FQuat   RelRot = RefTM.GetRotation().Inverse() * (CamTM.GetRotation().Inverse() * HandTM.GetRotation()) * FQuat(EEFrameOffset);
+        const FQuat   RelRot = RefTM.GetRotation().Inverse()
+                             * (CamTM.GetRotation().Inverse() * HandTM.GetRotation())
+                             * FQuat(EEFrameOffset);
         GhostMeshComp->SetRelativeLocationAndRotation(RelPos, RelRot);
     }
     UpdateFingerPose(LeftFingerMeshComp, RightFingerMeshComp, RightTrackedRef);
@@ -451,6 +555,18 @@ void UGhostOverlayComponent::CreateLatencyMaterial()
     ApplyMID(GhostLeftMeshComp);
     ApplyMID(LeftArmLeftFingerMeshComp);
     ApplyMID(LeftArmRightFingerMeshComp);
+
+    if (BoundaryPlaneMeshComp)
+    {
+        BoundaryPlaneMID_ = UMaterialInstanceDynamic::Create(GhostHandMaterial, GetOwner());
+        if (BoundaryPlaneMID_)
+        {
+            BoundaryPlaneMID_->SetVectorParameterValue(LatencyColorParam, FLinearColor(1.f, 0.0f, 0.0f, 1.f));
+            BoundaryPlaneMID_->SetScalarParameterValue(TEXT("Alpha param"), 0.7f);
+            for (int32 i = 0; i < BoundaryPlaneMeshComp->GetNumMaterials(); ++i)
+                BoundaryPlaneMeshComp->SetMaterial(i, BoundaryPlaneMID_);
+        }
+    }
 
     ApplyLatencyColor();
 }
@@ -497,6 +613,64 @@ void UGhostOverlayComponent::UpdateLatencyState(float DeltaTime)
 // ApplyLatencyColor
 // ---------------------------------------------------------------------------
 
+void UGhostOverlayComponent::UpdateBoundaryPlane()
+{
+    if (!BoundaryPlaneMeshComp) return;
+
+    const float TriggerZ = WorkspaceLowerBoundZ_ + WorkspaceBoundaryMarginM_;
+    bool bAnyViolation = false;
+    float PlaneX = 0.f, PlaneY = 0.f;
+
+    for (uint8 Arm = 0; Arm < 2; ++Arm)
+    {
+        const FIntentPose& P = IntentPoses_[Arm];
+        if (!P.bSeeded) continue;
+        if (P.Position[2] < TriggerZ)
+        {
+            bAnyViolation = true;
+            PlaneX = P.Position[0];
+            PlaneY = P.Position[1];
+            break;
+        }
+    }
+
+    if (!bAnyViolation)
+    {
+        BoundaryPlaneMeshComp->SetVisibility(false);
+        return;
+    }
+
+    BoundaryPlaneMeshComp->SetVisibility(true);
+    const float PlanePos[3]  = { PlaneX, PlaneY, WorkspaceLowerBoundZ_ };
+    const float IdentQuat[4] = { 1.f, 0.f, 0.f, 0.f };
+    ApplyArmPoseToMesh(BoundaryPlaneMeshComp, PlanePos, IdentQuat, FRotator::ZeroRotator);
+}
+
+void UGhostOverlayComponent::UpdateGhostOpacity()
+{
+    if (!GhostMID_ || !ComLinkRef) return;
+
+    float MaxDelta = 0.f;
+    for (uint8 Arm = 0; Arm < 2; ++Arm)
+    {
+        if (!IntentPoses_[Arm].bSeeded) continue;
+        if (!ComLinkRef->HasNewArmState(Arm)) continue;
+        const ArmStateMsg S = ComLinkRef->ReadArmState(Arm);
+        const float* IP = IntentPoses_[Arm].Position;
+        const float Dist = FMath::Sqrt(
+            FMath::Square(IP[0] - S.position[0]) +
+            FMath::Square(IP[1] - S.position[1]) +
+            FMath::Square(IP[2] - S.position[2]));
+        MaxDelta = FMath::Max(MaxDelta, Dist);
+    }
+
+    const float T = FMath::Clamp(
+        (MaxDelta - GhostNearThresholdM_) / FMath::Max(GhostFarThresholdM_ - GhostNearThresholdM_, 1e-4f),
+        0.f, 1.f);
+    const float Opacity = FMath::Lerp(GhostMinOpacity_, GhostMaxOpacity_, T);
+    GhostMID_->SetScalarParameterValue(TEXT("Alpha param"), Opacity);
+}
+
 void UGhostOverlayComponent::ApplyLatencyColor()
 {
     if (!GhostMID_) return;
@@ -506,7 +680,7 @@ void UGhostOverlayComponent::ApplyLatencyColor()
     {
         case 1:  Color = LatencyWarnColor; break;   // amber — pay attention
         case 2:  Color = LatencyBadColor;  break;   // orange-red — ghost is stale
-        default: Color = FLinearColor::White; break; // no tint
+        default: Color = GhostDefaultColor; break;
     }
     GhostMID_->SetVectorParameterValue(LatencyColorParam, Color);
 }
@@ -516,48 +690,22 @@ void UGhostOverlayComponent::UpdateLeftArmPose()
     if (!GhostLeftMeshComp) return;
 
     constexpr uint8 kLeftArm = 0;
+
+    // --- Intent cursor path (new) -------------------------------------------
+    if (bUseIntentPose && IntentPoses_[kLeftArm].bSeeded)
+    {
+        const FIntentPose& I = IntentPoses_[kLeftArm];
+        if (ApplyArmPoseToMesh(GhostLeftMeshComp, I.Position, I.Quaternion, LeftEEFrameOffset))
+            UpdateFingerPose(LeftArmLeftFingerMeshComp, LeftArmRightFingerMeshComp, LeftTrackedRef);
+        return;
+    }
+
+    // --- Original twin/state path (unchanged) --------------------------------
     if (ComLinkRef && ComLinkRef->HasNewArmState(kLeftArm))
     {
         const ArmStateMsg A = ComLinkRef->ReadArmState(kLeftArm);
-
-        float Pan  = 0.f;
-        float Tilt = 0.f;
-        if (ComLinkRef->IsHeadAlive())
-        {
-            const HeadStateMsg H = ComLinkRef->ReadHeadState();
-            Pan  = H.pan;
-            Tilt = H.tilt;
-        }
-
-        FVector p_EE(A.position[0],   A.position[1],   A.position[2]);
-        FQuat   q_EE(A.quaternion[1], A.quaternion[2], A.quaternion[3], A.quaternion[0]);
-
-        const FQuat R_HW_pan (FVector(0,  0, 1), Pan);
-        const FQuat R_HW_tilt(FVector(0, -1, 0), Tilt);
-        const FQuat R_HW = R_HW_pan * R_HW_tilt;
-        const FQuat R_CH = R_HW.Inverse();
-
-        const FVector p_cam = R_CH.RotateVector(p_EE - HeadBasePosition) - CamOffsetInHead;
-        const FQuat   q_cam = R_CH * q_EE;
-
-        if (p_cam.X <= 0.f) return;
-
-        const FVector posUE = CoordConvert::ProtocolToUnreal(p_cam.X, p_cam.Y, p_cam.Z);
-        const FQuat   rotUE = CoordConvert::ProtocolToUnrealQuat(q_cam.W, q_cam.X, q_cam.Y, q_cam.Z);
-        const FQuat finalRot = rotUE * FQuat(LeftEEFrameOffset);
-
-        if (bStereo_)
-        {
-            const FQuat CamRotUE = UpdateCaptureTransforms(R_HW);
-            GhostLeftMeshComp->SetWorldLocationAndRotation(
-                GetOwner()->GetActorLocation() + CamRotUE.RotateVector(posUE),
-                CamRotUE * finalRot);
-        }
-        else
-        {
-            GhostLeftMeshComp->SetRelativeLocationAndRotation(posUE, finalRot);
-        }
-        UpdateFingerPose(LeftArmLeftFingerMeshComp, LeftArmRightFingerMeshComp, LeftTrackedRef);
+        if (ApplyArmPoseToMesh(GhostLeftMeshComp, A.position, A.quaternion, LeftEEFrameOffset))
+            UpdateFingerPose(LeftArmLeftFingerMeshComp, LeftArmRightFingerMeshComp, LeftTrackedRef);
         return;
     }
 
