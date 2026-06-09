@@ -186,23 +186,26 @@ void AVideoLogger::SubmitFrame(const FFrameBundle& InBundle)
 {
     if (!bIsLogging || !LoggingRT) return;
 
+    int32 NumFrames = 1;
     if (CaptureFPS > 0.f)
     {
         AccumulatedTime += GetWorld()->GetDeltaSeconds();
         if (AccumulatedTime < SecondsPerFrame) return;
-        AccumulatedTime -= SecondsPerFrame;
+        NumFrames = FMath::Min((int32)(AccumulatedTime / SecondsPerFrame), 3);
+        AccumulatedTime -= NumFrames * SecondsPerFrame;
     }
 
     FFrameBundle Bundle = InBundle;
-    Bundle.FrameIdx = FrameIndex++;
-    CaptureFrame(Bundle);
+    Bundle.FrameIdx = FrameIndex;
+    FrameIndex += NumFrames;
+    CaptureFrame(Bundle, NumFrames);
 }
 
 // ----------------------------------------------------------------
 // CaptureFrame — single GPU readback, shared by both encoders
 // ----------------------------------------------------------------
 
-void AVideoLogger::CaptureFrame(const FFrameBundle& Bundle)
+void AVideoLogger::CaptureFrame(const FFrameBundle& Bundle, int32 NumFrames)
 {
     FDrawToRenderTargetContext Ctx;
     UCanvas* Canvas = nullptr;
@@ -235,14 +238,22 @@ void AVideoLogger::CaptureFrame(const FFrameBundle& Bundle)
     if (!RHITex) return;
 
     ENQUEUE_RENDER_COMMAND(VideoLoggerReadback)(
-        [RHITex, this, Snap, W, H](FRHICommandListImmediate& RHICmdList)
+        [RHITex, this, Snap, W, H, NumFrames](FRHICommandListImmediate& RHICmdList)
         {
             TArray<FColor> Pixels;
             Pixels.SetNumUninitialized(W * H);
             RHICmdList.ReadSurfaceData(RHITex, FIntRect(0, 0, W, H), Pixels,
                 FReadSurfaceDataFlags(RCM_UNorm, CubeFace_MAX));
-            FLogFrame LF; LF.Bundle = Snap; LF.Pixels = MoveTemp(Pixels);
-            EncodeQueue.Enqueue(MoveTemp(LF));
+            for (int32 i = 0; i < NumFrames; ++i)
+            {
+                FLogFrame LF;
+                LF.Bundle = Snap;
+                if (i < NumFrames - 1)
+                    LF.Pixels = Pixels;
+                else
+                    LF.Pixels = MoveTemp(Pixels);
+                EncodeQueue.Enqueue(MoveTemp(LF));
+            }
         });
 }
 

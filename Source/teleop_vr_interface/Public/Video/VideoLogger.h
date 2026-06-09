@@ -77,7 +77,7 @@ protected:
     virtual void Tick(float DeltaTime) override;
 
 private:
-    void CaptureFrame(const FFrameBundle& Bundle);
+    void CaptureFrame(const FFrameBundle& Bundle, int32 NumFrames = 1);
     void ApplyGazeSpotlight(TArray<FColor>& Pixels, FVector2D GazeUV, bool bValid, float Confidence) const;
     void ConvertBGRAtoYUV420P(const TArray<FColor>& Pixels, TArray<uint8>& OutI420) const;
 

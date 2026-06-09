@@ -132,6 +132,10 @@ bool UTeleOpConfig::LoadRobot(const FString& Path) {
     const FString Context = TEXT("robot.json");
     if (!RequireFloat(Obj, TEXT("workspace_lower_bound_z"),    Robot.WorkspaceLowerBoundZ,    Context)) return false;
     if (!RequireFloat(Obj, TEXT("workspace_boundary_margin"),  Robot.WorkspaceBoundaryMargin, Context)) return false;
+    // Optional lateral limits — fall back to defaults if absent
+    Obj->TryGetNumberField(TEXT("workspace_min_x"), Robot.WorkspaceMinX);
+    Obj->TryGetNumberField(TEXT("workspace_max_y"), Robot.WorkspaceMaxY);
+    Obj->TryGetNumberField(TEXT("workspace_min_y"), Robot.WorkspaceMinY);
 
     const TArray<TSharedPtr<FJsonValue>>* Arr = nullptr;
     if (Obj->TryGetArrayField(TEXT("wrist_pivot_right"), Arr) && Arr && Arr->Num() == 3)

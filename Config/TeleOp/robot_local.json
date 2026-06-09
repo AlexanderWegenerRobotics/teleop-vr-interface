@@ -1,6 +1,9 @@
 {
-    "workspace_lower_bound_z":   0.688,
-    "workspace_boundary_margin": 0.05,
+    "workspace_lower_bound_z":   0.815,
+    "workspace_boundary_margin": 0.0,
+    "workspace_min_x":  0.4,
+    "workspace_max_y":  0.4,
+    "workspace_min_y": -0.4,
     "wrist_pivot_right": [-5.9,  2.1, 3.4],
     "wrist_pivot_left":  [-5.9, -2.1, 3.4]
 }

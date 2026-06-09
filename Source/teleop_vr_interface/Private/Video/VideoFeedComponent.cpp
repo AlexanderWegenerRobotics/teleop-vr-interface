@@ -101,6 +101,30 @@ void UVideoFeedComponent::TickComponent(float DeltaTime, ELevelTick TickType, FA
         PostProcessMID_->SetTextureParameterValue(TEXT("VideoLeft"),  VideoTexture);
         PostProcessMID_->SetTextureParameterValue(TEXT("VideoRight"), VideoTexture);
     }
+
+    // ---- Auto-reconnect ---------------------------------------------------- //
+    // If the pipeline drops (GStreamer exits or the sender disappears), the frame
+    // pull thread stops and bIsReceiving goes false.  After kReconnectTimeoutSec
+    // of silence we Stop() + Initialize() + Start() to reopen the UDP socket and
+    // restart the GStreamer pipeline without requiring a full session restart.
+    const bool bReceiving = ActiveSource_->GetStats().bIsReceiving;
+    if (!bReceiving)
+    {
+        NotReceivingAccumSec_ += DeltaTime;
+        if (NotReceivingAccumSec_ >= kReconnectTimeoutSec)
+        {
+            NotReceivingAccumSec_ = 0.0f;
+            UE_LOG(LogTemp, Warning, TEXT("VideoFeed: no frames for %.0f s — restarting pipeline '%s'"),
+                kReconnectTimeoutSec, *ActiveSourceName_);
+            ActiveSource_->Stop();
+            ActiveSource_->Initialize();
+            ActiveSource_->Start();
+        }
+    }
+    else
+    {
+        NotReceivingAccumSec_ = 0.0f;
+    }
 }
 
 void UVideoFeedComponent::SetStereoMode(bool bStereo)

@@ -73,6 +73,9 @@ protected:
 	TMetricHistory<128> LatencyHistory;
 	TMetricHistory<128> JitterHistory;
 	TMetricHistory<128> LossHistory;
+	TMetricHistory<128> FpsHistory;
+	TMetricHistory<128> CpuHistory;
+	TMetricHistory<128> GpuHistory;
 
 private:
 	ESysState OperatorState_ = ESysState::Offline;
@@ -102,11 +105,14 @@ private:
 	// dropping back to AWAITING on stale pre-transition avatar state.
 	bool bAvatarConfirmedEngaged_ = false;
 	bool bPendingVoiceReengage_   = false;
+	bool bResetMenuOpen_          = false;
+	bool bAnnotationPending_      = false;
 
 	float VideoQuadWidth_  = 0.f;
 	float VideoQuadHeight_ = 0.f;
 
 	void UpdateInfoBar();
+	void SendEpisodeRestart(const FString& Label);
 
 	// Session tracking
 	double SessionStartTime_ = 0.0;
@@ -121,6 +127,7 @@ private:
 	bool  bPrevLeftClutch_  = false;
 	bool  bPrevRightClutch_ = false;
 	bool  bStatsVisible_    = false;
+	int32 PerfSampleCounter_ = 0;
 
 	TArray<TUniquePtr<IVideoSource>> PiPSources_;
 	TArray<UTexture2D*>              PiPTextures_;

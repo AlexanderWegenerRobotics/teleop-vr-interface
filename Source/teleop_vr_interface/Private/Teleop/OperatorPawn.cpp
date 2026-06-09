@@ -1,4 +1,6 @@
 #include "Teleop/OperatorPawn.h"
+
+extern ENGINE_API uint32 GGPUFrameTime;
 #include "Video/GStreamerSource.h"
 #include "Teleop/TeleOpConfig.h"
 #include "Engine/TextureRenderTarget2D.h"
@@ -108,6 +110,9 @@ void AOperatorPawn::BeginPlay() {
 	GhostOverlay->GhostMaxOpacity_          = Config->Overlay.MaxOpacity;
 	GhostOverlay->WorkspaceLowerBoundZ_     = Config->Robot.WorkspaceLowerBoundZ;
 	GhostOverlay->WorkspaceBoundaryMarginM_ = Config->Robot.WorkspaceBoundaryMargin;
+	GhostOverlay->WorkspaceMinX_            = Config->Robot.WorkspaceMinX;
+	GhostOverlay->WorkspaceMaxY_            = Config->Robot.WorkspaceMaxY;
+	GhostOverlay->WorkspaceMinY_            = Config->Robot.WorkspaceMinY;
 	GhostOverlay->BoundaryPlaneWidthM_  = Config->Overlay.BoundaryPlaneWidthM;
 	GhostOverlay->BoundaryPlaneHeightM_ = Config->Overlay.BoundaryPlaneHeightM;
 	GhostOverlay->LatencyOkMs              = Config->Overlay.LatencyOkMs;
@@ -167,6 +172,8 @@ void AOperatorPawn::BeginPlay() {
 	UIBinder->SetVisibility(FName("statsPanel"), false);
 	UIBinder->SetVisibility(FName("pip_canvas"), false);
 	UIBinder->SetVisibility(FName("cameraMenu"), false);
+	UIBinder->SetVisibility(FName("resetMenu"), false);
+	UIBinder->SetVisibility(FName("episodeAnnotationCanvas"), false);
 
 	for (const FPiPStreamConfig& S : Config->Stream.PiPStreams) {
 		FReceiverConfig Cfg;
@@ -190,6 +197,16 @@ void AOperatorPawn::BeginPlay() {
 	const float DataLatencyWarn = Config->Hud.DataLatencyWarningMs;
 	UIBinder->BindPlot(FName("dataLatencyPlot"), JitterHistory.GetSamplesPtr(), nullptr, JitterHistory.Capacity(), JitterHistory.GetHeadPtr(), 0.0f, DataLatencyWarn * 2.0f);
 	UIBinder->SetPlotThreshold(FName("dataLatencyPlot"), DataLatencyWarn);
+
+	UIBinder->BindPlot(FName("dataFpsPlot"), FpsHistory.GetSamplesPtr(), nullptr, FpsHistory.Capacity(), FpsHistory.GetHeadPtr(), 0.0f, 60.0f);
+	UIBinder->SetPlotThreshold(FName("dataFpsPlot"), 30.0f);
+
+	// CPU and GPU utilization — 0-100%, threshold at 80%.
+	// GPU is normalised against a 90 Hz VR frame budget (11.11 ms = 100%).
+	UIBinder->BindPlot(FName("dataCpuPlot"), CpuHistory.GetSamplesPtr(), nullptr, CpuHistory.Capacity(), CpuHistory.GetHeadPtr(), 0.0f, 100.0f);
+	UIBinder->SetPlotThreshold(FName("dataCpuPlot"), 80.0f);
+	UIBinder->BindPlot(FName("dataGpuPlot"), GpuHistory.GetSamplesPtr(), nullptr, GpuHistory.Capacity(), GpuHistory.GetHeadPtr(), 0.0f, 150.0f);
+	UIBinder->SetPlotThreshold(FName("dataGpuPlot"), 100.0f);  // alert when over-budget
 
 	ComLink->RegisterHandler("device_event", [this](const FReliableEnvelope& Env) {
 		std::map<std::string, msgpack::object> Fields;
@@ -296,6 +313,21 @@ void AOperatorPawn::Tick(float DeltaTime) {
 	LatencyHistory.Push(Stats.OneWayLatencyMs);
 	JitterHistory.Push(ComLink->GetArmStateLatencyMs(0));
 	LossHistory.Push(Stats.PacketLossPercent);
+	FpsHistory.Push(static_cast<float>(Stats.CurrentFPS));
+
+	// CPU/GPU sampled every 15 ticks (~6 Hz at 90 Hz tick rate).
+	if (++PerfSampleCounter_ >= 15)
+	{
+		PerfSampleCounter_ = 0;
+		CpuHistory.Push(FPlatformTime::GetCPUTime().CPUTimePct);
+		// GPU frame budget used by Unreal's render thread (% of 11.11ms at 90Hz).
+		// NOTE: this is NOT hardware utilization like Task Manager —
+		// it measures how much of Unreal's VR frame budget the GPU consumed.
+		// 100% = Unreal used its full 11ms frame slot (normal for VR).
+		constexpr float kVrFrameBudgetMs = 1000.f / 90.f;
+		const float GpuMs = FPlatformTime::ToMilliseconds(GGPUFrameTime);
+		GpuHistory.Push(FMath::Clamp(GpuMs / kVrFrameBudgetMs * 100.f, 0.f, 150.f));
+	}
 
 	const FGazeData& GazeData = Gaze->GetGazeData();
 	UIBinder->SetGazeInput(GazeData);
@@ -565,21 +597,27 @@ void AOperatorPawn::UpdateStateMachine() {
 		else if (ButtonPressed == FName("resetButtonLeft") && LeftArmResetState_ == EArmResetState::Idle) {
 			SendArmReset("arm_left");
 			LeftArmResetState_ = EArmResetState::Recovering;
-			++EpisodeCount_;
 			UpdateButtonStates();
 		}
 		else if (ButtonPressed == FName("resetButtonRight") && RightArmResetState_ == EArmResetState::Idle) {
 			SendArmReset("arm_right");
 			RightArmResetState_ = EArmResetState::Recovering;
-			++EpisodeCount_;
 			UpdateButtonStates();
 		}
 		else if (ButtonPressed == FName("resetButton")) {
-			SendResetAll();
-			if (LeftArmResetState_ == EArmResetState::Idle) LeftArmResetState_ = EArmResetState::Recovering;
-			if (RightArmResetState_ == EArmResetState::Idle) RightArmResetState_ = EArmResetState::Recovering;
-			++EpisodeCount_;
-			UpdateButtonStates();
+			if (bResetMenuOpen_) {
+				UIBinder->HideMenu();
+				UIBinder->SetButtonToggled(FName("resetButton"), false);
+				bResetMenuOpen_ = false;
+			} else {
+				UIBinder->ShowResetMenu();
+				UIBinder->SetButtonToggled(FName("resetButton"), true);
+				bResetMenuOpen_ = true;
+			}
+		}
+		else if (ButtonPressed == FName("homeButton") && !bAnnotationPending_) {
+			bAnnotationPending_ = true;
+			UIBinder->SetVisibility(FName("episodeAnnotationCanvas"), true);
 		}
 		else if (bAvatarConfirmedEngaged_ && AvatarState == ESysState::Awaiting) {
 			// Avatar dropped back to awaiting after confirming engaged (e.g. arm fault).
@@ -608,21 +646,27 @@ void AOperatorPawn::UpdateStateMachine() {
 		else if (ButtonPressed == FName("resetButtonLeft") && LeftArmResetState_ == EArmResetState::Idle) {
 			SendArmReset("arm_left");
 			LeftArmResetState_ = EArmResetState::Recovering;
-			++EpisodeCount_;
 			UpdateButtonStates();
 		}
 		else if (ButtonPressed == FName("resetButtonRight") && RightArmResetState_ == EArmResetState::Idle) {
 			SendArmReset("arm_right");
 			RightArmResetState_ = EArmResetState::Recovering;
-			++EpisodeCount_;
 			UpdateButtonStates();
 		}
 		else if (ButtonPressed == FName("resetButton")) {
-			SendResetAll();
-			if (LeftArmResetState_ == EArmResetState::Idle) LeftArmResetState_ = EArmResetState::Recovering;
-			if (RightArmResetState_ == EArmResetState::Idle) RightArmResetState_ = EArmResetState::Recovering;
-			++EpisodeCount_;
-			UpdateButtonStates();
+			if (bResetMenuOpen_) {
+				UIBinder->HideMenu();
+				UIBinder->SetButtonToggled(FName("resetButton"), false);
+				bResetMenuOpen_ = false;
+			} else {
+				UIBinder->ShowResetMenu();
+				UIBinder->SetButtonToggled(FName("resetButton"), true);
+				bResetMenuOpen_ = true;
+			}
+		}
+		else if (ButtonPressed == FName("homeButton") && !bAnnotationPending_) {
+			bAnnotationPending_ = true;
+			UIBinder->SetVisibility(FName("episodeAnnotationCanvas"), true);
 		}
 		break;
 
@@ -665,6 +709,49 @@ void AOperatorPawn::UpdateStateMachine() {
 		UIBinder->HideMenu();
 		bMenuOpen_ = false;
 	}
+
+	bool bCanReset = (OperatorState_ == ESysState::Engaged || OperatorState_ == ESysState::Paused);
+	if (bCanReset && ButtonPressed != FName() && ButtonPressed.ToString().StartsWith(TEXT("__reset_"))) {
+		if (ButtonPressed == FName("__reset_left") && LeftArmResetState_ == EArmResetState::Idle) {
+			SendArmReset("arm_left");
+			LeftArmResetState_ = EArmResetState::Recovering;
+			UpdateButtonStates();
+		}
+		else if (ButtonPressed == FName("__reset_right") && RightArmResetState_ == EArmResetState::Idle) {
+			SendArmReset("arm_right");
+			RightArmResetState_ = EArmResetState::Recovering;
+			UpdateButtonStates();
+		}
+		else if (ButtonPressed == FName("__reset_all")) {
+			SendResetAll();
+			if (LeftArmResetState_ == EArmResetState::Idle) LeftArmResetState_ = EArmResetState::Recovering;
+			if (RightArmResetState_ == EArmResetState::Idle) RightArmResetState_ = EArmResetState::Recovering;
+			UpdateButtonStates();
+		}
+		bResetMenuOpen_ = false;
+		UIBinder->HideMenu();
+		UIBinder->SetButtonToggled(FName("resetButton"), false);
+	}
+
+	if (bAnnotationPending_ && ButtonPressed != FName() && ButtonPressed.ToString().StartsWith(TEXT("episode_"))) {
+		FString Label;
+		if      (ButtonPressed == FName("episode_success")) Label = TEXT("success");
+		else if (ButtonPressed == FName("episode_partial")) Label = TEXT("partial");
+		else if (ButtonPressed == FName("episode_failure")) Label = TEXT("failure");
+
+		if (!Label.IsEmpty()) {
+			UIBinder->SetButtonToggled(ButtonPressed, false);
+			UIBinder->SetButtonToggled(FName("homeButton"), false);
+			SendResetAll();
+			if (LeftArmResetState_  == EArmResetState::Idle) LeftArmResetState_  = EArmResetState::Recovering;
+			if (RightArmResetState_ == EArmResetState::Idle) RightArmResetState_ = EArmResetState::Recovering;
+			SendEpisodeRestart(Label);
+			++EpisodeCount_;
+			bAnnotationPending_ = false;
+			UIBinder->SetVisibility(FName("episodeAnnotationCanvas"), false);
+			UpdateButtonStates();
+		}
+	}
 }
 
 void AOperatorPawn::UpdateInfoBar() {
@@ -699,8 +786,16 @@ void AOperatorPawn::TransitionTo(ESysState NewState) {
 	if (Logger_) {
 		Logger_->LogEvent(FString::Printf(TEXT("STATE_TRANSITION old=%s new=%s"),*StateToString(OperatorState_), *StateToString(NewState)));
 	}
-	if (NewState == ESysState::Engaged) ++EpisodeCount_;
 	if (NewState == ESysState::Idle)    bPendingVoiceReengage_ = false;
+	if (NewState == ESysState::Idle || NewState == ESysState::Offline) {
+		if (bResetMenuOpen_) {
+			UIBinder->HideMenu();
+			bResetMenuOpen_ = false;
+		}
+		bAnnotationPending_ = false;
+		UIBinder->SetVisibility(FName("episodeAnnotationCanvas"), false);
+		UIBinder->SetButtonToggled(FName("homeButton"), false);
+	}
 	SoundFeedback->Play(ESoundType::Transition);
 	OperatorState_ = NewState;
 	UpdateButtonStates();
@@ -732,9 +827,11 @@ void AOperatorPawn::UpdateButtonStates() {
 
 	bool bBothIdle = LeftArmResetState_ == EArmResetState::Idle && RightArmResetState_ == EArmResetState::Idle;
 	bool bResetting = !bBothIdle;
-	UIBinder->SetButtonToggled(FName("resetButton"), bResetting);
+	UIBinder->SetButtonToggled(FName("resetButton"), bResetMenuOpen_ || bResetting);
 	UIBinder->SetButtonLocked(FName("resetButton"), !bCanReset || bResetting);
-	UIBinder->SetText(FName("resetLabel"), TEXT("Reset All"));
+	UIBinder->SetText(FName("resetLabel"), TEXT("Reset"));
+
+	UIBinder->SetButtonLocked(FName("homeButton"), !bCanReset || bAnyRecovering || bAnnotationPending_);
 
 	switch (OperatorState_) {
 	case ESysState::Offline:
@@ -895,6 +992,32 @@ void AOperatorPawn::SendResetAll() {
 	ComLink->SendReliable("reset_all", Buf, true);
 	UE_LOG(LogTemp, Log, TEXT("OperatorPawn: reset_all"));
 	if (Logger_) Logger_->LogEvent(TEXT("ARM_RESET device=all"));
+}
+
+void AOperatorPawn::SendEpisodeRestart(const FString& Label) {
+	std::string LabelStr = TCHAR_TO_UTF8(*Label);
+
+	AnnotationMsg Ann{};
+	Ann.timestamp  = FPlatformTime::Seconds();
+	Ann.label      = LabelStr;
+	Ann.atype      = 1;
+	Ann.confidence = 1.0f;
+	Ann.score      = 0.0f;
+	Ann.frame_id   = 0;
+	{
+		msgpack::sbuffer Buf;
+		msgpack::pack(Buf, Ann);
+		ComLink->SendReliable("annotation", Buf, true);
+	}
+
+	{
+		msgpack::sbuffer Buf;
+		msgpack::pack(Buf, std::map<std::string, std::string>{{"label", LabelStr}});
+		ComLink->SendReliable("episode_restart", Buf, true);
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("OperatorPawn: episode_restart label=%s"), *Label);
+	if (Logger_) Logger_->LogEvent(FString::Printf(TEXT("EPISODE_RESTART label=%s"), *Label));
 }
 
 // Wrist-pivot calibration helpers. Inert unless WITH_PIVOT_CALIBRATION is enabled in

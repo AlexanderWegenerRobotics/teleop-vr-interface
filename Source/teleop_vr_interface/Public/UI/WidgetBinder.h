@@ -77,6 +77,7 @@ public:
 	void SetWidgetRenderScale(FName WidgetName, FVector2D Scale, FVector2D Pivot);
 
 	void ShowCameraMenu(const TArray<FString>& StreamNames, const FString& ActiveStream);
+	void ShowResetMenu();
 	void HideMenu();
 
 	FName GetHoveredButton() const { return HoveredButton_; }
@@ -136,9 +137,11 @@ private:
 	UPROPERTY() TMap<FName, UImage*> CachedImages_;
 	UVerticalBox* MessageLog_      = nullptr;
 	UVerticalBox* CameraMenuList_  = nullptr;
+	UVerticalBox* ResetMenuList_   = nullptr;
 
 	TArray<FName> DynamicMenuItems_;
-	bool          bMenuRectsDirty_ = false;
+	bool          bMenuRectsDirty_   = false;
+	bool          bStaticRectsDirty_ = false;
 
 	TSet<FName> LockedButtons_;
 	TSet<FName> ToggledButtons_;

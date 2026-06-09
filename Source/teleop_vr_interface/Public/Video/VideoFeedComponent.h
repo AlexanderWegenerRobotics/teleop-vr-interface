@@ -65,6 +65,10 @@ private:
     bool          bStereo_           = false;
     double        LastSyncedUpdateTimeSec_ = 0.0; // for stereo frame sync timeout
 
+    // Auto-reconnect: restart the pipeline if no frames arrive for this long.
+    static constexpr float kReconnectTimeoutSec = 3.0f;
+    float NotReceivingAccumSec_ = 0.0f;
+
     UPROPERTY()
     TObjectPtr<UTexture2D> RightTexture_;
 

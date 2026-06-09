@@ -61,11 +61,15 @@ public:
     float GhostMinOpacity_     = 0.15f;
     float GhostMaxOpacity_     = 0.85f;
 
-    // Workspace boundary plane — set from config
-    float WorkspaceLowerBoundZ_    = 0.435f;
+    // Workspace boundary planes — set from config
+    float WorkspaceLowerBoundZ_     = 0.435f;
     float WorkspaceBoundaryMarginM_ = 0.05f;
-    float BoundaryPlaneWidthM_  = 1.8f;
-    float BoundaryPlaneHeightM_ = 0.96f;
+    float BoundaryPlaneWidthM_      = 1.8f;
+    float BoundaryPlaneHeightM_     = 0.96f;
+    // Lateral workspace limits
+    float WorkspaceMinX_ =  0.4f;
+    float WorkspaceMaxY_ =  0.4f;
+    float WorkspaceMinY_ = -0.4f;
 
     UPROPERTY(EditAnywhere, Category = "Ghost|Latency")
     float LatencyOkMs   =  100.f;   // smoothed threshold — exit Warning → OK
@@ -248,10 +252,22 @@ private:
     TObjectPtr<UMaterialInstanceDynamic> PostProcessGhostMID_;
 
     UPROPERTY()
-    TObjectPtr<UStaticMeshComponent> BoundaryPlaneMeshComp;
+    TObjectPtr<UStaticMeshComponent> BoundaryPlaneMeshComp;       // floor (z-min)
+    UPROPERTY()
+    TObjectPtr<UStaticMeshComponent> BoundaryPlaneLeftMeshComp;   // +Y wall
+    UPROPERTY()
+    TObjectPtr<UStaticMeshComponent> BoundaryPlaneRightMeshComp;  // -Y wall
+    UPROPERTY()
+    TObjectPtr<UStaticMeshComponent> BoundaryPlaneTorsoMeshComp;  // -X (torso) wall
 
     UPROPERTY()
     TObjectPtr<UMaterialInstanceDynamic> BoundaryPlaneMID_;
+    UPROPERTY()
+    TObjectPtr<UMaterialInstanceDynamic> BoundaryPlaneLeftMID_;
+    UPROPERTY()
+    TObjectPtr<UMaterialInstanceDynamic> BoundaryPlaneRightMID_;
+    UPROPERTY()
+    TObjectPtr<UMaterialInstanceDynamic> BoundaryPlaneTorsoMID_;
 
     // Latency state — written by SetVideoLatencyMs (pawn thread), consumed in Tick.
     float RawLatencyMs_      = 0.f;

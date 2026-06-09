@@ -70,8 +70,11 @@ USTRUCT()
 struct FRobotConfig
 {
     GENERATED_BODY()
-    float WorkspaceLowerBoundZ = 0.435f;
+    float WorkspaceLowerBoundZ    = 0.435f;
     float WorkspaceBoundaryMargin = 0.05f;
+    float WorkspaceMinX =  0.4f;   // torso boundary
+    float WorkspaceMaxY =  0.4f;   // left workspace edge
+    float WorkspaceMinY = -0.4f;   // right workspace edge
     FVector WristPivotRight = FVector(-5.9f,  2.1f, 3.4f);
     FVector WristPivotLeft  = FVector(-5.9f, -2.1f, 3.4f);
 };

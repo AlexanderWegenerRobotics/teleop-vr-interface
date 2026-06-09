@@ -134,7 +134,8 @@ void UWidgetBinder::DiscoverWidgets() {
 			CachedTextBlocks_.Add(W->GetFName(), Txt);
 		}
 		else if (UVerticalBox* VBox = Cast<UVerticalBox>(W)) {
-			if (W->GetFName() == FName("cameraMenuList")) CameraMenuList_ = VBox;
+			if      (W->GetFName() == FName("cameraMenuList")) CameraMenuList_ = VBox;
+			else if (W->GetFName() == FName("resetMenuList"))  ResetMenuList_  = VBox;
 			else if (!MessageLog_) MessageLog_ = VBox;
 		}
 		else if (UTimeSeriesWidget* Plot = Cast<UTimeSeriesWidget>(W)) {
@@ -328,6 +329,8 @@ void UWidgetBinder::TickComponent(float DeltaTime, ELevelTick TickType, FActorCo
 	}
 
 	RenderWidget();
+
+	if (bStaticRectsDirty_) { CacheWidgetRects(); bStaticRectsDirty_ = false; }
 
 	if (bMenuRectsDirty_) {
 		bool bAllReady = true;
@@ -523,8 +526,68 @@ void UWidgetBinder::ShowCameraMenu(const TArray<FString>& StreamNames, const FSt
 
 }
 
+void UWidgetBinder::ShowResetMenu() {
+	if (!ResetMenuList_ || !Widget_) return;
+
+	HideMenu();
+
+	constexpr float R = 8.f;
+	auto MakeRoundedBrush = [](const FLinearColor& Color) -> FSlateBrush {
+		FSlateBrush B;
+		B.DrawAs    = ESlateBrushDrawType::RoundedBox;
+		B.TintColor = FSlateColor(Color);
+		B.OutlineSettings.CornerRadii = FVector4(R, R, R, R);
+		B.OutlineSettings.RoundingType = ESlateBrushRoundingType::FixedRadius;
+		return B;
+	};
+
+	FButtonStyle ItemStyle;
+	ItemStyle.Normal  = MakeRoundedBrush(FLinearColor(0.32f, 0.32f, 0.32f, 0.95f));
+	ItemStyle.Hovered = MakeRoundedBrush(FLinearColor(0.14f, 0.14f, 0.14f, 1.0f));
+	ItemStyle.Pressed = MakeRoundedBrush(FLinearColor(0.08f, 0.08f, 0.08f, 1.0f));
+
+	auto AddItem = [&](const FName& BtnName, const FString& Label)
+	{
+		UButton*    Btn = NewObject<UButton>(Widget_->WidgetTree);
+		UTextBlock* Lbl = NewObject<UTextBlock>(Widget_->WidgetTree);
+
+		FSlateFontInfo Font = Lbl->GetFont();
+		Font.Size = 15;
+		Lbl->SetFont(Font);
+		Lbl->SetText(FText::FromString(Label));
+		Lbl->SetColorAndOpacity(FSlateColor(FLinearColor::White));
+		Lbl->SetJustification(ETextJustify::Center);
+
+		Btn->AddChild(Lbl);
+		FButtonStyle Style = ItemStyle;
+		Style.SetNormalPadding(FMargin(16.f, 5.f));
+		Style.SetPressedPadding(FMargin(16.f, 4.f));
+		Btn->SetStyle(Style);
+
+		UVerticalBoxSlot* Slot = ResetMenuList_->AddChildToVerticalBox(Btn);
+		if (Slot) {
+			Slot->SetPadding(FMargin(0.f, 2.f));
+			Slot->SetHorizontalAlignment(HAlign_Fill);
+			Slot->SetSize(FSlateChildSize(ESlateSizeRule::Automatic));
+		}
+
+		CachedWidgets_.Add(BtnName, Btn);
+		CachedButtons_.Add(BtnName, Btn);
+		OriginalStyles_.Add(BtnName, Style);
+		DynamicMenuItems_.Add(BtnName);
+	};
+
+	AddItem(FName("__reset_left"),  TEXT("Reset Left"));
+	AddItem(FName("__reset_right"), TEXT("Reset Right"));
+	AddItem(FName("__reset_all"),   TEXT("Reset Both"));
+
+	SetVisibility(FName("resetMenu"), true);
+	bMenuRectsDirty_ = true;
+}
+
 void UWidgetBinder::HideMenu() {
 	SetVisibility(FName("cameraMenu"), false);
+	SetVisibility(FName("resetMenu"), false);
 
 	if (HoveredButton_ != FName() && DynamicMenuItems_.Contains(HoveredButton_)) {
 		SetButtonToNormal(HoveredButton_);
@@ -543,6 +606,7 @@ void UWidgetBinder::HideMenu() {
 	DynamicMenuItems_.Empty();
 
 	if (CameraMenuList_) CameraMenuList_->ClearChildren();
+	if (ResetMenuList_)  ResetMenuList_->ClearChildren();
 }
 
 void UWidgetBinder::UpdateMessages(float DeltaTime) {
@@ -610,8 +674,13 @@ void UWidgetBinder::SetVisibility(FName WidgetName, bool bVisible)
 {
 	if (auto* Found = CachedWidgets_.Find(WidgetName))
 	{
-		if (*Found)
-			(*Found)->SetVisibility(bVisible ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
+		if (*Found) {
+			const ESlateVisibility NewVis = bVisible ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed;
+			if ((*Found)->GetVisibility() != NewVis) {
+				(*Found)->SetVisibility(NewVis);
+				if (bVisible) bStaticRectsDirty_ = true;
+			}
+		}
 	}
 }
 
