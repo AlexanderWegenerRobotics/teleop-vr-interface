@@ -65,7 +65,10 @@ public:
     float QuadHeight = 830.0f;
     float PlaneDistance = 700.0f;
 
-    UFUNCTION(BlueprintCallable, Category = "VideoLogger") void StartLogging();
+    // If SessionDir is non-empty the logger writes into that directory instead of
+    // creating its own timestamped subfolder — use this to co-locate video and
+    // telemetry logs in the same session folder.
+    UFUNCTION(BlueprintCallable, Category = "VideoLogger") void StartLogging(const FString& InSessionDir = TEXT(""));
     UFUNCTION(BlueprintCallable, Category = "VideoLogger") void StopLogging(const FString& Notes = TEXT(""));
 
     void SubmitFrame(const FFrameBundle& Bundle);

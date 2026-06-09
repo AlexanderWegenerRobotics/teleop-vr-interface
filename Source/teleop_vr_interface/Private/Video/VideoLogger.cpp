@@ -36,7 +36,7 @@ void AVideoLogger::EndPlay(const EEndPlayReason::Type EndPlayReason)
 // StartLogging
 // ----------------------------------------------------------------
 
-void AVideoLogger::StartLogging()
+void AVideoLogger::StartLogging(const FString& InSessionDir)
 {
     if (bIsLogging || LayerSources.Num() == 0) {
         UE_LOG(LogTemp, Warning, TEXT("Video logging failed: bIsLogging=%d Sources=%d"),
@@ -61,7 +61,20 @@ void AVideoLogger::StartLogging()
     }
     if (!LoggingRT) { UE_LOG(LogTemp, Error, TEXT("VideoLogger: RT creation failed")); return; }
 
-    InitSessionDirectory();
+    if (!InSessionDir.IsEmpty())
+    {
+        SessionDir         = InSessionDir;
+        FramesJsonlPath    = SessionDir / TEXT("frames.jsonl");
+        MetaJsonPath       = SessionDir / TEXT("metadata.json");
+        RawVideoPath       = SessionDir / TEXT("session.mp4");
+        AttentionVideoPath = SessionDir / TEXT("session_attention.mp4");
+        IFileManager::Get().MakeDirectory(*SessionDir, true);
+        UE_LOG(LogTemp, Log, TEXT("Video Logging: Writing to %s"), *SessionDir);
+    }
+    else
+    {
+        InitSessionDirectory();
+    }
     WriteInitialMetadata();
 
     const int32 FPS = FMath::RoundToInt(CaptureFPS);
@@ -352,7 +365,7 @@ void AVideoLogger::FinalizeEncoders()
 void AVideoLogger::InitSessionDirectory()
 {
     FString Base = FPaths::ConvertRelativePathToFull(
-        FPaths::ProjectSavedDir() / TEXT("OperatorViewLogs"));
+        FPaths::ProjectSavedDir() / TEXT("Logs/TeleOp"));
     IFileManager::Get().MakeDirectory(*Base, true);
 
     SessionDir = Base / FDateTime::Now().ToString(TEXT("%Y%m%d_%H%M%S"));

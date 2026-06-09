@@ -283,13 +283,15 @@ void AOperatorPawn::BeginPlay() {
 		UE_LOG(LogTemp, Log, TEXT("OperatorPawn: VideoLogger spawned"));
 	}
 
-	if (VideoLogger_) {
-		VideoLogger_->StartLogging();
-	}
-
+	// Open telemetry logger first so we get the session directory, then pass it
+	// to the video logger so both write into the same timestamped folder.
 	Logger_ = MakeUnique<FTeleOpLogger>();
 	FString SessionDir = Logger_->Open(FPaths::ProjectDir() / LogBaseDirectory);
 	UE_LOG(LogTemp, Log, TEXT("OperatorPawn: logging to %s"), *SessionDir);
+
+	if (VideoLogger_) {
+		VideoLogger_->StartLogging(SessionDir);
+	}
 
 	SessionStartTime_ = FPlatformTime::Seconds();
 }

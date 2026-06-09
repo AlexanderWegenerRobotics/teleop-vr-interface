@@ -68,7 +68,7 @@ protected:
 	UPROPERTY() TObjectPtr<UGhostOverlayComponent>  GhostOverlay;
 
 	UPROPERTY(EditAnywhere, Category = "Logging")
-	FString LogBaseDirectory = TEXT("Logs/TeleOp/");
+	FString LogBaseDirectory = TEXT("Saved/Logs/TeleOp/");
 
 	TMetricHistory<128> LatencyHistory;
 	TMetricHistory<128> JitterHistory;
