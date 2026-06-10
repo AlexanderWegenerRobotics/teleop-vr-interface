@@ -5,6 +5,7 @@
 #include "UI/GazeComponent.h"
 #include "HAL/ThreadSafeBool.h"
 #include "Containers/Queue.h"
+#include "RHIGPUReadback.h"
 #include "VideoLogger.generated.h"
 
 class UTextureRenderTarget2D;
@@ -109,6 +110,17 @@ private:
     FThreadSafeBool EncoderRunning = false;
     TFuture<void>   EncoderFuture;
 
-    void* EncoderRaw = nullptr;
+    void* EncoderRaw       = nullptr;
     void* EncoderAttention = nullptr;
+
+    struct FPendingReadback
+    {
+        FRHIGPUTextureReadback* Readback = nullptr;
+        FFrameBundle            Bundle;
+        int32                   NumFrames = 0;
+        int32                   W = 0, H = 0;
+    };
+    TQueue<FPendingReadback, EQueueMode::Spsc> ReadbackQueue_;
+
+    void DrainReadbackQueue();
 };

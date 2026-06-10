@@ -57,8 +57,8 @@ void UGhostOverlayComponent::EndPlay(const EEndPlayReason::Type EndPlayReason){
 void UGhostOverlayComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction){
     Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
     if (!bPipelineReady) return;
-    CacheArmStates();          // consume each arm stream once for this tick
-    UpdateIntentPoses();       // raw command target + guarded origin correction
+    CacheArmStates();
+    UpdateIntentPoses();
     UpdateLatencyState(DeltaTime);
     UpdateGhostOpacity();
     UpdateBoundaryPlane();

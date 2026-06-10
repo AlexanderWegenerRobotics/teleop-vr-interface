@@ -356,7 +356,7 @@ private:
     // steal the fresh-state flag from one another.
     ArmStateMsg CachedArmState_[2] = {};
     bool        bArmStateFresh_[2] = { false, false };
-    bool        bGhostPastBounds_  = false;   // any arm past a limit (drives the tint)
+    bool        bGhostPastBounds_  = false;
     bool        bPrevGhostPastBounds_ = false;
 
     void CacheArmStates();          // read each stream once, fill the cache above

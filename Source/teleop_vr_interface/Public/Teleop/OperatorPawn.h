@@ -76,6 +76,7 @@ protected:
 	TMetricHistory<128> FpsHistory;
 	TMetricHistory<128> CpuHistory;
 	TMetricHistory<128> GpuHistory;
+	TMetricHistory<128> GpuTempHistory;
 
 private:
 	ESysState OperatorState_ = ESysState::Offline;

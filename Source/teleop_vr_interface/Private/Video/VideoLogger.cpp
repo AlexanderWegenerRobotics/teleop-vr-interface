@@ -24,7 +24,11 @@ AVideoLogger::AVideoLogger()
 AVideoLogger::~AVideoLogger() {}
 
 void AVideoLogger::BeginPlay() { Super::BeginPlay(); }
-void AVideoLogger::Tick(float DeltaTime) { Super::Tick(DeltaTime); }
+void AVideoLogger::Tick(float DeltaTime)
+{
+    Super::Tick(DeltaTime);
+    DrainReadbackQueue();
+}
 
 void AVideoLogger::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
@@ -166,6 +170,9 @@ void AVideoLogger::StopLogging(const FString& Notes)
     if (!bIsLogging) return;
     bIsLogging = false;
 
+    FlushRenderingCommands();
+    DrainReadbackQueue();
+
     EncoderRunning = false;
 
     if (EncoderFuture.IsValid())
@@ -215,7 +222,7 @@ void AVideoLogger::SubmitFrame(const FFrameBundle& InBundle)
 }
 
 // ----------------------------------------------------------------
-// CaptureFrame — single GPU readback, shared by both encoders
+// CaptureFrame — async GPU readback, result consumed in Tick()
 // ----------------------------------------------------------------
 
 void AVideoLogger::CaptureFrame(const FFrameBundle& Bundle, int32 NumFrames)
@@ -243,31 +250,71 @@ void AVideoLogger::CaptureFrame(const FFrameBundle& Bundle, int32 NumFrames)
 
     UKismetRenderingLibrary::EndDrawCanvasToRenderTarget(this, Ctx);
 
-    const FFrameBundle Snap = Bundle;
-    const int32 W = LogW, H = LogH;
-
-    FRHITexture2D* RHITex =
+    FRHITexture* RHITex =
         LoggingRT->GameThread_GetRenderTargetResource()->GetRenderTargetTexture();
     if (!RHITex) return;
 
-    ENQUEUE_RENDER_COMMAND(VideoLoggerReadback)(
-        [RHITex, this, Snap, W, H, NumFrames](FRHICommandListImmediate& RHICmdList)
+    const FFrameBundle Snap      = Bundle;
+    const int32        W         = LogW;
+    const int32        H         = LogH;
+    const int32        NF        = NumFrames;
+
+    ENQUEUE_RENDER_COMMAND(VideoLoggerSubmitReadback)(
+        [RHITex, this, Snap, W, H, NF](FRHICommandListImmediate& RHICmdList)
         {
+            FPendingReadback Pending;
+            Pending.Readback  = new FRHIGPUTextureReadback(TEXT("VLReadback"));
+            Pending.Bundle    = Snap;
+            Pending.NumFrames = NF;
+            Pending.W         = W;
+            Pending.H         = H;
+            Pending.Readback->EnqueueCopy(RHICmdList, RHITex);
+            ReadbackQueue_.Enqueue(MoveTemp(Pending));
+        });
+}
+
+// ----------------------------------------------------------------
+// DrainReadbackQueue — called each game tick and at StopLogging
+// ----------------------------------------------------------------
+
+void AVideoLogger::DrainReadbackQueue()
+{
+    FPendingReadback Pending;
+    while (ReadbackQueue_.Peek(Pending) && Pending.Readback->IsReady())
+    {
+        ReadbackQueue_.Dequeue(Pending);
+
+        int32 RowPitchInPixels = 0;
+        void* Data = Pending.Readback->Lock(RowPitchInPixels);
+        if (Data && RowPitchInPixels > 0)
+        {
+            const int32 W = Pending.W, H = Pending.H;
             TArray<FColor> Pixels;
             Pixels.SetNumUninitialized(W * H);
-            RHICmdList.ReadSurfaceData(RHITex, FIntRect(0, 0, W, H), Pixels,
-                FReadSurfaceDataFlags(RCM_UNorm, CubeFace_MAX));
-            for (int32 i = 0; i < NumFrames; ++i)
+            const FColor* Src = static_cast<const FColor*>(Data);
+            for (int32 Row = 0; Row < H; ++Row)
+                FMemory::Memcpy(Pixels.GetData() + Row * W,
+                                Src + Row * RowPitchInPixels,
+                                W * sizeof(FColor));
+            Pending.Readback->Unlock();
+
+            for (int32 i = 0; i < Pending.NumFrames; ++i)
             {
                 FLogFrame LF;
-                LF.Bundle = Snap;
-                if (i < NumFrames - 1)
+                LF.Bundle = Pending.Bundle;
+                if (i < Pending.NumFrames - 1)
                     LF.Pixels = Pixels;
                 else
                     LF.Pixels = MoveTemp(Pixels);
                 EncodeQueue.Enqueue(MoveTemp(LF));
             }
-        });
+        }
+        else
+        {
+            if (Data) Pending.Readback->Unlock();
+        }
+        delete Pending.Readback;
+    }
 }
 
 // ----------------------------------------------------------------

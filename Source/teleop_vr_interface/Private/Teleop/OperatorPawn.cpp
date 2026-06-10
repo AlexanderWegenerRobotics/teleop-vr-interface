@@ -7,6 +7,12 @@ extern ENGINE_API uint32 GGPUFrameTime;
 #include "Misc/Paths.h"
 #include "Shared/annotation_msg.hpp"
 
+#if PLATFORM_WINDOWS
+#include "Windows/AllowWindowsPlatformTypes.h"
+#include <Windows.h>
+#include "Windows/HideWindowsPlatformTypes.h"
+#endif
+
 namespace {
 struct FGazeSampleMsg {
     uint64_t frame_id     = 0;
@@ -15,6 +21,69 @@ struct FGazeSampleMsg {
     uint64_t timestamp_ns = 0;
     MSGPACK_DEFINE_MAP(frame_id, gaze_px_x, gaze_px_y, timestamp_ns)
 };
+
+// Whole-machine CPU utilisation in percent across all processes (game-thread sampled).
+float SampleSystemCpuPercent() {
+#if PLATFORM_WINDOWS
+    static ULARGE_INTEGER prevIdle{}, prevKernel{}, prevUser{};
+    FILETIME ftIdle, ftKernel, ftUser;
+    if (!GetSystemTimes(&ftIdle, &ftKernel, &ftUser)) return 0.f;
+    ULARGE_INTEGER idle, kernel, user;
+    idle.LowPart   = ftIdle.dwLowDateTime;   idle.HighPart   = ftIdle.dwHighDateTime;
+    kernel.LowPart = ftKernel.dwLowDateTime; kernel.HighPart = ftKernel.dwHighDateTime;
+    user.LowPart   = ftUser.dwLowDateTime;   user.HighPart   = ftUser.dwHighDateTime;
+    const uint64 idleDelta   = idle.QuadPart   - prevIdle.QuadPart;
+    const uint64 kernelDelta = kernel.QuadPart - prevKernel.QuadPart;
+    const uint64 userDelta   = user.QuadPart   - prevUser.QuadPart;
+    prevIdle = idle; prevKernel = kernel; prevUser = user;
+    const uint64 total = kernelDelta + userDelta;   // kernel already includes idle
+    if (total == 0) return 0.f;
+    return 100.f * (1.f - static_cast<float>(idleDelta) / static_cast<float>(total));
+#else
+    return FPlatformTime::GetCPUTime().CPUTimePct;
+#endif
+}
+
+// GPU utilisation [0,100] and core temperature [°C] via NVML (nvml.dll ships with the NVIDIA driver).
+bool SampleGpuNvml(float& utilPct, float& tempC) {
+    struct FNvml {
+        void* lib = nullptr;
+        void* dev = nullptr;
+        int (*pInit)()                          = nullptr;
+        int (*pShutdown)()                      = nullptr;
+        int (*pHandle)(unsigned int, void**)    = nullptr;
+        int (*pUtil)(void*, void*)              = nullptr;
+        int (*pTemp)(void*, int, unsigned int*) = nullptr;
+        bool ok = false;
+        FNvml() {
+            lib = FPlatformProcess::GetDllHandle(TEXT("nvml.dll"));
+            if (!lib) return;
+            pInit     = reinterpret_cast<int(*)()>(FPlatformProcess::GetDllExport(lib, TEXT("nvmlInit_v2")));
+            pShutdown = reinterpret_cast<int(*)()>(FPlatformProcess::GetDllExport(lib, TEXT("nvmlShutdown")));
+            pHandle   = reinterpret_cast<int(*)(unsigned int, void**)>(FPlatformProcess::GetDllExport(lib, TEXT("nvmlDeviceGetHandleByIndex_v2")));
+            pUtil     = reinterpret_cast<int(*)(void*, void*)>(FPlatformProcess::GetDllExport(lib, TEXT("nvmlDeviceGetUtilizationRates")));
+            pTemp     = reinterpret_cast<int(*)(void*, int, unsigned int*)>(FPlatformProcess::GetDllExport(lib, TEXT("nvmlDeviceGetTemperature")));
+            if (!pInit || !pHandle || !pUtil || !pTemp) return;
+            if (pInit() != 0) return;
+            if (pHandle(0, &dev) != 0) return;
+            ok = true;
+        }
+        ~FNvml() {
+            if (ok && pShutdown) pShutdown();
+            if (lib) FPlatformProcess::FreeDllHandle(lib);
+        }
+    };
+    static FNvml Nvml;
+    if (!Nvml.ok) return false;
+
+    struct { unsigned int gpu; unsigned int memory; } util{};
+    unsigned int temp = 0;
+    if (Nvml.pUtil(Nvml.dev, &util) != 0) return false;
+    if (Nvml.pTemp(Nvml.dev, 0, &temp) != 0) return false;   // 0 = NVML_TEMPERATURE_GPU
+    utilPct = static_cast<float>(util.gpu);
+    tempC   = static_cast<float>(temp);
+    return true;
+}
 }
 
 AOperatorPawn::AOperatorPawn() {
@@ -206,8 +275,11 @@ void AOperatorPawn::BeginPlay() {
 	// GPU is normalised against a 90 Hz VR frame budget (11.11 ms = 100%).
 	UIBinder->BindPlot(FName("dataCpuPlot"), CpuHistory.GetSamplesPtr(), nullptr, CpuHistory.Capacity(), CpuHistory.GetHeadPtr(), 0.0f, 100.0f);
 	UIBinder->SetPlotThreshold(FName("dataCpuPlot"), 80.0f);
-	UIBinder->BindPlot(FName("dataGpuPlot"), GpuHistory.GetSamplesPtr(), nullptr, GpuHistory.Capacity(), GpuHistory.GetHeadPtr(), 0.0f, 150.0f);
-	UIBinder->SetPlotThreshold(FName("dataGpuPlot"), 100.0f);  // alert when over-budget
+	UIBinder->BindPlot(FName("dataGpuPlot"), GpuHistory.GetSamplesPtr(), nullptr, GpuHistory.Capacity(), GpuHistory.GetHeadPtr(), 0.0f, 100.0f);
+	UIBinder->SetPlotThreshold(FName("dataGpuPlot"), 90.0f);  // GPU utilisation %
+
+	UIBinder->BindPlot(FName("dataGpuTempPlot"), GpuTempHistory.GetSamplesPtr(), nullptr, GpuTempHistory.Capacity(), GpuTempHistory.GetHeadPtr(), 0.0f, 100.0f);
+	UIBinder->SetPlotThreshold(FName("dataGpuTempPlot"), 83.0f);  // GPU temp °C — throttle onset
 
 	ComLink->RegisterHandler("device_event", [this](const FReliableEnvelope& Env) {
 		std::map<std::string, msgpack::object> Fields;
@@ -318,10 +390,16 @@ void AOperatorPawn::Tick(float DeltaTime) {
 
 	if (++PerfSampleCounter_ >= 15) {
 		PerfSampleCounter_ = 0;
-		CpuHistory.Push(FPlatformTime::GetCPUTime().CPUTimePct);
-		constexpr float kVrFrameBudgetMs = 1000.f / 90.f;
-		const float GpuMs = FPlatformTime::ToMilliseconds(GGPUFrameTime);
-		GpuHistory.Push(FMath::Clamp(GpuMs / kVrFrameBudgetMs * 100.f, 0.f, 150.f));
+		CpuHistory.Push(SampleSystemCpuPercent());
+		float GpuUtilPct = 0.f, GpuTempC = 0.f;
+		if (SampleGpuNvml(GpuUtilPct, GpuTempC)) {
+			GpuHistory.Push(GpuUtilPct);
+			GpuTempHistory.Push(GpuTempC);
+		} else {
+			constexpr float kVrFrameBudgetMs = 1000.f / 90.f;
+			const float GpuMs = FPlatformTime::ToMilliseconds(GGPUFrameTime);
+			GpuHistory.Push(FMath::Clamp(GpuMs / kVrFrameBudgetMs * 100.f, 0.f, 150.f));
+		}
 	}
 
 	const FGazeData& GazeData = Gaze->GetGazeData();
