@@ -20,6 +20,7 @@ extern "C" bool  GStreamerGetLatency(void* pipeline,
 extern "C" void  GStreamerUnrefBus(void* bus);
 extern "C" void* GStreamerCreatePipeline(const char* description);
 extern "C" bool  GStreamerStartPipeline(void* pipeline);
+extern "C" bool  GStreamerWaitForPlaying(void* pipeline, int timeout_ms);
 extern "C" void  GStreamerStopPipeline(void* pipeline);
 extern "C" void  GStreamerDestroyPipeline(void* pipeline);
 extern "C" void* GStreamerGetElementByName(void* pipeline, const char* name);
@@ -178,9 +179,15 @@ private:
     static void RtpProbeThunk(uint16_t Seq, uint32_t Ts, void* Userdata);
     static void FecProbeThunk(uint16_t Seq, void* Userdata);
 
+    // Builds + resolves the receive pipeline for the chosen decoder (GPU nvh264dec or CPU).
+    bool BuildPipeline(bool bUseGpuDecode);
+
     void* Pipeline  = nullptr;
     void* AppSink   = nullptr;
     void* Bus       = nullptr;
+
+    FReceiverConfig Config_;
+    bool            bUsingGpuDecode_ = false;
 
     bool  bIsInitialized = false;
 

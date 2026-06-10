@@ -47,6 +47,18 @@ extern "C" bool GStreamerStartPipeline(void* pipeline)
     return (ret != GST_STATE_CHANGE_FAILURE);
 }
 
+// Blocks until the pipeline actually reaches PLAYING (or fails/times out) — catches
+// decoders that accept the state change asynchronously then fail to negotiate.
+extern "C" bool GStreamerWaitForPlaying(void* pipeline, int timeout_ms)
+{
+    if (!pipeline) return false;
+    GstState state = GST_STATE_NULL, pending = GST_STATE_NULL;
+    GstStateChangeReturn ret = gst_element_get_state(
+        GST_ELEMENT(pipeline), &state, &pending,
+        (GstClockTime)timeout_ms * GST_MSECOND);
+    return ret == GST_STATE_CHANGE_SUCCESS && state == GST_STATE_PLAYING;
+}
+
 extern "C" void GStreamerStopPipeline(void* pipeline)
 {
     if (pipeline) {

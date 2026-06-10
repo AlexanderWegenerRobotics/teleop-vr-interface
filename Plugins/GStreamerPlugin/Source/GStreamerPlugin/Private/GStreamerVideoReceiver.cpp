@@ -231,43 +231,24 @@ bool FGStreamerVideoReceiver::Initialize(const FReceiverConfig& Config)
 {
     if (bIsInitialized) return true;
 
-    // Always use avdec_h264 on the receive side — nvh264dec in UE5's bundled
-    // GStreamer context fails silently during PLAYING state transition and causes
-    // udpsrc to release its socket.  CPU decode is cheap; the real CPU saving
-    // comes from nvh264enc on the avatar/sender side.
-    UE_LOG(LogTemp, Log, TEXT("GStreamer: decoder: avdec_h264 (CPU)"));
-    std::string DecodeStep = "avdec_h264";
+    Config_ = Config;
 
-    std::string PipelineStr =
-        "udpsrc port=" + std::to_string(Config.Port) +
-        " caps=\"application/x-rtp,media=video,encoding-name=H264,payload=96\""
-        " ! rtpjitterbuffer latency=50"
-        " ! rtpulpfecdec name=fecdec"
-        " ! rtph264depay name=depay"
-        " ! h264parse"
-        " ! " + DecodeStep +
-        " ! videoconvert"
-        " ! video/x-raw,format=BGRA"
-        " ! appsink name=sink emit-signals=false sync=false max-buffers=2 drop=true";
-
-    Pipeline = GStreamerCreatePipeline(PipelineStr.c_str());
-    if (!Pipeline)
+    // Prefer GPU decode (nvh264dec) when present; if its pipeline can't be built (missing
+    // CUDA elements) fall back to CPU here, and if it builds but fails to reach PLAYING
+    // that is caught and recovered in Start().
+    bUsingGpuDecode_ = GStreamerNvdecAvailable();
+    bool bBuilt = bUsingGpuDecode_ && BuildPipeline(true);
+    if (!bBuilt)
+    {
+        bUsingGpuDecode_ = false;
+        bBuilt = BuildPipeline(false);
+    }
+    if (!bBuilt)
     {
         UE_LOG(LogTemp, Error,
                TEXT("GStreamer: failed to create pipeline on port %d"), Config.Port);
         return false;
     }
-
-    AppSink = GStreamerGetElementByName(Pipeline, "sink");
-    if (!AppSink)
-    {
-        UE_LOG(LogTemp, Error, TEXT("GStreamer: failed to find appsink"));
-        GStreamerDestroyPipeline(Pipeline);
-        Pipeline = nullptr;
-        return false;
-    }
-
-    Bus = GStreamerGetBus(Pipeline);
 
     FStreamStatsConfig StatsConfig;
     StatsConfig.SenderIP         = Config.SenderIP;
@@ -285,6 +266,43 @@ bool FGStreamerVideoReceiver::Initialize(const FReceiverConfig& Config)
     return true;
 }
 
+// Builds + resolves the receive pipeline. nvh264dec outputs CUDA memory, so cudadownload
+// brings it back to system memory before the shared videoconvert→BGRA→appsink tail; the
+// CPU path uses avdec_h264.
+bool FGStreamerVideoReceiver::BuildPipeline(bool bUseGpuDecode)
+{
+    std::string DecodeStep = bUseGpuDecode ? "nvh264dec ! cudadownload" : "avdec_h264";
+    UE_LOG(LogTemp, Log, TEXT("GStreamer: decoder: %s"),
+           bUseGpuDecode ? TEXT("nvh264dec (GPU)") : TEXT("avdec_h264 (CPU)"));
+
+    std::string PipelineStr =
+        "udpsrc port=" + std::to_string(Config_.Port) +
+        " caps=\"application/x-rtp,media=video,encoding-name=H264,payload=96\""
+        " ! rtpjitterbuffer latency=50"
+        " ! rtpulpfecdec name=fecdec"
+        " ! rtph264depay name=depay"
+        " ! h264parse"
+        " ! " + DecodeStep +
+        " ! videoconvert"
+        " ! video/x-raw,format=BGRA"
+        " ! appsink name=sink emit-signals=false sync=false max-buffers=2 drop=true";
+
+    Pipeline = GStreamerCreatePipeline(PipelineStr.c_str());
+    if (!Pipeline) return false;
+
+    AppSink = GStreamerGetElementByName(Pipeline, "sink");
+    if (!AppSink)
+    {
+        UE_LOG(LogTemp, Error, TEXT("GStreamer: failed to find appsink"));
+        GStreamerDestroyPipeline(Pipeline);
+        Pipeline = nullptr;
+        return false;
+    }
+
+    Bus = GStreamerGetBus(Pipeline);
+    return true;
+}
+
 bool FGStreamerVideoReceiver::Start()
 {
     if (!bIsInitialized || !Pipeline) return false;
@@ -293,6 +311,26 @@ bool FGStreamerVideoReceiver::Start()
     {
         UE_LOG(LogTemp, Error, TEXT("GStreamer: failed to start pipeline"));
         return false;
+    }
+
+    // GPU decode can accept the state change then fail to negotiate during PLAYING in UE's
+    // bundled GStreamer; if it doesn't actually reach PLAYING, rebuild on CPU and restart.
+    if (bUsingGpuDecode_ && !GStreamerWaitForPlaying(Pipeline, 4000))
+    {
+        UE_LOG(LogTemp, Warning,
+               TEXT("GStreamer: GPU decode did not reach PLAYING — falling back to avdec_h264 (CPU)"));
+        GStreamerStopPipeline(Pipeline);
+        if (AppSink) { GStreamerUnrefElement(AppSink); AppSink = nullptr; }
+        if (Bus)     { GStreamerUnrefBus(Bus);         Bus     = nullptr; }
+        GStreamerDestroyPipeline(Pipeline);
+        Pipeline = nullptr;
+
+        bUsingGpuDecode_ = false;
+        if (!BuildPipeline(false) || !GStreamerStartPipeline(Pipeline))
+        {
+            UE_LOG(LogTemp, Error, TEXT("GStreamer: CPU fallback pipeline failed to start"));
+            return false;
+        }
     }
 
     bool bRtpOk = GStreamerAddRtpProbe(
