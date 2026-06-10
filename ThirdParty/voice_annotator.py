@@ -46,23 +46,52 @@ LOGPROB_REJECT      = -1.0         # reject transcriptions with avg_logprob belo
 # Bias Whisper's language model toward our closed vocabulary — substantial accuracy gain on noisy short speech
 INITIAL_PROMPT = (
     "Commands: grasp, insert, handover, handover left, handover right, "
-    "place, release, start, engage, stop, reset, pause. "
+    "place, release, start, engage, stop, reset, pause, "
+    "reset left, reset right, home, success, partial, failure, "
+    "statistics, viewpoint, camera left, camera right, camera off. "
     "Quality ratings from zero to ten."
 )
 
 # ── Vocabulary ────────────────────────────────────────────────────────────────
 
 INTENT_LABELS  = {"grasp", "insert", "handover", "handover-left", "handover-right", "place", "release"}
-COMMANDS       = {"start", "stop", "reset", "pause", "engage"}
+COMMANDS       = {
+    "start", "stop", "reset", "pause", "engage",
+    # Per-arm resets (multi-word, normalised below before matching)
+    "reset-left", "reset-right",
+    # Episode annotation
+    "home", "success", "partial", "failure",
+    # UI toggles
+    "statistics", "viewpoint", "camera-off", "camera-left", "camera-right",
+}
 QUALITY_PREFIX = "quality"
 
-# Spoken-form corrections: map Whisper mishearings to canonical tokens
+# Spoken-form corrections: map Whisper mishearings to canonical tokens.
+# Multi-word commands are collapsed to hyphenated forms so the longest-match
+# logic in match_keywords can distinguish e.g. "reset-left" from "reset".
 NORMALIZATIONS = {
-    "hand over": "handover",
-    "and over":  "handover",
-    "in sert":   "insert",
-    "re set":    "reset",
-    "re lease":  "release",
+    "hand over":     "handover",
+    "and over":      "handover",
+    "in sert":       "insert",
+    "re set":        "reset",
+    "re lease":      "release",
+    # Per-arm resets
+    "reset left":    "reset-left",
+    "reset right":   "reset-right",
+    # Camera stream selection
+    "camera left":   "camera-left",
+    "camera right":  "camera-right",
+    "camera off":    "camera-off",
+    "camera of":     "camera-off",
+    # Episode annotation aliases
+    "mark success":  "success",
+    "mark partial":  "partial",
+    "mark failure":  "failure",
+    "episode success": "success",
+    "episode partial": "partial",
+    "episode failure": "failure",
+    # Stats alias
+    "stats":         "statistics",
 }
 
 
@@ -348,8 +377,12 @@ def run(host: str, port: int, device: str, device_index: int | None) -> None:
     capture.start()
     asr.start()
 
+    ui_cmds     = {"home", "success", "partial", "failure",
+                   "reset-left", "reset-right", "statistics", "viewpoint", "camera-off"}
+    state_cmds  = COMMANDS - ui_cmds
     print(f"Ready. Sending to {host}:{port}\n"
-          f"Vocabulary — commands: {COMMANDS}\n"
+          f"Vocabulary — state:    {state_cmds}\n"
+          f"             UI/annot: {ui_cmds}\n"
           f"             intents:  {INTENT_LABELS}\n"
           f"             quality:  'quality <0-10>'\n")
 

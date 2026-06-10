@@ -1080,6 +1080,81 @@ void AOperatorPawn::HandleVoiceAnnotation(const FVoiceAnnotation& Ann) {
 				bPendingVoiceReengage_ = true;
 				UpdateButtonStates();
 			}
+		} else if (Ann.Label.Equals(TEXT("reset-left"), ESearchCase::IgnoreCase)) {
+			bool bCanReset = (OperatorState_ == ESysState::Engaged || OperatorState_ == ESysState::Paused);
+			if (bCanReset && LeftArmResetState_ == EArmResetState::Idle) {
+				SendArmReset("arm_left");
+				LeftArmResetState_ = EArmResetState::Recovering;
+				UpdateButtonStates();
+			}
+		} else if (Ann.Label.Equals(TEXT("reset-right"), ESearchCase::IgnoreCase)) {
+			bool bCanReset = (OperatorState_ == ESysState::Engaged || OperatorState_ == ESysState::Paused);
+			if (bCanReset && RightArmResetState_ == EArmResetState::Idle) {
+				SendArmReset("arm_right");
+				RightArmResetState_ = EArmResetState::Recovering;
+				UpdateButtonStates();
+			}
+		} else if (Ann.Label.Equals(TEXT("home"), ESearchCase::IgnoreCase)) {
+			// Open the episode annotation panel — same as pressing homeButton.
+			bool bCanAnnotate = (OperatorState_ == ESysState::Engaged || OperatorState_ == ESysState::Paused);
+			if (bCanAnnotate && !bAnnotationPending_) {
+				bAnnotationPending_ = true;
+				UIBinder->SetVisibility(FName("episodeAnnotationCanvas"), true);
+			}
+		} else if (Ann.Label.Equals(TEXT("success"), ESearchCase::IgnoreCase) ||
+		           Ann.Label.Equals(TEXT("partial"),  ESearchCase::IgnoreCase) ||
+		           Ann.Label.Equals(TEXT("failure"),  ESearchCase::IgnoreCase)) {
+			// One-shot episode annotation: works with or without "home" first.
+			bool bCanAnnotate = (OperatorState_ == ESysState::Engaged || OperatorState_ == ESysState::Paused);
+			if (bCanAnnotate) {
+				FString Label = Ann.Label;  // already "success" / "partial" / "failure"
+				UIBinder->SetButtonToggled(FName("homeButton"), false);
+				UIBinder->SetVisibility(FName("episodeAnnotationCanvas"), false);
+				SendResetAll();
+				if (LeftArmResetState_  == EArmResetState::Idle) LeftArmResetState_  = EArmResetState::Recovering;
+				if (RightArmResetState_ == EArmResetState::Idle) RightArmResetState_ = EArmResetState::Recovering;
+				SendEpisodeRestart(Label);
+				++EpisodeCount_;
+				bAnnotationPending_ = false;
+				UpdateButtonStates();
+			}
+		} else if (Ann.Label.Equals(TEXT("statistics"), ESearchCase::IgnoreCase)) {
+			bStatsVisible_ = !bStatsVisible_;
+			UIBinder->SetVisibility(FName("statsPanel"), bStatsVisible_);
+		} else if (Ann.Label.Equals(TEXT("viewpoint"), ESearchCase::IgnoreCase)) {
+			// Toggle the camera-stream picker menu.
+			if (bMenuOpen_) {
+				UIBinder->HideMenu();
+				bMenuOpen_ = false;
+				UIBinder->SetButtonToggled(FName("viewpointButton"), !ActivePiPStreamName_.IsEmpty());
+			} else {
+				CurrentMenuStreams_ = PiPSourceNames_;
+				UIBinder->ShowCameraMenu(CurrentMenuStreams_, ActivePiPStreamName_);
+				bMenuOpen_ = true;
+				UIBinder->SetButtonToggled(FName("viewpointButton"), true);
+			}
+		} else if (Ann.Label.Equals(TEXT("camera-left"),  ESearchCase::IgnoreCase) ||
+		           Ann.Label.Equals(TEXT("camera-right"), ESearchCase::IgnoreCase)) {
+			// Select the PiP stream whose name contains "left" or "right".
+			const FString Side = Ann.Label.Equals(TEXT("camera-left"), ESearchCase::IgnoreCase)
+			                     ? TEXT("left") : TEXT("right");
+			for (const FString& StreamName : PiPSourceNames_) {
+				if (StreamName.Contains(Side, ESearchCase::IgnoreCase)) {
+					ActivePiPStreamName_ = StreamName;
+					UIBinder->SetButtonToggled(FName("viewpointButton"), true);
+					if (bMenuOpen_) { UIBinder->HideMenu(); bMenuOpen_ = false; }
+					break;
+				}
+			}
+		} else if (Ann.Label.Equals(TEXT("camera-off"), ESearchCase::IgnoreCase)) {
+			// Turn off the picture-in-picture stream.
+			ActivePiPStreamName_ = TEXT("");
+			UIBinder->SetVisibility(FName("pip_canvas"), false);
+			UIBinder->SetButtonToggled(FName("viewpointButton"), false);
+			if (bMenuOpen_) {
+				UIBinder->HideMenu();
+				bMenuOpen_ = false;
+			}
 		}
 		if (Logger_) Logger_->LogEvent(FString::Printf(TEXT("VOICE_CMD label=%s conf=%.2f"), *Ann.Label, Ann.Confidence));
 	} else {
