@@ -143,6 +143,20 @@ bool UTeleOpConfig::LoadRobot(const FString& Path) {
     if (Obj->TryGetArrayField(TEXT("wrist_pivot_left"), Arr) && Arr && Arr->Num() == 3)
         Robot.WristPivotLeft  = FVector((*Arr)[0]->AsNumber(), (*Arr)[1]->AsNumber(), (*Arr)[2]->AsNumber());
 
+    // Controller->EE orientation retarget per arm. JSON layout is [w, x, y, z];
+    // FQuat is constructed (X, Y, Z, W). Optional — defaults keep prior behaviour.
+    auto ReadQuatWXYZ = [&](const TCHAR* Key, FQuat& Out) {
+        const TArray<TSharedPtr<FJsonValue>>* Q = nullptr;
+        if (Obj->TryGetArrayField(Key, Q) && Q && Q->Num() == 4) {
+            const double W = (*Q)[0]->AsNumber(), X = (*Q)[1]->AsNumber();
+            const double Y = (*Q)[2]->AsNumber(), Z = (*Q)[3]->AsNumber();
+            Out = FQuat(X, Y, Z, W);
+            Out.Normalize();
+        }
+    };
+    ReadQuatWXYZ(TEXT("controller_to_ee_quat_right"), Robot.ControllerToEEQuatRight);
+    ReadQuatWXYZ(TEXT("controller_to_ee_quat_left"),  Robot.ControllerToEEQuatLeft);
+
     return true;
 }
 

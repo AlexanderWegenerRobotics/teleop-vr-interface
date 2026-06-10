@@ -77,6 +77,13 @@ struct FRobotConfig
     float WorkspaceMinY = -0.4f;   // right workspace edge
     FVector WristPivotRight = FVector(-5.9f,  2.1f, 3.4f);
     FVector WristPivotLeft  = FVector(-5.9f, -2.1f, 3.4f);
+
+    // Controller->EE orientation retarget (protocol frame), per arm. Must match the
+    // arm's controller_axis_map (R_ctrl_to_ee_) so ghost orientation tracks the arm.
+    // Stored as FQuat(X,Y,Z,W); JSON supplies [w, x, y, z]. Defaults reproduce the
+    // values previously hardcoded in GhostOverlayComponent::SetIntentPose.
+    FQuat ControllerToEEQuatRight = FQuat(0.5f, -0.5f, 0.5f,  0.5f);
+    FQuat ControllerToEEQuatLeft  = FQuat(0.5f,  0.5f, 0.5f, -0.5f);
 };
 
 USTRUCT()

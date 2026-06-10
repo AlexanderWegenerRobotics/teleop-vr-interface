@@ -57,6 +57,8 @@ void UGhostOverlayComponent::EndPlay(const EEndPlayReason::Type EndPlayReason){
 void UGhostOverlayComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction){
     Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
     if (!bPipelineReady) return;
+    CacheArmStates();          // consume each arm stream once for this tick
+    UpdateIntentPoses();       // raw command target + guarded origin correction
     UpdateLatencyState(DeltaTime);
     UpdateGhostOpacity();
     UpdateBoundaryPlane();
@@ -231,12 +233,6 @@ void UGhostOverlayComponent::CreateSceneCapture() {
         SceneCapture->ShowOnlyComponents.Add(BoundaryPlaneMeshComp);
     }
 
-    // Side boundary planes — vertical, limited height so they don't flood the view.
-    // Protocol-space rotations: Y-walls need -90° around X (quat {0.7071,-0.7071,0,0}),
-    // torso wall needs +90° around Y (quat {0.7071,0,0.7071,0}).
-    // Plane mesh is 1m×1m in XY; scale (depth, width_unused, height) after the rotation.
-    // ScaleUE_Y = world-Y (left/right) extent, ScaleUE_X = world-X (forward/depth) extent.
-    // Post-rotation world-space scale: FVector.X → world Y, FVector.Y → world X (forward).
     auto MakeSidePlane = [&](const TCHAR* Name, float ScaleUE_Y, float ScaleUE_X, float HeightM) -> UStaticMeshComponent*
     {
         UStaticMesh* PlaneMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Plane.Plane"));
@@ -317,16 +313,9 @@ void UGhostOverlayComponent::CreateSceneCapture() {
     }
 }
 
-// Spawn the face-locked stereo layer (mono) or post-process blendable (stereo).
 void UGhostOverlayComponent::CreateStereoLayer(){
     AActor* Owner = GetOwner();
 
-    // ---- Stereo path: ghost RTs are composited inside the video PP material ----
-    // VR/OpenXR drops all but the first post-process blendable on the camera.
-    // We side-step this by binding the ghost eye RTs to GhostLeft/GhostRight params
-    // on the video material (M_StereoVideoFeed).  The binding is done by OperatorPawn
-    // after Super::BeginPlay() so both VideoFeed and GhostOverlay are initialised.
-    // PostProcessGhostMID_ is left null; bPipelineReady relies on the RTs alone.
     if (bStereo_)
     {
         UE_LOG(LogTemp, Log, TEXT("GhostOverlay: stereo mode — ghost RTs will be bound to video material by OperatorPawn"));
@@ -405,68 +394,179 @@ FQuat UGhostOverlayComponent::UpdateCaptureTransforms(const FQuat& R_HW_Protocol
 // Freezes the stored pose (no-op) while the clutch is active so the ghost
 // holds position during operator repositioning.
 // ---------------------------------------------------------------------------
-void UGhostOverlayComponent::SeedIntentPose(uint8 ArmIndex, const float Position[3], const float Quaternion[4])
-{
+// Seed the command origin with the engage-time arm EE pose and zero the deltas, so the
+// ghost starts exactly on the arm and leads from there.
+void UGhostOverlayComponent::SeedIntentPose(uint8 ArmIndex, const float Position[3], const float Quaternion[4]) {
     if (ArmIndex > 1) return;
     FIntentPose& P = IntentPoses_[ArmIndex];
-    for (int i = 0; i < 3; ++i) P.SeedPosition[i]   = Position[i];
-    for (int i = 0; i < 4; ++i) P.SeedQuaternion[i] = Quaternion[i];
-    for (int i = 0; i < 3; ++i) P.Position[i]        = Position[i];
-    for (int i = 0; i < 4; ++i) P.Quaternion[i]      = Quaternion[i];
+
+    for (int i = 0; i < 3; ++i) P.OriginPosition[i]   = Position[i];
+    for (int i = 0; i < 4; ++i) P.OriginQuaternion[i] = Quaternion[i];
+    for (int i = 0; i < 3; ++i) P.Position[i]         = Position[i];
+    for (int i = 0; i < 4; ++i) P.Quaternion[i]       = Quaternion[i];
+
+    P.LastDeltaPosition[0] = P.LastDeltaPosition[1] = P.LastDeltaPosition[2] = 0.f;
+    P.LastDeltaQuaternion[0] = 1.f; P.LastDeltaQuaternion[1] = 0.f;
+    P.LastDeltaQuaternion[2] = 0.f; P.LastDeltaQuaternion[3] = 0.f;
+    P.PrevDeltaPosition[0] = P.PrevDeltaPosition[1] = P.PrevDeltaPosition[2] = 0.f;
+    P.PrevDeltaQuaternion[0] = 1.f; P.PrevDeltaQuaternion[1] = 0.f;
+    P.PrevDeltaQuaternion[2] = 0.f; P.PrevDeltaQuaternion[3] = 0.f;
+
+    P.bHavePrevArm = false;
+    P.bPastBounds = false;
     P.bSeeded = true;
 }
 
-void UGhostOverlayComponent::UnseedIntentPose(uint8 ArmIndex)
-{
+void UGhostOverlayComponent::UnseedIntentPose(uint8 ArmIndex) {
     if (ArmIndex > 1) return;
     IntentPoses_[ArmIndex].bSeeded = false;
 }
 
-void UGhostOverlayComponent::SetIntentPose(uint8 ArmIndex,
-                                            const float DeltaPosition[3],
-                                            const float DeltaQuaternion[4],
-                                            float       Gripper,
-                                            bool        bClutchActive)
-{
+// Record the latest operator command delta. Pose math happens in UpdateIntentPoses().
+// The delta is continuous across clutch (the controller banks it), so it is recorded
+// even while clutched — the ghost simply holds, since the delta does not change.
+void UGhostOverlayComponent::SetIntentPose(uint8 ArmIndex, const float DeltaPosition[3], const float DeltaQuaternion[4], float Gripper, bool bClutchActive) {
     if (ArmIndex > 1) return;
-    if (bClutchActive) return;
 
     FIntentPose& P = IntentPoses_[ArmIndex];
     if (!P.bSeeded) return;
+    if (bClutchActive) { P.Gripper = Gripper; return; }  // freeze delta during clutch
 
-    // Delta is cumulative from the last CaptureOrigin — recompute absolute each tick,
-    // don't accumulate. Same as: robot_EE = home_pose + delta.
-    for (int i = 0; i < 3; ++i)
-        P.Position[i] = P.SeedPosition[i] + DeltaPosition[i];
-
-    const FQuat SeedQ (P.SeedQuaternion[1],  P.SeedQuaternion[2],  P.SeedQuaternion[3],  P.SeedQuaternion[0]);
-    const FQuat DeltaQ(DeltaQuaternion[1], DeltaQuaternion[2], DeltaQuaternion[3], DeltaQuaternion[0]);
-    const FQuat M_quat = (ArmIndex == 1)
-        ? FQuat( 0.5f, -0.5f, 0.5f,  0.5f)
-        : FQuat( 0.5f,  0.5f, 0.5f, -0.5f);
-    const FQuat NewQ = SeedQ * (M_quat * DeltaQ * M_quat.Inverse());
-    P.Quaternion[0] = NewQ.W; P.Quaternion[1] = NewQ.X;
-    P.Quaternion[2] = NewQ.Y; P.Quaternion[3] = NewQ.Z;
-
+    for (int i = 0; i < 3; ++i) P.LastDeltaPosition[i]   = DeltaPosition[i];
+    for (int i = 0; i < 4; ++i) P.LastDeltaQuaternion[i] = DeltaQuaternion[i];
     P.Gripper = Gripper;
 }
 
-// ---------------------------------------------------------------------------
-// ApplyArmPoseToMesh — shared transform kernel used by both the state-driven
-// and intent-driven paths.  Reads head pan/tilt from ComLink (if alive),
-// applies the protocol→camera→UE conversion, and positions the mesh.
-// Returns false if the result is behind the camera (p_cam.X <= 0).
-// OutR_HW is optional; populated for stereo UpdateCaptureTransforms().
-// ---------------------------------------------------------------------------
-bool UGhostOverlayComponent::ApplyArmPoseToMesh(UStaticMeshComponent* Mesh,
-                                                 const float           Position[3],
-                                                 const float           Quaternion[4],
-                                                 const FRotator&       EEOffset,
-                                                 FQuat*                OutR_HW)
-{
+// Read each arm stream exactly once per tick. Read() clears the stream's HasNew flag,
+// so this is the single consumption point; everything downstream uses the cache.
+void UGhostOverlayComponent::CacheArmStates() {
+    for (uint8 Arm = 0; Arm < 2; ++Arm) {
+        if (ComLinkRef && ComLinkRef->HasNewArmState(Arm)) {
+            CachedArmState_[Arm]   = ComLinkRef->ReadArmState(Arm);
+            bArmStateFresh_[Arm]   = true;
+        } else {
+            bArmStateFresh_[Arm] = false;
+        }
+    }
+}
+
+bool UGhostOverlayComponent::IsWithinWorkspace(const float Pos[3]) const {
+    const float Margin = WorkspaceBoundaryMarginM_;
+    return Pos[0] >= WorkspaceMinX_ + Margin
+        && Pos[1] <= WorkspaceMaxY_ - Margin
+        && Pos[1] >= WorkspaceMinY_ + Margin
+        && Pos[2] >= WorkspaceLowerBoundZ_ + Margin;
+}
+
+// Raw command-target intent display:
+//   ghost = Origin ⊕ command delta            (Origin·M·R_cmd·Mᵀ for orientation)
+// This leads the arm and shows the full operator intent, including driving past a
+// workspace limit (e.g. into the table) so the operator can see and correct it.
+//
+// To still settle back onto the real arm in reachable space, the Origin is nudged toward
+// the measured arm origin (arm EE ⊖ command delta) — but ONLY while the operator is at
+// rest and the command is in-bounds. That gate keeps the live lead intact during motion
+// and prevents a deliberate over-command into a limit from being "corrected" away.
+void UGhostOverlayComponent::UpdateIntentPoses() {
+    bGhostPastBounds_ = false;
+
+    for (uint8 Arm = 0; Arm < 2; ++Arm) {
+        FIntentPose& P = IntentPoses_[Arm];
+        if (!P.bSeeded || !bUseIntentPose) continue;
+
+        const FQuat& M = ControllerToEEQuat[Arm];
+
+        // Command delta as quaternions (stored w,x,y,z → FQuat x,y,z,w).
+        const FQuat LastDeltaQ(P.LastDeltaQuaternion[1], P.LastDeltaQuaternion[2], P.LastDeltaQuaternion[3], P.LastDeltaQuaternion[0]);
+        const FQuat RetargetedDeltaQ = (M * LastDeltaQ * M.Inverse());   // EE-frame command rotation
+
+        // --- Guarded origin correction (at rest + in-bounds only) ----------------
+        // "At rest": this tick's command delta barely moved from the previous one.
+        const float dP = FMath::Sqrt(
+            FMath::Square(P.LastDeltaPosition[0] - P.PrevDeltaPosition[0]) +
+            FMath::Square(P.LastDeltaPosition[1] - P.PrevDeltaPosition[1]) +
+            FMath::Square(P.LastDeltaPosition[2] - P.PrevDeltaPosition[2]));
+        const FQuat PrevDeltaQ(P.PrevDeltaQuaternion[1], P.PrevDeltaQuaternion[2], P.PrevDeltaQuaternion[3], P.PrevDeltaQuaternion[0]);
+        const float dA = LastDeltaQ.AngularDistance(PrevDeltaQ);
+        const bool bAtRest = (dP < RestPosEpsilonM) && (dA < RestAngEpsilonRad);
+
+        // Provisional command target (used for the in-bounds gate and, unless capped,
+        // for the displayed pose).
+        float Target[3];
+        for (int i = 0; i < 3; ++i) Target[i] = P.OriginPosition[i] + P.LastDeltaPosition[i];
+        const bool bInBounds = IsWithinWorkspace(Target);
+
+        // "Arm settled": the measured EE barely moved between the last two fresh states,
+        // i.e. it has finished catching up to the ghost rather than still flying toward
+        // it. Without this gate the origin correction fires the instant the operator
+        // stops and drags the ghost back to meet the still-lagging arm.
+        bool bArmSettled = false;
+        if (bArmStateFresh_[Arm]) {
+            const ArmStateMsg& S = CachedArmState_[Arm];
+            if (P.bHavePrevArm) {
+                const float adP = FMath::Sqrt(
+                    FMath::Square(S.position[0] - P.PrevArmPosition[0]) +
+                    FMath::Square(S.position[1] - P.PrevArmPosition[1]) +
+                    FMath::Square(S.position[2] - P.PrevArmPosition[2]));
+                const FQuat ArmQnow(S.quaternion[1], S.quaternion[2], S.quaternion[3], S.quaternion[0]);
+                const FQuat ArmQprev(P.PrevArmQuaternion[1], P.PrevArmQuaternion[2], P.PrevArmQuaternion[3], P.PrevArmQuaternion[0]);
+                bArmSettled = (adP < RestPosEpsilonM) && (ArmQnow.AngularDistance(ArmQprev) < RestAngEpsilonRad);
+            }
+            for (int i = 0; i < 3; ++i) P.PrevArmPosition[i]   = S.position[i];
+            for (int i = 0; i < 4; ++i) P.PrevArmQuaternion[i] = S.quaternion[i];
+            P.bHavePrevArm = true;
+        }
+
+        if (bArmStateFresh_[Arm] && bAtRest && bArmSettled && bInBounds && OriginConvergeRate > 0.f) {
+            const ArmStateMsg& S = CachedArmState_[Arm];
+            // Measured origin estimate = arm EE ⊖ command delta.
+            const float k = FMath::Clamp(OriginConvergeRate, 0.f, 1.f);
+            for (int i = 0; i < 3; ++i) {
+                const float OriginEst = S.position[i] - P.LastDeltaPosition[i];
+                P.OriginPosition[i] += k * (OriginEst - P.OriginPosition[i]);
+            }
+            const FQuat ArmQ(S.quaternion[1], S.quaternion[2], S.quaternion[3], S.quaternion[0]);
+            const FQuat OriginEstQ = ArmQ * RetargetedDeltaQ.Inverse();
+            FQuat OriginQ(P.OriginQuaternion[1], P.OriginQuaternion[2], P.OriginQuaternion[3], P.OriginQuaternion[0]);
+            OriginQ = FQuat::Slerp(OriginQ, OriginEstQ, k).GetNormalized();
+            P.OriginQuaternion[0] = OriginQ.W; P.OriginQuaternion[1] = OriginQ.X;
+            P.OriginQuaternion[2] = OriginQ.Y; P.OriginQuaternion[3] = OriginQ.Z;
+
+            // Recompute target after the origin nudge.
+            for (int i = 0; i < 3; ++i) Target[i] = P.OriginPosition[i] + P.LastDeltaPosition[i];
+        }
+
+        // --- Displayed pose ------------------------------------------------------
+        P.bPastBounds = !IsWithinWorkspace(Target);
+        bGhostPastBounds_ |= P.bPastBounds;
+
+        if (bClampGhostToWorkspace && P.bPastBounds) {
+            const float Margin = WorkspaceBoundaryMarginM_;
+            Target[0] = FMath::Max(Target[0], WorkspaceMinX_ + Margin);
+            Target[1] = FMath::Clamp(Target[1], WorkspaceMinY_ + Margin, WorkspaceMaxY_ - Margin);
+            Target[2] = FMath::Max(Target[2], WorkspaceLowerBoundZ_ + Margin);
+        }
+        for (int i = 0; i < 3; ++i) P.Position[i] = Target[i];
+
+        const FQuat OriginQ(P.OriginQuaternion[1], P.OriginQuaternion[2], P.OriginQuaternion[3], P.OriginQuaternion[0]);
+        const FQuat NewQ = (OriginQ * RetargetedDeltaQ).GetNormalized();
+        P.Quaternion[0] = NewQ.W; P.Quaternion[1] = NewQ.X;
+        P.Quaternion[2] = NewQ.Y; P.Quaternion[3] = NewQ.Z;
+
+        for (int i = 0; i < 3; ++i) P.PrevDeltaPosition[i]   = P.LastDeltaPosition[i];
+        for (int i = 0; i < 4; ++i) P.PrevDeltaQuaternion[i] = P.LastDeltaQuaternion[i];
+    }
+
+    // Refresh the tint when the past-limit state flips (ApplyLatencyColor reads the flag).
+    if (bGhostPastBounds_ != bPrevGhostPastBounds_) {
+        bPrevGhostPastBounds_ = bGhostPastBounds_;
+        ApplyLatencyColor();
+    }
+}
+
+bool UGhostOverlayComponent::ApplyArmPoseToMesh(UStaticMeshComponent* Mesh, const float Position[3], const float Quaternion[4], const FRotator& EEOffset, FQuat* OutR_HW) {
     float Pan = 0.f, Tilt = 0.f;
-    if (ComLinkRef && ComLinkRef->IsHeadAlive())
-    {
+    if (ComLinkRef && ComLinkRef->IsHeadAlive()) {
         const HeadStateMsg H = ComLinkRef->ReadHeadState();
         Pan  = H.pan;
         Tilt = H.tilt;
@@ -488,15 +588,13 @@ bool UGhostOverlayComponent::ApplyArmPoseToMesh(UStaticMeshComponent* Mesh,
     const FQuat   rotUE  = CoordConvert::ProtocolToUnrealQuat(q_cam.W, q_cam.X, q_cam.Y, q_cam.Z);
     const FQuat   finRot = rotUE * FQuat(EEOffset);
 
-    if (bStereo_)
-    {
+    if (bStereo_) {
         const FQuat CamRotUE = UpdateCaptureTransforms(R_HW);
         Mesh->SetWorldLocationAndRotation(
             GetOwner()->GetActorLocation() + CamRotUE.RotateVector(posUE),
             CamRotUE * finRot);
     }
-    else
-    {
+    else {
         Mesh->SetRelativeLocationAndRotation(posUE, finRot);
     }
 
@@ -521,10 +619,10 @@ void UGhostOverlayComponent::UpdateGhostPose()
         return;
     }
 
-    // --- Original twin/state path (unchanged) --------------------------------
-    if (ComLinkRef && ComLinkRef->HasNewArmState(kRightArm))
+    // --- Original twin/state path (uses the per-tick cache) ------------------
+    if (bArmStateFresh_[kRightArm])
     {
-        const ArmStateMsg A = ComLinkRef->ReadArmState(kRightArm);
+        const ArmStateMsg& A = CachedArmState_[kRightArm];
         if (ApplyArmPoseToMesh(GhostMeshComp, A.position, A.quaternion, EEFrameOffset))
             UpdateFingerPose(LeftFingerMeshComp, RightFingerMeshComp, RightTrackedRef);
         return;
@@ -536,14 +634,12 @@ void UGhostOverlayComponent::UpdateGhostPose()
     const FTransform& HandTM = RightHandRef->GetComponentTransform();
     const FTransform& CamTM  = CameraRef->GetComponentTransform();
 
-    if (bStereo_)
-    {
+    if (bStereo_) {
         GhostMeshComp->SetWorldLocationAndRotation(
             HandTM.GetLocation(),
             (CamTM.GetRotation().Inverse() * HandTM.GetRotation()) * FQuat(EEFrameOffset));
     }
-    else
-    {
+    else {
         const FTransform& RefTM = SceneCapture->GetComponentTransform();
         const FVector RelPos = RefTM.InverseTransformPosition(HandTM.GetLocation());
         const FQuat   RelRot = RefTM.GetRotation().Inverse()
@@ -768,8 +864,8 @@ void UGhostOverlayComponent::UpdateGhostOpacity()
     for (uint8 Arm = 0; Arm < 2; ++Arm)
     {
         if (!IntentPoses_[Arm].bSeeded) continue;
-        if (!ComLinkRef->HasNewArmState(Arm)) continue;
-        const ArmStateMsg S = ComLinkRef->ReadArmState(Arm);
+        if (!bArmStateFresh_[Arm]) continue;
+        const ArmStateMsg& S = CachedArmState_[Arm];
         const float* IP = IntentPoses_[Arm].Position;
         const float Dist = FMath::Sqrt(
             FMath::Square(IP[0] - S.position[0]) +
@@ -789,12 +885,21 @@ void UGhostOverlayComponent::ApplyLatencyColor()
 {
     if (!GhostMID_) return;
 
+    // Command-past-limit takes priority over the latency tint: it is a direct, actionable
+    // signal that the operator's command is driving past the workspace (e.g. into the table).
     FLinearColor Color;
-    switch (LatencyLevel_)
+    if (bGhostPastBounds_)
     {
-        case 1:  Color = LatencyWarnColor; break;   // amber — pay attention
-        case 2:  Color = LatencyBadColor;  break;   // orange-red — ghost is stale
-        default: Color = GhostDefaultColor; break;
+        Color = CommandLimitColor;
+    }
+    else
+    {
+        switch (LatencyLevel_)
+        {
+            case 1:  Color = LatencyWarnColor; break;   // amber — pay attention
+            case 2:  Color = LatencyBadColor;  break;   // orange-red — ghost is stale
+            default: Color = GhostDefaultColor; break;
+        }
     }
     GhostMID_->SetVectorParameterValue(LatencyColorParam, Color);
 }
@@ -814,10 +919,10 @@ void UGhostOverlayComponent::UpdateLeftArmPose()
         return;
     }
 
-    // --- Original twin/state path (unchanged) --------------------------------
-    if (ComLinkRef && ComLinkRef->HasNewArmState(kLeftArm))
+    // --- Original twin/state path (uses the per-tick cache) ------------------
+    if (bArmStateFresh_[kLeftArm])
     {
-        const ArmStateMsg A = ComLinkRef->ReadArmState(kLeftArm);
+        const ArmStateMsg& A = CachedArmState_[kLeftArm];
         if (ApplyArmPoseToMesh(GhostLeftMeshComp, A.position, A.quaternion, LeftEEFrameOffset))
             UpdateFingerPose(LeftArmLeftFingerMeshComp, LeftArmRightFingerMeshComp, LeftTrackedRef);
         return;

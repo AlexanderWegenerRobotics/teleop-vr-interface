@@ -6,6 +6,7 @@
 #include "Components/SceneCaptureComponent2D.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/TextureRenderTarget2D.h"
+#include "Shared/protocol.hpp"
 #include "GhostOverlayComponent.generated.h"
 
 class UCameraComponent;
@@ -55,6 +56,43 @@ public:
     UPROPERTY(EditAnywhere, Category = "Ghost|Intent")
     bool bUseIntentPose = true;
 
+    // Controller->EE orientation retarget per arm (index 0 = left, 1 = right), protocol
+    // frame. Set from config in OperatorPawn::BeginPlay; must match the arm's
+    // controller_axis_map. Defaults reproduce the values formerly hardcoded here.
+    FQuat ControllerToEEQuat[2] = {
+        FQuat(0.5f,  0.5f, 0.5f, -0.5f),   // left
+        FQuat(0.5f, -0.5f, 0.5f,  0.5f)    // right
+    };
+
+    // When true the ghost is held at the workspace limit instead of being allowed to
+    // show the command going past it. Default false = show intent (penetration) so the
+    // operator sees e.g. "this command drives into the table". Either way the ghost is
+    // tinted with CommandLimitColor while the command is past a limit.
+    UPROPERTY(EditAnywhere, Category = "Ghost|Intent")
+    bool bClampGhostToWorkspace = false;
+
+    // Slow correction of the command origin toward the measured arm origin (arm EE ⊖
+    // delta). This is what makes the ghost ease onto the real end-effector once everything
+    // has settled, closing the static offset that the command alone never closes — the arm
+    // is a compliant spring and sits a steady-state deflection (load / stiffness) short of
+    // its setpoint, biggest during contact/manipulation. The correction is gated on
+    // operator-at-rest AND arm-settled AND in-bounds, so it never fights the catch-up
+    // (ghost holds while the arm flies in) and never erases a deliberate over-command into
+    // a limit. Per-fresh-state lerp factor (0 = off, ~0.05–0.15 = ease over a fraction of
+    // a second once settled).
+    UPROPERTY(EditAnywhere, Category = "Ghost|Intent")
+    float OriginConvergeRate = 0.0f;
+
+    // "At rest" thresholds for enabling the origin correction above.
+    UPROPERTY(EditAnywhere, Category = "Ghost|Intent")
+    float RestPosEpsilonM = 0.002f;
+    UPROPERTY(EditAnywhere, Category = "Ghost|Intent")
+    float RestAngEpsilonRad = 0.01f;
+
+    // Tint applied while the command target is past a workspace limit.
+    UPROPERTY(EditAnywhere, Category = "Ghost|Intent")
+    FLinearColor CommandLimitColor = FLinearColor(1.f, 0.f, 0.f, 1.f);
+
     // Opacity driving — set from config
     float GhostNearThresholdM_ = 0.03f;
     float GhostFarThresholdM_  = 0.15f;
@@ -80,14 +118,10 @@ public:
     UPROPERTY(EditAnywhere, Category = "Ghost|Latency")
     float LatencyBadExitMs = 200.f; // smoothed threshold — exit Bad → Warning
 
-    // Amber = "pay attention but no panic".  Orange-red = "ghost is stale, act".
     UPROPERTY(EditAnywhere, Category = "Ghost|Latency")
     FLinearColor LatencyWarnColor = FLinearColor(1.f, 0.60f, 0.00f, 1.f);
     UPROPERTY(EditAnywhere, Category = "Ghost|Latency")
     FLinearColor LatencyBadColor  = FLinearColor(1.f, 0.20f, 0.00f, 1.f);
-
-    // Vector/Color parameter name inside M_Ghost to receive the latency tint.
-    // Open the material in the editor and check what the parameter is called.
     UPROPERTY(EditAnywhere, Category = "Ghost|Latency")
     FName LatencyColorParam = TEXT("EmissiveColor");
     FLinearColor GhostDefaultColor = FLinearColor(0.2f, 0.5f, 1.0f, 1.0f);
@@ -275,20 +309,57 @@ private:
     uint8 LatencyLevel_      = 0;   // 0 = OK  |  1 = Warning  |  2 = Bad
 
     // Intent pose storage — one slot per arm (index 0 = left, 1 = right).
-    // Always written by SetIntentPose regardless of bUseIntentPose so the data is
-    // available the moment the flag is flipped.
+    //
+    // Raw command-target display: the ghost shows where the operator is commanding the
+    // arm to go, so it LEADS the arm and reveals intent that is past a limit (e.g. into
+    // the table):
+    //     ghost = Origin ⊕ command delta
+    // To still settle back onto the real arm in reachable space, Origin is nudged toward
+    // the measured arm origin (arm EE ⊖ delta) ONLY while the operator is at rest and the
+    // command is in-bounds — so the live lead is never dragged back during motion and a
+    // deliberate over-command into a limit is preserved. All quaternions are stored
+    // w, x, y, z (protocol order).
     struct FIntentPose
     {
-        // Absolute EE pose at the last CaptureOrigin (set by SeedIntentPose).
-        float SeedPosition[3]   = {0.f, 0.f, 0.f};
-        float SeedQuaternion[4] = {1.f, 0.f, 0.f, 0.f};  // w, x, y, z
+        // Command origin (protocol/world frame). Seeded at engage with the arm EE pose;
+        // thereafter only corrected slowly toward the measured arm origin while at rest
+        // and in-bounds. The displayed ghost is Origin ⊕ command delta.
+        float OriginPosition[3]   = {0.f, 0.f, 0.f};
+        float OriginQuaternion[4] = {1.f, 0.f, 0.f, 0.f};   // w, x, y, z
 
-        // Current absolute pose = seed + last delta (recomputed each tick, not accumulated).
+        // Most recent operator command delta (set by SetIntentPose, protocol frame).
+        float LastDeltaPosition[3]   = {0.f, 0.f, 0.f};
+        float LastDeltaQuaternion[4] = {1.f, 0.f, 0.f, 0.f};
+
+        // Previous tick's command delta, used to detect operator "at rest".
+        float PrevDeltaPosition[3]   = {0.f, 0.f, 0.f};
+        float PrevDeltaQuaternion[4] = {1.f, 0.f, 0.f, 0.f};
+
+        // Previous fresh arm-state EE pose, used to detect the arm itself "settled"
+        // (i.e. it has finished catching up, not still in flight toward the ghost).
+        float PrevArmPosition[3]   = {0.f, 0.f, 0.f};
+        float PrevArmQuaternion[4] = {1.f, 0.f, 0.f, 0.f};
+        bool  bHavePrevArm         = false;
+
+        // Displayed absolute pose = Origin ⊕ delta (recomputed each tick).
         float Position[3]   = {0.f, 0.f, 0.f};
         float Quaternion[4] = {1.f, 0.f, 0.f, 0.f};
 
-        float Gripper   = 0.f;
-        bool  bSeeded   = false;
+        float Gripper      = 0.f;
+        bool  bSeeded      = false;
+        bool  bPastBounds  = false;   // command target past a workspace limit this tick
     };
     FIntentPose IntentPoses_[2];
+
+    // Per-tick arm-state cache. The arm state is consumed once per tick (Read() clears
+    // the HasNew flag) and shared by the intent, opacity and pose paths so they don't
+    // steal the fresh-state flag from one another.
+    ArmStateMsg CachedArmState_[2] = {};
+    bool        bArmStateFresh_[2] = { false, false };
+    bool        bGhostPastBounds_  = false;   // any arm past a limit (drives the tint)
+    bool        bPrevGhostPastBounds_ = false;
+
+    void CacheArmStates();          // read each stream once, fill the cache above
+    void UpdateIntentPoses();       // raw command target + guarded origin correction
+    bool IsWithinWorkspace(const float Pos[3]) const;
 };

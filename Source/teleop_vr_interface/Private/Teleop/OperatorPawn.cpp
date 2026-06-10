@@ -48,8 +48,7 @@ AOperatorPawn::AOperatorPawn() {
 	LeftTracked = CreateDefaultSubobject<UTrackedControllerComponent>(TEXT("LeftTracked"));
 	RightTracked = CreateDefaultSubobject<UTrackedControllerComponent>(TEXT("RightTracked"));
 
-	// Wrist pivot offsets are applied in BeginPlay once config is loaded.
-	//VoiceAnnotator = CreateDefaultSubobject<UVoiceAnnotatorComponent>(TEXT("VoiceAnnotator"));
+	VoiceAnnotator = CreateDefaultSubobject<UVoiceAnnotatorComponent>(TEXT("VoiceAnnotator"));
 	GhostOverlay = CreateDefaultSubobject<UGhostOverlayComponent>(TEXT("GhostOverlay"));
 	GhostOverlay->SetCamera(VRCamera);
 	GhostOverlay->SetComLink(ComLink);
@@ -110,6 +109,8 @@ void AOperatorPawn::BeginPlay() {
 	GhostOverlay->GhostMaxOpacity_          = Config->Overlay.MaxOpacity;
 	GhostOverlay->WorkspaceLowerBoundZ_     = Config->Robot.WorkspaceLowerBoundZ;
 	GhostOverlay->WorkspaceBoundaryMarginM_ = Config->Robot.WorkspaceBoundaryMargin;
+	GhostOverlay->ControllerToEEQuat[0]     = Config->Robot.ControllerToEEQuatLeft;
+	GhostOverlay->ControllerToEEQuat[1]     = Config->Robot.ControllerToEEQuatRight;
 	GhostOverlay->WorkspaceMinX_            = Config->Robot.WorkspaceMinX;
 	GhostOverlay->WorkspaceMaxY_            = Config->Robot.WorkspaceMaxY;
 	GhostOverlay->WorkspaceMinY_            = Config->Robot.WorkspaceMinY;
@@ -154,7 +155,7 @@ void AOperatorPawn::BeginPlay() {
 		VideoFeed->SetGhostTextures(GhostOverlay->GetRenderTargetLeft(), GhostOverlay->GetRenderTargetRight());
 	}
 
-	//VoiceAnnotator->OnAnnotationReceived.AddUObject(this, &AOperatorPawn::HandleVoiceAnnotation);
+	VoiceAnnotator->OnAnnotationReceived.AddUObject(this, &AOperatorPawn::HandleVoiceAnnotation);
 
 	if (APlayerController* PC = Cast<APlayerController>(GetController())) {
 		if (UEnhancedInputLocalPlayerSubsystem* Subsystem = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(PC->GetLocalPlayer())) {
@@ -283,8 +284,6 @@ void AOperatorPawn::BeginPlay() {
 		UE_LOG(LogTemp, Log, TEXT("OperatorPawn: VideoLogger spawned"));
 	}
 
-	// Open telemetry logger first so we get the session directory, then pass it
-	// to the video logger so both write into the same timestamped folder.
 	Logger_ = MakeUnique<FTeleOpLogger>();
 	FString SessionDir = Logger_->Open(FPaths::ProjectDir() / LogBaseDirectory);
 	UE_LOG(LogTemp, Log, TEXT("OperatorPawn: logging to %s"), *SessionDir);
@@ -317,15 +316,9 @@ void AOperatorPawn::Tick(float DeltaTime) {
 	LossHistory.Push(Stats.PacketLossPercent);
 	FpsHistory.Push(static_cast<float>(Stats.CurrentFPS));
 
-	// CPU/GPU sampled every 15 ticks (~6 Hz at 90 Hz tick rate).
-	if (++PerfSampleCounter_ >= 15)
-	{
+	if (++PerfSampleCounter_ >= 15) {
 		PerfSampleCounter_ = 0;
 		CpuHistory.Push(FPlatformTime::GetCPUTime().CPUTimePct);
-		// GPU frame budget used by Unreal's render thread (% of 11.11ms at 90Hz).
-		// NOTE: this is NOT hardware utilization like Task Manager —
-		// it measures how much of Unreal's VR frame budget the GPU consumed.
-		// 100% = Unreal used its full 11ms frame slot (normal for VR).
 		constexpr float kVrFrameBudgetMs = 1000.f / 90.f;
 		const float GpuMs = FPlatformTime::ToMilliseconds(GGPUFrameTime);
 		GpuHistory.Push(FMath::Clamp(GpuMs / kVrFrameBudgetMs * 100.f, 0.f, 150.f));
@@ -374,21 +367,12 @@ void AOperatorPawn::Tick(float DeltaTime) {
 		if (Idx != INDEX_NONE) {
 			PiPSources_[Idx]->UpdateTexture(PiPTextures_[Idx]);
 			const bool bReceiving = PiPSources_[Idx]->GetStats().bIsReceiving;
-			// Drive visibility from the live receiving state, but do NOT drop the
-			// selection just because frames have not arrived yet. A non-active PiP
-			// source is only pulled (UpdateTexture) once it is selected, so on the
-			// FIRST selection of a session bIsReceiving is still false for a few ticks
-			// until the GStreamer pipeline delivers its first frame. Clearing here made
-			// that first pick silently fail and forced a second selection. Keeping it
-			// active shows the stream as soon as frames flow, and auto-recovers from
-			// transient stream loss. Explicit "turn off" still clears it (__menu_off).
 			UIBinder->SetVisibility(FName("pip_canvas"), bReceiving);
 			if (bReceiving && PiPTextures_[Idx])
 				UIBinder->SetImageTexture(FName("pip_image"), PiPTextures_[Idx]);
 		}
 	}
 
-	// Gaze-driven PiP expand: grow toward ExpandDirection when looking at it, shrink after dwell away.
 	if (!ActivePiPStreamName_.IsEmpty() && PiPNormalSize_.X > 0.f) {
 		const bool bOver    = UIBinder->IsGazeOverWidget(FName("pip_canvas"), PiPGazeInnerMarginPx);
 		const bool bFarAway = !UIBinder->IsGazeOverWidget(FName("pip_canvas"), PiPGazeOuterMarginPx);
@@ -622,7 +606,6 @@ void AOperatorPawn::UpdateStateMachine() {
 			UIBinder->SetVisibility(FName("episodeAnnotationCanvas"), true);
 		}
 		else if (bAvatarConfirmedEngaged_ && AvatarState == ESysState::Awaiting) {
-			// Avatar dropped back to awaiting after confirming engaged (e.g. arm fault).
 			CaptureControllerOrigins();
 			bAvatarConfirmedEngaged_ = false;
 			TransitionTo(ESysState::Awaiting);
@@ -757,17 +740,14 @@ void AOperatorPawn::UpdateStateMachine() {
 }
 
 void AOperatorPawn::UpdateInfoBar() {
-	// Episode number
 	UIBinder->SetText(FName("ep_value"), FString::Printf(TEXT("%03d"), EpisodeCount_));
 
-	// Session elapsed time formatted as H:MM:SS
 	int32 ElapsedSec = static_cast<int32>(FPlatformTime::Seconds() - SessionStartTime_);
 	int32 Hours      = ElapsedSec / 3600;
 	int32 Minutes    = (ElapsedSec % 3600) / 60;
 	int32 Seconds    = ElapsedSec % 60;
 	UIBinder->SetText(FName("session_time_value"), FString::Printf(TEXT("%d:%02d:%02d"), Hours, Minutes, Seconds));
 
-	// Use first arm that has live data (right=1 preferred, fall back to left=0)
 	float LatencyMs = ComLink->GetArmStateLatencyMs(1);
 	if (LatencyMs <= 0.f) LatencyMs = ComLink->GetArmStateLatencyMs(0);
 	if (LatencyMs > 0.f)
@@ -817,7 +797,7 @@ void AOperatorPawn::UpdateButtonStates() {
 			break;
 		case EArmResetState::Recovering:
 		case EArmResetState::AwaitingResume:
-			UIBinder->SetButtonToggled(Button, true);   // shows Pressed image (amber tint)
+			UIBinder->SetButtonToggled(Button, true);
 			UIBinder->SetButtonLocked(Button, true);
 			UIBinder->SetText(Label, FString::Printf(TEXT("Resetting %s..."), Side));
 			break;
@@ -908,13 +888,15 @@ void AOperatorPawn::CaptureControllerOrigins() {
 
 	if (GhostOverlay) {
 		for (uint8 Arm = 0; Arm < 2; ++Arm) {
-			if (ComLink->HasNewArmState(Arm)) {
+			// ReadArmState() returns the latest cached EE pose whether or not a new
+			// packet arrived this exact frame, so seed from it whenever the arm is alive.
+			// Falling back to zero/identity would plant the ghost origin at the world
+			// origin and inject a large bogus offset at engage.
+			if (ComLink->IsArmAlive(Arm)) {
 				ArmStateMsg S = ComLink->ReadArmState(Arm);
 				GhostOverlay->SeedIntentPose(Arm, S.position, S.quaternion);
 			} else {
-				const float ZeroPos[3]  = {0.f, 0.f, 0.f};
-				const float IdentQuat[4] = {1.f, 0.f, 0.f, 0.f};
-				GhostOverlay->SeedIntentPose(Arm, ZeroPos, IdentQuat);
+				GhostOverlay->UnseedIntentPose(Arm);
 			}
 		}
 	}

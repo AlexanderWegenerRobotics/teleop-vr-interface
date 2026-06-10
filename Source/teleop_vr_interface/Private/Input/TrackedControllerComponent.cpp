@@ -190,8 +190,6 @@ void UTrackedControllerComponent::UpdateScaledTranslation() {
         return;
     }
 
-    // Integrate the control point (wrist pivot), not the raw tracked origin, so that
-    // rotating in place does not inject parasitic translation.
     FVector CurrentLocation = ControlPointLocation(MotionController->GetComponentTransform());
 
     if (!bPrevLocationValid) {
