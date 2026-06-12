@@ -165,7 +165,8 @@ uint32 FFramePullRunnable::Run()
 
                     uint64 EnqueuedId = Frame.FrameId;
                     FrameQueue.Enqueue(MoveTemp(Frame));
-                    PendingFrameId.Store(EnqueuedId); // visible to game thread for stereo sync
+                    PendingFrameId.Store(EnqueuedId);
+                    LastFrameReceivedSec.Store(FPlatformTime::Seconds());
 
                     if (Stats) Stats->OnFrameDecoded();
 
@@ -429,8 +430,16 @@ bool FGStreamerVideoReceiver::UpdateTexture(UTexture2D*& OutTexture)
     if (!OutTexture->GetResource() || !OutTexture->GetResource()->TextureRHI)
         return false;
 
-    if (bUpdateInFlight->Load()) return false;
+    if (bUpdateInFlight->Load())
+    {
+        // Unstick if RHI callback never fired (e.g. render pipeline restart)
+        if (FPlatformTime::Seconds() - UpdateInFlightStartTime > 0.1)
+            bUpdateInFlight->Store(false);
+        else
+            return false;
+    }
     bUpdateInFlight->Store(true);
+    UpdateInFlightStartTime = FPlatformTime::Seconds();
 
     FUpdateTextureRegion2D* Region =
         new FUpdateTextureRegion2D(0, 0, 0, 0, Frame.Width, Frame.Height);
@@ -462,7 +471,14 @@ FReceiverStats FGStreamerVideoReceiver::GetStats() const
 {
     FReceiverStats Out;
     Out.CurrentFPS   = CurrentFPS;
-    Out.bIsReceiving = (CurrentFPS > 0);
+
+    // bIsReceiving is driven by the pull thread's last-frame timestamp, not the
+    // game-thread FPS counter — a UE5 hitch >500ms won't cause a false disconnect.
+    if (FramePullRunnable_)
+    {
+        double SecsSinceLast = FPlatformTime::Seconds() - FramePullRunnable_->GetLastFrameReceivedSec();
+        Out.bIsReceiving = (FramePullRunnable_->GetLastFrameReceivedSec() > 0.0 && SecsSinceLast < 1.0);
+    }
 
     if (Stats_)
         Out.StreamHealthState = Stats_->GetStats().StreamHealthState;

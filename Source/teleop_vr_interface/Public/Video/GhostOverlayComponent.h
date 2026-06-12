@@ -95,9 +95,9 @@ public:
 
     // Opacity driving — set from config
     float GhostNearThresholdM_ = 0.03f;
-    float GhostFarThresholdM_  = 0.15f;
-    float GhostMinOpacity_     = 0.15f;
-    float GhostMaxOpacity_     = 0.85f;
+    float GhostFarThresholdM_  = 0.30f;
+    float GhostMinOpacity_     = 0.35f;
+    float GhostMaxOpacity_     = 0.95f;
 
     // Workspace boundary planes — set from config
     float WorkspaceLowerBoundZ_     = 0.435f;
@@ -260,10 +260,13 @@ private:
     UPROPERTY()
     TObjectPtr<UTrackedControllerComponent> LeftTrackedRef;
 
-    // Shared dynamic material instance applied to all ghost mesh components.
+    // Per-arm dynamic material instances — right arm and left arm respectively.
+    // Keeping them separate allows independent opacity per arm.
     // Created at BeginPlay from GhostHandMaterial so we can tint at runtime.
     UPROPERTY()
-    TObjectPtr<UMaterialInstanceDynamic> GhostMID_;
+    TObjectPtr<UMaterialInstanceDynamic> GhostMID_;      // right arm
+    UPROPERTY()
+    TObjectPtr<UMaterialInstanceDynamic> GhostLeftMID_;  // left arm
 
     bool bPipelineReady = false;
     bool bStereo_       = false;

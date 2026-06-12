@@ -122,16 +122,14 @@ public:
     float  GetFrameIntervalVarianceMs() const { return static_cast<float>(FrameIntervalVariance); }
     int64  GetLastSenderTimeNs()  const { return LastSenderTimeNs.Load(); }
     uint64 GetLastFrameId()       const { return LastFrameId.Load(); }
+    double GetLastFrameReceivedSec() const { return LastFrameReceivedSec.Load(); }
     /// FrameId of the frame currently waiting in the queue (0 = queue empty).
     /// Set when a frame is enqueued, cleared when PopFrame consumes it.
     /// Used by VideoFeedComponent to sync left/right eyes before consuming.
     uint64 GetPendingFrameId()    const { return PendingFrameId.Load(); }
 private:
-    /// Number of bytes carrying the sender timestamp in the extra row.
     static constexpr int32 kTimestampBytes = 8;
 
-    /// Extract sender timestamp from the last row of a decoded BGRA frame,
-    /// crop the frame height by 1, and report latency to Stats.
     void ExtractTimestampRow(FVideoFrame& Frame);
 
     void*         AppSink;
@@ -150,6 +148,7 @@ private:
     TAtomic<int64>   LastSenderTimeNs{ 0 };
     TAtomic<uint64>  LastFrameId{ 0 };
     TAtomic<uint64>  PendingFrameId{ 0 }; // 0 = nothing queued
+    TAtomic<double>  LastFrameReceivedSec{ 0.0 };
 };
 
 // ---------------------------------------------------------------------------
@@ -191,12 +190,13 @@ private:
 
     bool  bIsInitialized = false;
 
-    int32  VideoWidth        = 0;
-    int32  VideoHeight       = 0;
+    int32  VideoWidth  = 0;
+    int32  VideoHeight = 0;
     int32  FrameCount        = 0;
     double LastFPSUpdateTime = 0.0;
     int32  CurrentFPS        = 0;
     TSharedPtr<TAtomic<bool>, ESPMode::ThreadSafe> bUpdateInFlight;
+    double UpdateInFlightStartTime = 0.0;
 
     TUniquePtr<FStreamStats>       Stats_;
     TUniquePtr<FProbeContext>      ProbeCtx_;

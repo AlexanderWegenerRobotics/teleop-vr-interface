@@ -669,18 +669,26 @@ void UGhostOverlayComponent::CreateLatencyMaterial()
         return;
     }
 
-    auto ApplyMID = [&](UStaticMeshComponent* Mesh)
+    // Right-arm MID (GhostMID_) already created above.
+    GhostLeftMID_ = UMaterialInstanceDynamic::Create(GhostHandMaterial, GetOwner());
+    if (!GhostLeftMID_)
     {
-        if (!Mesh) return;
+        UE_LOG(LogTemp, Warning, TEXT("GhostOverlay: failed to create left-arm MID — falling back to shared"));
+        GhostLeftMID_ = GhostMID_;
+    }
+
+    auto ApplyMID = [&](UStaticMeshComponent* Mesh, UMaterialInstanceDynamic* MID)
+    {
+        if (!Mesh || !MID) return;
         for (int32 i = 0; i < Mesh->GetNumMaterials(); ++i)
-            Mesh->SetMaterial(i, GhostMID_);
+            Mesh->SetMaterial(i, MID);
     };
-    ApplyMID(GhostMeshComp);
-    ApplyMID(LeftFingerMeshComp);
-    ApplyMID(RightFingerMeshComp);
-    ApplyMID(GhostLeftMeshComp);
-    ApplyMID(LeftArmLeftFingerMeshComp);
-    ApplyMID(LeftArmRightFingerMeshComp);
+    ApplyMID(GhostMeshComp,             GhostMID_);
+    ApplyMID(LeftFingerMeshComp,        GhostMID_);
+    ApplyMID(RightFingerMeshComp,       GhostMID_);
+    ApplyMID(GhostLeftMeshComp,         GhostLeftMID_);
+    ApplyMID(LeftArmLeftFingerMeshComp, GhostLeftMID_);
+    ApplyMID(LeftArmRightFingerMeshComp,GhostLeftMID_);
 
     auto SetupBoundaryPlaneMID = [&](TObjectPtr<UStaticMeshComponent> Comp, TObjectPtr<UMaterialInstanceDynamic>& MID)
     {
@@ -860,25 +868,33 @@ void UGhostOverlayComponent::UpdateGhostOpacity()
 {
     if (!GhostMID_ || !ComLinkRef) return;
 
-    float MaxDelta = 0.f;
-    for (uint8 Arm = 0; Arm < 2; ++Arm)
+    // Compute per-arm distance between intent pose and actual EE.
+    // Arm 1 = right (GhostMID_), Arm 0 = left (GhostLeftMID_).
+    constexpr uint8 kRight = 1;
+    constexpr uint8 kLeft  = 0;
+
+    auto ArmDelta = [&](uint8 Arm) -> float
     {
-        if (!IntentPoses_[Arm].bSeeded) continue;
-        if (!bArmStateFresh_[Arm]) continue;
+        if (!IntentPoses_[Arm].bSeeded || !bArmStateFresh_[Arm]) return 0.f;
         const ArmStateMsg& S = CachedArmState_[Arm];
         const float* IP = IntentPoses_[Arm].Position;
-        const float Dist = FMath::Sqrt(
+        return FMath::Sqrt(
             FMath::Square(IP[0] - S.position[0]) +
             FMath::Square(IP[1] - S.position[1]) +
             FMath::Square(IP[2] - S.position[2]));
-        MaxDelta = FMath::Max(MaxDelta, Dist);
-    }
+    };
 
-    const float T = FMath::Clamp(
-        (MaxDelta - GhostNearThresholdM_) / FMath::Max(GhostFarThresholdM_ - GhostNearThresholdM_, 1e-4f),
-        0.f, 1.f);
-    const float Opacity = FMath::Lerp(GhostMinOpacity_, GhostMaxOpacity_, T);
-    GhostMID_->SetScalarParameterValue(TEXT("Alpha param"), Opacity);
+    auto DeltaToOpacity = [&](float Delta) -> float
+    {
+        const float T = FMath::Clamp(
+            (Delta - GhostNearThresholdM_) / FMath::Max(GhostFarThresholdM_ - GhostNearThresholdM_, 1e-4f),
+            0.f, 1.f);
+        return FMath::Lerp(GhostMinOpacity_, GhostMaxOpacity_, T);
+    };
+
+    GhostMID_->SetScalarParameterValue(TEXT("Alpha param"), DeltaToOpacity(ArmDelta(kRight)));
+    if (GhostLeftMID_ && GhostLeftMID_ != GhostMID_)
+        GhostLeftMID_->SetScalarParameterValue(TEXT("Alpha param"), DeltaToOpacity(ArmDelta(kLeft)));
 }
 
 void UGhostOverlayComponent::ApplyLatencyColor()
@@ -902,6 +918,8 @@ void UGhostOverlayComponent::ApplyLatencyColor()
         }
     }
     GhostMID_->SetVectorParameterValue(LatencyColorParam, Color);
+    if (GhostLeftMID_ && GhostLeftMID_ != GhostMID_)
+        GhostLeftMID_->SetVectorParameterValue(LatencyColorParam, Color);
 }
 
 void UGhostOverlayComponent::UpdateLeftArmPose()
