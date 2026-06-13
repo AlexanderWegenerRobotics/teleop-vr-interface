@@ -86,7 +86,7 @@ void UTrackedControllerComponent::TickComponent(float DeltaTime, ELevelTick Tick
         FString Hand = MotionController ? MotionController->GetName() : TEXT("Unknown");
         FControllerDeltaPose Delta = GetDeltaPose();
         float ClutchScale = GetClutchFactor();
-        UE_LOG(LogTemp, Log, TEXT("Controller[%s]: tracking=%d fullclutch=%d clutch_scale=%.2f trigger=%.2f grasp=%d gear=%d origin_valid=%d delta_t=(%.2f,%.2f,%.2f)"),
+        UE_LOG(LogTemp, Log, TEXT("Controller[%s]: tracking=%d fullclutch=%d clutch_scale=%.2f trigger=%.2f grasp=%d gear=%.1f origin_valid=%d delta_t=(%.2f,%.2f,%.2f)"),
             *Hand,
             static_cast<int>(TrackingState),
             bFullClutch,
@@ -128,6 +128,10 @@ void UTrackedControllerComponent::BindInputActions() {
     if (IA_PadDown) {
         EIC->BindAction(IA_PadDown, ETriggerEvent::Started, this, &UTrackedControllerComponent::OnPadDown);
     }
+    if (IA_HandGrip) {
+        EIC->BindAction(IA_HandGrip, ETriggerEvent::Started,   this, &UTrackedControllerComponent::OnHandGripPressed);
+        EIC->BindAction(IA_HandGrip, ETriggerEvent::Completed, this, &UTrackedControllerComponent::OnHandGripReleased);
+    }
 }
 
 void UTrackedControllerComponent::OnTrigger(const FInputActionValue& Value) {
@@ -138,10 +142,19 @@ void UTrackedControllerComponent::OnGripPressed(const FInputActionValue& Value) 
 #if WITH_PIVOT_CALIBRATION
     if (bCalibCapturing) return;
 #endif
+    if (bHandGripHeld) return;
     bGripHeld = !bGripHeld;
 }
 
 void UTrackedControllerComponent::OnGripReleased(const FInputActionValue& Value) {
+}
+
+void UTrackedControllerComponent::OnHandGripPressed(const FInputActionValue& Value) {
+    bHandGripHeld = true;
+}
+
+void UTrackedControllerComponent::OnHandGripReleased(const FInputActionValue& Value) {
+    bHandGripHeld = false;
 }
 
 void UTrackedControllerComponent::OnMenuPressed(const FInputActionValue& Value) {
@@ -153,15 +166,13 @@ void UTrackedControllerComponent::OnMenuReleased(const FInputActionValue& Value)
 }
 
 void UTrackedControllerComponent::OnPadUp(const FInputActionValue& Value) {
-    if (ScaleFactor < MaxScale) {
-        ScaleFactor++;
-    }
+    if (!bHandGripHeld) return;
+    ScaleFactor = FMath::Min(ScaleFactor + ScaleStep, MaxScale);
 }
 
 void UTrackedControllerComponent::OnPadDown(const FInputActionValue& Value) {
-    if (ScaleFactor > MinScale) {
-        ScaleFactor--;
-    }
+    if (!bHandGripHeld) return;
+    ScaleFactor = FMath::Max(ScaleFactor - ScaleStep, MinScale);
 }
 
 EControllerHand UTrackedControllerComponent::GetHand() const {
@@ -200,7 +211,7 @@ void UTrackedControllerComponent::UpdateScaledTranslation() {
 
     FVector TickDelta = CurrentLocation - PrevTrackedLocation;
     float ClutchScale = ComputeClutchScale(TriggerValue);
-    ScaledTranslation += TickDelta * ClutchScale * static_cast<float>(ScaleFactor);
+    ScaledTranslation += TickDelta * ClutchScale * ScaleFactor;
     PrevTrackedLocation = CurrentLocation;
 }
 

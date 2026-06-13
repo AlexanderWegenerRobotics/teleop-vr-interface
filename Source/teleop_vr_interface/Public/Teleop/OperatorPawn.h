@@ -123,11 +123,12 @@ private:
 	TUniquePtr<FTeleOpLogger> Logger_;
 	float LastHeadPan_   = 0.f;
 	float LastHeadTilt_  = 0.f;
-	uint8 PrevLeftGear_  = 255;   // 255 = uninitialized, forces first-tick event
-	uint8 PrevRightGear_ = 255;
+	float PrevLeftGear_  = -1.0f;
+	float PrevRightGear_ = -1.0f;
 	bool  bPrevLeftClutch_  = false;
 	bool  bPrevRightClutch_ = false;
-	bool  bStatsVisible_    = false;
+	bool  bStatsVisible_       = false;
+	bool  bSettingsVisible_    = false;
 	int32 PerfSampleCounter_ = 0;
 
 	TArray<TUniquePtr<IVideoSource>> PiPSources_;

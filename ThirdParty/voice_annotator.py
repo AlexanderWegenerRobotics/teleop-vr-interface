@@ -48,7 +48,7 @@ INITIAL_PROMPT = (
     "Commands: grasp, insert, handover, handover left, handover right, "
     "place, release, start, engage, stop, reset, pause, "
     "reset left, reset right, home, success, partial, failure, "
-    "statistics, viewpoint, camera left, camera right, camera off. "
+    "statistics, settings, viewpoint, camera left, camera right, camera off. "
     "Quality ratings from zero to ten."
 )
 
@@ -62,7 +62,7 @@ COMMANDS       = {
     # Episode annotation
     "home", "success", "partial", "failure",
     # UI toggles
-    "statistics", "viewpoint", "camera-off", "camera-left", "camera-right",
+    "statistics", "settings", "viewpoint", "camera-off", "camera-left", "camera-right",
 }
 QUALITY_PREFIX = "quality"
 
@@ -378,7 +378,7 @@ def run(host: str, port: int, device: str, device_index: int | None) -> None:
     asr.start()
 
     ui_cmds     = {"home", "success", "partial", "failure",
-                   "reset-left", "reset-right", "statistics", "viewpoint", "camera-off"}
+                   "reset-left", "reset-right", "statistics", "settings", "viewpoint", "camera-off"}
     state_cmds  = COMMANDS - ui_cmds
     print(f"Ready. Sending to {host}:{port}\n"
           f"Vocabulary — state:    {state_cmds}\n"

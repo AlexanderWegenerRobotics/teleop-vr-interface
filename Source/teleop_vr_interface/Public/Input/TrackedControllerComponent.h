@@ -43,7 +43,7 @@ public:
     bool IsFullClutch() const { return bFullClutch; }
     bool IsClutching() const { return bFullClutch; }
     void ConsumeMenuPress() { bMenuPressed = false; }
-    uint8 GetScaleFactor() const { return ScaleFactor; }
+    float GetScaleFactor() const { return ScaleFactor; }
 
     // Arm a one-shot wrist-pivot calibration. While armed, the NEXT grip hold captures
     // poses instead of toggling grasp; releasing grip solves for ControlPointOffset,
@@ -83,6 +83,9 @@ public:
     UPROPERTY(EditAnywhere, Category = "Controller|Input")
     UInputAction* IA_PadDown = nullptr;
 
+    UPROPERTY(EditAnywhere, Category = "Controller|Input")
+    UInputAction* IA_HandGrip = nullptr;
+
     UPROPERTY(EditAnywhere, Category = "Controller|Debug")
     bool bDrawDebugRay = false;
 
@@ -111,10 +114,13 @@ public:
     float ClutchActiveRangeMax = 0.9f;
 
     UPROPERTY(EditAnywhere, Category = "Controller|Scale")
-    uint8 MinScale = 1;
+    float MinScale = 0.5f;
 
     UPROPERTY(EditAnywhere, Category = "Controller|Scale")
-    uint8 MaxScale = 5;
+    float MaxScale = 5.0f;
+
+    UPROPERTY(EditAnywhere, Category = "Controller|Scale")
+    float ScaleStep = 0.5f;
     UPROPERTY(EditAnywhere, Category = "Controller|Feedback")
     float ClutchEngageHapticIntensity = 0.5f;
 
@@ -140,6 +146,8 @@ private:
     void OnMenuReleased(const FInputActionValue& Value);
     void OnPadUp(const FInputActionValue& Value);
     void OnPadDown(const FInputActionValue& Value);
+    void OnHandGripPressed(const FInputActionValue& Value);
+    void OnHandGripReleased(const FInputActionValue& Value);
 
     void UpdateClutch();
     void UpdateScaledTranslation();
@@ -169,11 +177,12 @@ private:
 
     float TriggerValue = 0.0f;
     bool bGripHeld = false;
+    bool bHandGripHeld = false;
     bool bMenuPressed = false;
     bool bFullClutch = true;
     bool bWasFullClutch = false;
 
-    uint8 ScaleFactor = 2;
+    float ScaleFactor = 2.0f;
 
     FVector ScaledTranslation = FVector::ZeroVector;
     FVector BankedScaledTranslation = FVector::ZeroVector;

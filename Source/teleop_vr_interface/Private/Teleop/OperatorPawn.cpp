@@ -137,6 +137,8 @@ AOperatorPawn::AOperatorPawn() {
 	static ConstructorHelpers::FObjectFinder<UInputAction> RightStop(TEXT("/Game/Input/IA_RightStop.IA_RightStop"));
 	static ConstructorHelpers::FObjectFinder<UInputAction> RightPadUp(TEXT("/Game/Input/IA_RightPadUp.IA_RightPadUp"));
 	static ConstructorHelpers::FObjectFinder<UInputAction> RightPadDown(TEXT("/Game/Input/IA_RightPadDown.IA_RightPadDown"));
+	static ConstructorHelpers::FObjectFinder<UInputAction> LeftHandGrip(TEXT("/Game/Input/IA_LeftHandGrip.IA_LeftHandGrip"));
+	static ConstructorHelpers::FObjectFinder<UInputAction> RightHandGrip(TEXT("/Game/Input/IA_RightHandGrip.IA_RightHandGrip"));
 
 	LeftTracked->MotionController = LeftController;
 	RightTracked->MotionController = RightController;
@@ -146,11 +148,13 @@ AOperatorPawn::AOperatorPawn() {
 	LeftTracked->IA_Stop = LeftStop.Object;
 	LeftTracked->IA_PadUp = LeftPadUp.Object;
 	LeftTracked->IA_PadDown = LeftPadDown.Object;
+	LeftTracked->IA_HandGrip = LeftHandGrip.Object;
 	RightTracked->IA_Trigger = RightTrig.Object;
 	RightTracked->IA_Grip = RightGrip.Object;
 	RightTracked->IA_Stop = RightStop.Object;
 	RightTracked->IA_PadUp = RightPadUp.Object;
 	RightTracked->IA_PadDown = RightPadDown.Object;
+	RightTracked->IA_HandGrip = RightHandGrip.Object;
 
 	static ConstructorHelpers::FClassFinder<UUserWidget> UIClass(TEXT("/Game/UI/WBP_DebugPanel.WBP_DebugPanel_C"));
 	if (UIClass.Succeeded()) {
@@ -244,6 +248,7 @@ void AOperatorPawn::BeginPlay() {
 	UIBinder->SetVisibility(FName("cameraMenu"), false);
 	UIBinder->SetVisibility(FName("resetMenu"), false);
 	UIBinder->SetVisibility(FName("episodeAnnotationCanvas"), false);
+	UIBinder->SetVisibility(FName("settings_canvas"), false);
 
 	for (const FPiPStreamConfig& S : Config->Stream.PiPStreams) {
 		FReceiverConfig Cfg;
@@ -479,15 +484,17 @@ void AOperatorPawn::Tick(float DeltaTime) {
 
 	if (Logger_) {
 		// --- gear change events ---
-		uint8 LeftGear  = LeftTracked->GetScaleFactor();
-		uint8 RightGear = RightTracked->GetScaleFactor();
+		float LeftGear  = LeftTracked->GetScaleFactor();
+		float RightGear = RightTracked->GetScaleFactor();
 		if (LeftGear != PrevLeftGear_) {
-			Logger_->LogEvent(FString::Printf(TEXT("GEAR_CHANGE side=left gear=%d"), LeftGear));
+			Logger_->LogEvent(FString::Printf(TEXT("GEAR_CHANGE side=left gear=%.1f"), LeftGear));
 			PrevLeftGear_ = LeftGear;
+			UIBinder->SetText(FName("gear_left_value"), FString::Printf(TEXT("%.1f"), LeftGear));
 		}
 		if (RightGear != PrevRightGear_) {
-			Logger_->LogEvent(FString::Printf(TEXT("GEAR_CHANGE side=right gear=%d"), RightGear));
+			Logger_->LogEvent(FString::Printf(TEXT("GEAR_CHANGE side=right gear=%.1f"), RightGear));
 			PrevRightGear_ = RightGear;
+			UIBinder->SetText(FName("gear_right_value"), FString::Printf(TEXT("%.1f"), RightGear));
 		}
 
 		// --- clutch transition events ---
@@ -740,6 +747,11 @@ void AOperatorPawn::UpdateStateMachine() {
 	if (ButtonPressed == FName("statisticsButton")) {
 		bStatsVisible_ = !bStatsVisible_;
 		UIBinder->SetVisibility(FName("statsPanel"), bStatsVisible_);
+	}
+
+	if (ButtonPressed == FName("settingButton")) {
+		bSettingsVisible_ = !bSettingsVisible_;
+		UIBinder->SetVisibility(FName("settings_canvas"), bSettingsVisible_);
 	}
 
 	if (ButtonPressed == FName("viewpointButton")) {
@@ -1199,6 +1211,9 @@ void AOperatorPawn::HandleVoiceAnnotation(const FVoiceAnnotation& Ann) {
 		} else if (Ann.Label.Equals(TEXT("statistics"), ESearchCase::IgnoreCase)) {
 			bStatsVisible_ = !bStatsVisible_;
 			UIBinder->SetVisibility(FName("statsPanel"), bStatsVisible_);
+		} else if (Ann.Label.Equals(TEXT("settings"), ESearchCase::IgnoreCase)) {
+			bSettingsVisible_ = !bSettingsVisible_;
+			UIBinder->SetVisibility(FName("settings_canvas"), bSettingsVisible_);
 		} else if (Ann.Label.Equals(TEXT("viewpoint"), ESearchCase::IgnoreCase)) {
 			// Toggle the camera-stream picker menu.
 			if (bMenuOpen_) {

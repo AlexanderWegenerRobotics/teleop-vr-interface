@@ -1,5 +1,5 @@
 {
-    "workspace_lower_bound_z":   0.2,
+    "workspace_lower_bound_z":   0.24,
     "workspace_boundary_margin": 0.0,
     "workspace_min_x":  0.4,
     "workspace_max_y":  0.4,
