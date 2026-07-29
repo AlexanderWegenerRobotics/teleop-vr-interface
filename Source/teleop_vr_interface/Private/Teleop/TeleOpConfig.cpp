@@ -58,6 +58,7 @@ bool UTeleOpConfig::LoadNetwork(const FString& Path) {
     if (!ReadPortPair(Obj, TEXT("arm_left"), Network.ArmLeft, Context)) return false;
     if (!ReadPortPair(Obj, TEXT("arm_right"), Network.ArmRight, Context)) return false;
     if (!ReadPortPair(Obj, TEXT("head"), Network.Head, Context)) return false;
+    if (!RequireInt(Obj, TEXT("recording_port"), Network.RecordingPort, Context)) return false;
 
     return true;
 }

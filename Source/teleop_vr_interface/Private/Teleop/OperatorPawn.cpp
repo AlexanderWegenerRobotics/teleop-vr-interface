@@ -202,6 +202,12 @@ void AOperatorPawn::BeginPlay() {
 	GhostOverlay->FOVCoverage              = Config->Overlay.FOVCoverage;
 	GhostOverlay->RenderTargetSize         = FIntPoint(Config->Overlay.RenderTargetWidth, Config->Overlay.RenderTargetHeight);
 
+	RecordingSocket_ = MakeUnique<UdpSocket>();
+	UdpSocket::Config RecordingCfg;
+	RecordingCfg.RemoteIP = TEXT("127.0.0.1");
+	RecordingCfg.SendPort = Config->Network.RecordingPort;
+	RecordingSocket_->Open(RecordingCfg);
+
 	ComLink->RemoteIP = Config->Network.RemoteIP;
 	ComLink->AvatarSendPort = Config->Network.Avatar.Send;
 	ComLink->AvatarReceivePort = Config->Network.Avatar.Receive;
@@ -378,7 +384,18 @@ void AOperatorPawn::EndPlay(const EEndPlayReason::Type EndPlayReason) {
 	for (auto& Src : PiPSources_) if (Src) Src->Stop();
 	if (VideoLogger_) VideoLogger_->StopLogging(TEXT("EndPlay"));
 	if (Logger_) Logger_->Close();
+	if (bRecordingActive_) SendRecordingSignal(false);
+	if (RecordingSocket_) RecordingSocket_->Close();
 	Super::EndPlay(EndPlayReason);
+}
+
+void AOperatorPawn::SendRecordingSignal(bool bStart) {
+	if (!RecordingSocket_) return;
+	const uint64 TsNs = FTeleOpLogger::NowNs();
+	const FString Msg = FString::Printf(TEXT("{\"cmd\":\"%s\",\"ts_ns\":%llu}"),
+		bStart ? TEXT("start") : TEXT("stop"), TsNs);
+	FTCHARToUTF8 Converted(*Msg);
+	RecordingSocket_->Send(Converted.Get(), Converted.Length());
 }
 
 
@@ -868,6 +885,14 @@ void AOperatorPawn::TransitionTo(ESysState NewState) {
 		UIBinder->SetVisibility(FName("episodeAnnotationCanvas"), false);
 		UIBinder->SetButtonToggled(FName("homeButton"), false);
 	}
+	if (OperatorState_ == ESysState::Idle && NewState == ESysState::Homing) {
+		SendRecordingSignal(true);
+		bRecordingActive_ = true;
+	} else if (NewState == ESysState::Idle && OperatorState_ != ESysState::Idle && OperatorState_ != ESysState::Offline) {
+		SendRecordingSignal(false);
+		bRecordingActive_ = false;
+	}
+
 	SoundFeedback->Play(ESoundType::Transition);
 	OperatorState_ = NewState;
 	UpdateButtonStates();
@@ -1102,6 +1127,11 @@ void AOperatorPawn::CalibrateWristPivotRight() {
 
 void AOperatorPawn::CalibrateWristPivotLeft() {
 	if (LeftTracked) LeftTracked->ArmPivotCalibration();
+}
+
+bool AOperatorPawn::IsArmGraspHeld(uint8 ArmIndex) const {
+	const UTrackedControllerComponent* T = (ArmIndex == 0) ? LeftTracked : RightTracked;
+	return T && T->IsGraspHeld();
 }
 
 void AOperatorPawn::SendGazeSample(){

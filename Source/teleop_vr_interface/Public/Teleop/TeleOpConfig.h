@@ -21,6 +21,8 @@ struct FNetworkConfig
     FPortPair ArmLeft;
     FPortPair ArmRight;
     FPortPair Head;
+    // Fire-and-forget start/stop signal for the local operator-side recorder (always localhost).
+    int32     RecordingPort = 0;
 };
 
 USTRUCT()

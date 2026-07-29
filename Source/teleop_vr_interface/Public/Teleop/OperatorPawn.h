@@ -20,6 +20,7 @@
 #include "Teleop/TeleOpLogger.h"
 #include "UI/VoiceAnnotatorComponent.h"
 #include "Video/GhostOverlayComponent.h"
+#include "Networking/UdpSocket.h"
 
 #include "OperatorPawn.generated.h"
 
@@ -43,6 +44,11 @@ public:
 	// console, then hold that controller's grip, rotate in place, release to solve.
 	UFUNCTION(Exec) void CalibrateWristPivotRight();
 	UFUNCTION(Exec) void CalibrateWristPivotLeft();
+
+	// Grasp (grip) state per arm for overlay/HUD Blueprints. ArmIndex: 0 = left, 1 = right.
+	// True while the controller grip is held — the same signal sent as the gripper command.
+	UFUNCTION(BlueprintPure, Category = "Teleop|Gripper")
+	bool IsArmGraspHeld(uint8 ArmIndex) const;
 
 protected:
 	UPROPERTY() TObjectPtr<USceneComponent> VROrigin;
@@ -97,6 +103,13 @@ private:
 	void SendGazeSample();
 	void HandleVoiceAnnotation(const FVoiceAnnotation& Ann);
 	FFrameBundle BuildFrameBundle() const;
+
+	// Tells the local operator-side RealSense recorder to start/stop, in step with the
+	// startButton toggle (Idle<->Homing). Same-machine loopback, so no clock sync needed —
+	// the receiver just uses the ts_ns in the message as its own recording clock reference.
+	void SendRecordingSignal(bool bStart);
+	TUniquePtr<UdpSocket> RecordingSocket_;
+	bool bRecordingActive_ = false;
 
 	FTransform HMDOrigin_;
 	bool bHMDOriginValid_  = false;
