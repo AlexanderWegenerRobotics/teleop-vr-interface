@@ -67,6 +67,8 @@ struct ArmStateMsg {
     float     joint_positions[7];
     float     tau_ext[7];
     uint8_t   recovering;
+    float     gripper_width;
+    uint8_t   grasp_confirmed;
 };
 
 struct HeadCommandMsg {
@@ -85,6 +87,6 @@ struct HeadStateMsg {
 
 static_assert(sizeof(MsgHeader)      == 15, "MsgHeader size mismatch");
 static_assert(sizeof(ArmCommandMsg)  == 47, "ArmCommandMsg size mismatch");
-static_assert(sizeof(ArmStateMsg)    == 100, "ArmStateMsg size mismatch");
+static_assert(sizeof(ArmStateMsg)    == 105, "ArmStateMsg size mismatch");
 static_assert(sizeof(HeadCommandMsg) == 23, "HeadCommandMsg size mismatch");
 static_assert(sizeof(HeadStateMsg)   == 23, "HeadStateMsg size mismatch");

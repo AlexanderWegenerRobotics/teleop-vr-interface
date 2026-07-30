@@ -90,6 +90,13 @@ ArmStateMsg UComLink::ReadArmState(uint8 DeviceIndex) {
     return ArmStateMsg{};
 }
 
+ArmStateMsg UComLink::PeekArmState(uint8 DeviceIndex) const {
+    if (DeviceIndex < 2 && ArmStreams_[DeviceIndex]) {
+        return ArmStreams_[DeviceIndex]->Peek();
+    }
+    return ArmStateMsg{};
+}
+
 HeadStateMsg UComLink::ReadHeadState() {
     if (HeadStream_) return HeadStream_->Read();
     return HeadStateMsg{};

@@ -1,6 +1,6 @@
 {
-    "network": "network_local.json",
-    "stream":  "stream_local.json",
+    "network": "network.json",
+    "stream":  "stream.json",
     "hud":     "hud.json",
     "robot":   "robot_local.json",
     "overlay": "overlay.json"

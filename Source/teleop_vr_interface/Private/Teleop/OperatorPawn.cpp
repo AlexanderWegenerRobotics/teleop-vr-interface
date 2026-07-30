@@ -2,6 +2,7 @@
 
 extern ENGINE_API uint32 GGPUFrameTime;
 #include "Video/GStreamerSource.h"
+#include "Video/LocalPreviewSource.h"
 #include "Teleop/TeleOpConfig.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "Misc/Paths.h"
@@ -123,6 +124,8 @@ AOperatorPawn::AOperatorPawn() {
 	GhostOverlay->SetComLink(ComLink);
 	GhostOverlay->SetRightHand(RightController);
 	GhostOverlay->SetRightTracked(RightTracked);
+	GhostOverlay->SetLeftHand(LeftController);
+	GhostOverlay->SetLeftTracked(LeftTracked);
 
 	static ConstructorHelpers::FObjectFinder<UInputMappingContext> IMC(TEXT("/Game/Input/IMC_PoseMapper.IMC_PoseMapper"));
 	if (IMC.Succeeded()) InputMappingContext = IMC.Object;
@@ -257,13 +260,18 @@ void AOperatorPawn::BeginPlay() {
 	UIBinder->SetVisibility(FName("settings_canvas"), false);
 
 	for (const FPiPStreamConfig& S : Config->Stream.PiPStreams) {
-		FReceiverConfig Cfg;
-		Cfg.Port             = S.Port;
-		Cfg.FeedbackPort     = S.FeedbackPort;
-		Cfg.SenderIP         = Config->Stream.RemoteIP;
-		Cfg.ReportIntervalMs = Config->Stream.ReportIntervalMs;
-		Cfg.StatusPort       = S.StatusPort;
-		auto Src = MakeUnique<FGStreamerSource>(Cfg);
+		TUniquePtr<IVideoSource> Src;
+		if (S.bLocalPreview) {
+			Src = MakeUnique<FLocalPreviewSource>(S.Port);
+		} else {
+			FReceiverConfig Cfg;
+			Cfg.Port             = S.Port;
+			Cfg.FeedbackPort     = S.FeedbackPort;
+			Cfg.SenderIP         = Config->Stream.RemoteIP;
+			Cfg.ReportIntervalMs = Config->Stream.ReportIntervalMs;
+			Cfg.StatusPort       = S.StatusPort;
+			Src = MakeUnique<FGStreamerSource>(Cfg);
+		}
 		Src->Initialize();
 		Src->Start();
 		PiPSources_.Add(MoveTemp(Src));
@@ -570,6 +578,14 @@ void AOperatorPawn::Tick(float DeltaTime) {
 
 		Row.DataLatencyMs = ComLink->GetArmStateLatencyMs(0);
 		Row.DataMsgRateHz = ComLink->GetArmMsgRateHz(0);
+
+		ArmStateMsg LeftState = ComLink->PeekArmState(0);
+		Row.LeftGripperWidth = LeftState.gripper_width;
+		Row.LeftGripperGraspConfirmed = LeftState.grasp_confirmed;
+
+		ArmStateMsg RightState = ComLink->PeekArmState(1);
+		Row.RightGripperWidth = RightState.gripper_width;
+		Row.RightGripperGraspConfirmed = RightState.grasp_confirmed;
 
 		Logger_->WriteStreamRow(Row);
 	}

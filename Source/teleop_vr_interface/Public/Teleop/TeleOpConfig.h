@@ -33,6 +33,8 @@ struct FPiPStreamConfig
     int32   Port             = 5010;
     int32   FeedbackPort     = 5011;
     int32   StatusPort       = 5012;
+    // true = receive-only JPEG-over-UDP feed on Port, FeedbackPort/StatusPort unused.
+    bool    bLocalPreview    = false;
 };
 
 USTRUCT()

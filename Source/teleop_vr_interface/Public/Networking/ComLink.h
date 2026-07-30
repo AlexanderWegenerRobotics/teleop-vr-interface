@@ -37,6 +37,7 @@ public:
     bool HasNewArmState(uint8 DeviceIndex = 0) const;
     bool HasNewHeadState() const;
     ArmStateMsg ReadArmState(uint8 DeviceIndex = 0);
+    ArmStateMsg PeekArmState(uint8 DeviceIndex = 0) const;
     HeadStateMsg ReadHeadState();
 
     // --- command link (avatar system channel) ---

@@ -94,6 +94,7 @@ bool UTeleOpConfig::LoadStream(const FString& Path) {
             (*Entry)->TryGetNumberField(TEXT("port"),          S.Port);
             (*Entry)->TryGetNumberField(TEXT("feedback_port"), S.FeedbackPort);
             (*Entry)->TryGetNumberField(TEXT("status_port"),   S.StatusPort);
+            (*Entry)->TryGetBoolField(TEXT("local_preview"),   S.bLocalPreview);
             Stream.PiPStreams.Add(S);
         }
     }

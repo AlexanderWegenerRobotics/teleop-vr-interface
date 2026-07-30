@@ -10,8 +10,8 @@ Examples:
   python plot_teleop.py ../Logs/TeleOp/session_001 --plot pose --arm left
   python plot_teleop.py ../Logs/TeleOp/session_001 --plot state --list-sessions
 
-  python plot_teleop.py ..\Logs\TeleOp --list
-  python plot_teleop.py ..\Logs\TeleOp --session X --plot video latency
+  python plot_teleop.py ..\Saved\Logs\TeleOp --list
+  python plot_teleop.py ..\Saved\Logs\TeleOp --session X --plot video latency
 """
 
 import argparse

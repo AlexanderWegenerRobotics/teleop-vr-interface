@@ -55,6 +55,11 @@ public:
         return LastRecv_;
     }
 
+    TRecv Peek() const {
+        FScopeLock Lock(&Mutex_);
+        return LastRecv_;
+    }
+
     bool IsAlive(double TimeoutSec = 0.5) const {
         return Socket_ && Socket_->IsAlive(TimeoutSec);
     }

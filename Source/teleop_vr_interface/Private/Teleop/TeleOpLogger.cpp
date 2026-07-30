@@ -124,7 +124,8 @@ void FTeleOpLogger::WriteStreamRow(const FStreamRow& R)
         TEXT("%.4f;%d;%.0f;%.6f;%.6f;%.6f;%.6f;%.6f;%.6f;%.6f;")
         TEXT("%.6f;%.6f;")
         TEXT("%.2f;%.3f;%.3f;%d;")
-        TEXT("%.2f;%.1f\n"),
+        TEXT("%.2f;%.1f;")
+        TEXT("%.4f;%d;%.4f;%d\n"),
         R.TimestampNs, R.OperatorState,
         R.LeftClutch,  R.LeftGear,  R.LeftGrasp,
         R.LeftPx,  R.LeftPy,  R.LeftPz,
@@ -134,7 +135,8 @@ void FTeleOpLogger::WriteStreamRow(const FStreamRow& R)
         R.RightQw, R.RightQx, R.RightQy, R.RightQz,
         R.HeadPan, R.HeadTilt,
         R.VideoLatencyMs, R.VideoJitterMs, R.VideoLossPct, R.VideoFps,
-        R.DataLatencyMs, R.DataMsgRateHz));
+        R.DataLatencyMs, R.DataMsgRateHz,
+        R.LeftGripperWidth, R.LeftGripperGraspConfirmed, R.RightGripperWidth, R.RightGripperGraspConfirmed));
 }
 
 void FTeleOpLogger::LogEvent(const FString& Message)
@@ -169,5 +171,6 @@ FString FTeleOpLogger::StreamHeader()
         TEXT("right_px;right_py;right_pz;right_qw;right_qx;right_qy;right_qz;")
         TEXT("head_pan;head_tilt;")
         TEXT("video_latency_ms;video_jitter_ms;video_loss_pct;video_fps;")
-        TEXT("data_latency_ms;data_msg_rate_hz\n");
+        TEXT("data_latency_ms;data_msg_rate_hz;")
+        TEXT("left_gripper_width;left_grasp_confirmed;right_gripper_width;right_grasp_confirmed\n");
 }

@@ -69,6 +69,12 @@ struct FStreamRow
     // Data stream stats (arm state stream, avatar → operator)
     float  DataLatencyMs  = 0.f;
     float  DataMsgRateHz  = 0.f;
+
+    // Robot gripper feedback (avatar → operator)
+    float  LeftGripperWidth           = 0.f;
+    uint8  LeftGripperGraspConfirmed  = 0;
+    float  RightGripperWidth          = 0.f;
+    uint8  RightGripperGraspConfirmed = 0;
 };
 
 // ---------------------------------------------------------------------------
