@@ -1,6 +1,7 @@
 #include "Video/GhostOverlayComponent.h"
 
 #include "Camera/CameraComponent.h"
+#include "Components/PrimitiveComponent.h"
 #include "Components/SceneCaptureComponent.h"
 #include "Components/StereoLayerComponent.h"
 #include "Engine/StaticMesh.h"
@@ -311,6 +312,25 @@ void UGhostOverlayComponent::CreateSceneCapture() {
         UE_LOG(LogTemp, Log, TEXT("GhostOverlay: stereo eye captures created (±%.2f cm, FOV=%.0f°, %d meshes each)"),
             StereoEyeOffsetCm, StereoCaptureFOV, SceneCaptureLeft->ShowOnlyComponents.Num());
     }
+
+    // Re-apply any overlay primitives registered before the captures existed.
+    for (UPrimitiveComponent* Comp : RegisteredOverlayComponents_) {
+        if (!Comp) continue;
+        if (SceneCapture)      SceneCapture->ShowOnlyComponents.AddUnique(Comp);
+        if (SceneCaptureLeft)  SceneCaptureLeft->ShowOnlyComponents.AddUnique(Comp);
+        if (SceneCaptureRight) SceneCaptureRight->ShowOnlyComponents.AddUnique(Comp);
+    }
+}
+
+// Additive overlay hook — registers Comp into the ghost's SceneCapture ShowOnlyList(s) so it
+// renders alongside the ghost meshes without touching any existing ghost rendering/pose logic.
+void UGhostOverlayComponent::RegisterOverlayComponent(UPrimitiveComponent* Comp) {
+    if (!Comp) return;
+    RegisteredOverlayComponents_.AddUnique(Comp);
+
+    if (SceneCapture)      SceneCapture->ShowOnlyComponents.AddUnique(Comp);
+    if (SceneCaptureLeft)  SceneCaptureLeft->ShowOnlyComponents.AddUnique(Comp);
+    if (SceneCaptureRight) SceneCaptureRight->ShowOnlyComponents.AddUnique(Comp);
 }
 
 void UGhostOverlayComponent::CreateStereoLayer(){

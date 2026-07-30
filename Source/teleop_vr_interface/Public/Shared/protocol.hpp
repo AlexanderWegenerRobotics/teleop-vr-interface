@@ -37,6 +37,12 @@ enum class DeviceId : uint8_t {
     AVATAR    = 4
 };
 
+enum class GraspState : uint8_t {
+    OPEN = 0,
+    HELD = 1,
+    LOST = 2
+};
+
 inline uint64_t timestamp_ns() {
     return static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -66,9 +72,9 @@ struct ArmStateMsg {
     float     quaternion[4];
     float     joint_positions[7];
     float     tau_ext[7];
-    uint8_t   recovering;
-    float     gripper_width;
-    uint8_t   grasp_confirmed;
+    uint8_t     recovering;
+    float       gripper_width;
+    GraspState  grasp_state;
 };
 
 struct HeadCommandMsg {

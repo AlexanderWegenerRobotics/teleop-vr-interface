@@ -20,6 +20,7 @@
 #include "Teleop/TeleOpLogger.h"
 #include "UI/VoiceAnnotatorComponent.h"
 #include "Video/GhostOverlayComponent.h"
+#include "Video/GraspIndicatorComponent.h"
 #include "Networking/UdpSocket.h"
 
 #include "OperatorPawn.generated.h"
@@ -72,6 +73,8 @@ protected:
 	UPROPERTY() AVideoLogger* VideoLogger_ = nullptr;
 	UPROPERTY() TObjectPtr<UVoiceAnnotatorComponent> VoiceAnnotator;
 	UPROPERTY() TObjectPtr<UGhostOverlayComponent>  GhostOverlay;
+	UPROPERTY() TObjectPtr<UGraspIndicatorComponent> LeftGraspIndicator;
+	UPROPERTY() TObjectPtr<UGraspIndicatorComponent> RightGraspIndicator;
 
 	UPROPERTY(EditAnywhere, Category = "Logging")
 	FString LogBaseDirectory = TEXT("Saved/Logs/TeleOp/");

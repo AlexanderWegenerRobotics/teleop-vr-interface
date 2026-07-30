@@ -136,7 +136,7 @@ void FTeleOpLogger::WriteStreamRow(const FStreamRow& R)
         R.HeadPan, R.HeadTilt,
         R.VideoLatencyMs, R.VideoJitterMs, R.VideoLossPct, R.VideoFps,
         R.DataLatencyMs, R.DataMsgRateHz,
-        R.LeftGripperWidth, R.LeftGripperGraspConfirmed, R.RightGripperWidth, R.RightGripperGraspConfirmed));
+        R.LeftGripperWidth, R.LeftGripperGraspState, R.RightGripperWidth, R.RightGripperGraspState));
 }
 
 void FTeleOpLogger::LogEvent(const FString& Message)
@@ -172,5 +172,5 @@ FString FTeleOpLogger::StreamHeader()
         TEXT("head_pan;head_tilt;")
         TEXT("video_latency_ms;video_jitter_ms;video_loss_pct;video_fps;")
         TEXT("data_latency_ms;data_msg_rate_hz;")
-        TEXT("left_gripper_width;left_grasp_confirmed;right_gripper_width;right_grasp_confirmed\n");
+        TEXT("left_gripper_width;left_grasp_state;right_gripper_width;right_grasp_state\n");
 }

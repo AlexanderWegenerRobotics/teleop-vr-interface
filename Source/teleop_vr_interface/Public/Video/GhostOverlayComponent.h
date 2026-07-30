@@ -13,6 +13,7 @@ class UCameraComponent;
 class UComLink;
 class UMaterialInstanceDynamic;
 class UMaterialInterface;
+class UPrimitiveComponent;
 class UStaticMesh;
 class UTrackedControllerComponent;
 
@@ -194,6 +195,15 @@ public:
     UPROPERTY(EditAnywhere, Category = "Ghost|Assets")
     TObjectPtr<UStaticMesh> GhostLeftHandMesh;
 
+    // ---- Overlay hooks for other VR-drawn indicators (e.g. grasp indicator) --------- //
+    // Additive-only: lets an external component register a primitive so it renders inside
+    // the ghost's SceneCapture(s), and get an anchor to attach to so it inherits the ghost
+    // mesh's per-tick pose via normal USceneComponent attachment. Does not touch any of the
+    // ghost's own rendering/pose logic.
+    void RegisterOverlayComponent(UPrimitiveComponent* Comp);
+    USceneComponent* GetRightWristAnchor() const { return GhostMeshComp; }
+    USceneComponent* GetLeftWristAnchor()  const { return GhostLeftMeshComp; }
+
 private:
     void LoadAssets();
     void CreateRenderTarget();
@@ -365,4 +375,9 @@ private:
     void CacheArmStates();          // read each stream once, fill the cache above
     void UpdateIntentPoses();       // raw command target + guarded origin correction
     bool IsWithinWorkspace(const float Pos[3]) const;
+
+    // Primitives registered via RegisterOverlayComponent — re-applied to newly created
+    // captures so registration order relative to BeginPlay never matters.
+    UPROPERTY()
+    TArray<TObjectPtr<UPrimitiveComponent>> RegisteredOverlayComponents_;
 };

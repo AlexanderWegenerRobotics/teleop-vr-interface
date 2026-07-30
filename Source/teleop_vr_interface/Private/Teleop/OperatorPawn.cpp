@@ -5,6 +5,7 @@ extern ENGINE_API uint32 GGPUFrameTime;
 #include "Video/LocalPreviewSource.h"
 #include "Teleop/TeleOpConfig.h"
 #include "Engine/TextureRenderTarget2D.h"
+#include "Materials/MaterialInterface.h"
 #include "Misc/Paths.h"
 #include "Shared/annotation_msg.hpp"
 
@@ -127,6 +128,14 @@ AOperatorPawn::AOperatorPawn() {
 	GhostOverlay->SetLeftHand(LeftController);
 	GhostOverlay->SetLeftTracked(LeftTracked);
 
+	LeftGraspIndicator  = CreateDefaultSubobject<UGraspIndicatorComponent>(TEXT("LeftGraspIndicator"));
+	RightGraspIndicator = CreateDefaultSubobject<UGraspIndicatorComponent>(TEXT("RightGraspIndicator"));
+
+	if (UMaterialInterface* LoadedGlyphMat = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Materials/M_GraspGlyph.M_GraspGlyph"))) {
+		LeftGraspIndicator->GlyphMaterial  = LoadedGlyphMat;
+		RightGraspIndicator->GlyphMaterial = LoadedGlyphMat;
+	}
+
 	static ConstructorHelpers::FObjectFinder<UInputMappingContext> IMC(TEXT("/Game/Input/IMC_PoseMapper.IMC_PoseMapper"));
 	if (IMC.Succeeded()) InputMappingContext = IMC.Object;
 
@@ -232,6 +241,9 @@ void AOperatorPawn::BeginPlay() {
 	GhostOverlay->SetStereoMode(Config->Stream.bStereo);
 
 	Super::BeginPlay();
+
+	LeftGraspIndicator->Initialize(GhostOverlay, ComLink, 0);
+	RightGraspIndicator->Initialize(GhostOverlay, ComLink, 1);
 
 	if (Config->Stream.bStereo) {
 		VideoFeed->SetGhostTextures(GhostOverlay->GetRenderTargetLeft(), GhostOverlay->GetRenderTargetRight());
@@ -581,11 +593,11 @@ void AOperatorPawn::Tick(float DeltaTime) {
 
 		ArmStateMsg LeftState = ComLink->PeekArmState(0);
 		Row.LeftGripperWidth = LeftState.gripper_width;
-		Row.LeftGripperGraspConfirmed = LeftState.grasp_confirmed;
+		Row.LeftGripperGraspState = static_cast<uint8>(LeftGraspIndicator->GetDisplayState());
 
 		ArmStateMsg RightState = ComLink->PeekArmState(1);
 		Row.RightGripperWidth = RightState.gripper_width;
-		Row.RightGripperGraspConfirmed = RightState.grasp_confirmed;
+		Row.RightGripperGraspState = static_cast<uint8>(RightGraspIndicator->GetDisplayState());
 
 		Logger_->WriteStreamRow(Row);
 	}
