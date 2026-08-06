@@ -62,7 +62,6 @@ void UGhostOverlayComponent::TickComponent(float DeltaTime, ELevelTick TickType,
     UpdateIntentPoses();
     UpdateLatencyState(DeltaTime);
     UpdateGhostOpacity();
-    UpdateBoundaryPlane();
     UpdateGhostPose();
     UpdateLeftArmPose();
 }
@@ -216,47 +215,6 @@ void UGhostOverlayComponent::CreateSceneCapture() {
 
     LeftArmLeftFingerMeshComp  = CreateFingerMesh(TEXT("GhostLeftArmLFinger"), GhostLeftFingerMesh,  LeftFingerOpenOffset);
     LeftArmRightFingerMeshComp = CreateFingerMesh(TEXT("GhostLeftArmRFinger"), GhostRightFingerMesh, RightFingerOpenOffset);
-
-    {
-        UStaticMesh* PlaneMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Plane.Plane"));
-        BoundaryPlaneMeshComp = NewObject<UStaticMeshComponent>(Owner, TEXT("GhostBoundaryPlane"));
-        BoundaryPlaneMeshComp->SetupAttachment(SceneCapture);
-        BoundaryPlaneMeshComp->RegisterComponent();
-        if (PlaneMesh) BoundaryPlaneMeshComp->SetStaticMesh(PlaneMesh);
-        BoundaryPlaneMeshComp->SetWorldScale3D(FVector(BoundaryPlaneHeightM_, BoundaryPlaneWidthM_, 1.f));
-        if (GhostHandMaterial) {
-            for (int32 i = 0; i < BoundaryPlaneMeshComp->GetNumMaterials(); ++i)
-                BoundaryPlaneMeshComp->SetMaterial(i, GhostHandMaterial);
-        }
-        BoundaryPlaneMeshComp->SetCastShadow(false);
-        BoundaryPlaneMeshComp->SetVisibleInSceneCaptureOnly(true);
-        BoundaryPlaneMeshComp->SetVisibility(false);
-        SceneCapture->ShowOnlyComponents.Add(BoundaryPlaneMeshComp);
-    }
-
-    auto MakeSidePlane = [&](const TCHAR* Name, float ScaleUE_Y, float ScaleUE_X, float HeightM) -> UStaticMeshComponent*
-    {
-        UStaticMesh* PlaneMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Plane.Plane"));
-        UStaticMeshComponent* Comp = NewObject<UStaticMeshComponent>(Owner, Name);
-        Comp->SetupAttachment(SceneCapture);
-        Comp->RegisterComponent();
-        if (PlaneMesh) Comp->SetStaticMesh(PlaneMesh);
-        Comp->SetWorldScale3D(FVector(ScaleUE_Y, ScaleUE_X, HeightM));
-        if (GhostHandMaterial) {
-            for (int32 i = 0; i < Comp->GetNumMaterials(); ++i)
-                Comp->SetMaterial(i, GhostHandMaterial);
-        }
-        Comp->SetCastShadow(false);
-        Comp->SetVisibleInSceneCaptureOnly(true);
-        Comp->SetVisibility(false);
-        SceneCapture->ShowOnlyComponents.Add(Comp);
-        return Comp;
-    };
-    // Y-walls: 0.7m left/right extent (unchanged), 1.0m forward depth (extended in X)
-    BoundaryPlaneLeftMeshComp  = MakeSidePlane(TEXT("GhostBoundaryLeft"),  0.7f, 1.0f, 0.5f);
-    BoundaryPlaneRightMeshComp = MakeSidePlane(TEXT("GhostBoundaryRight"), 0.7f, 1.0f, 0.5f);
-    // Torso X-wall: spans Y workspace width
-    BoundaryPlaneTorsoMeshComp = MakeSidePlane(TEXT("GhostBoundaryTorso"), 0.8f, 0.8f, 0.5f);
 
     LeftArmLeftFingerMeshComp->DetachFromComponent(FDetachmentTransformRules::KeepRelativeTransform);
     LeftArmLeftFingerMeshComp->AttachToComponent(GhostLeftMeshComp, FAttachmentTransformRules::KeepRelativeTransform);
@@ -476,6 +434,16 @@ bool UGhostOverlayComponent::IsWithinWorkspace(const float Pos[3]) const {
         && Pos[1] <= WorkspaceMaxY_ - Margin
         && Pos[1] >= WorkspaceMinY_ + Margin
         && Pos[2] >= WorkspaceLowerBoundZ_ + Margin;
+}
+
+bool UGhostOverlayComponent::GetGhostEEPosition(uint8 ArmIndex, float OutPosition[3]) const {
+    if (ArmIndex > 1) return false;
+    const FIntentPose& P = IntentPoses_[ArmIndex];
+    if (!P.bSeeded) return false;
+    OutPosition[0] = P.Position[0];
+    OutPosition[1] = P.Position[1];
+    OutPosition[2] = P.Position[2];
+    return true;
 }
 
 // Raw command-target intent display:
@@ -710,23 +678,6 @@ void UGhostOverlayComponent::CreateLatencyMaterial()
     ApplyMID(LeftArmLeftFingerMeshComp, GhostLeftMID_);
     ApplyMID(LeftArmRightFingerMeshComp,GhostLeftMID_);
 
-    auto SetupBoundaryPlaneMID = [&](TObjectPtr<UStaticMeshComponent> Comp, TObjectPtr<UMaterialInstanceDynamic>& MID)
-    {
-        if (!Comp) return;
-        MID = UMaterialInstanceDynamic::Create(GhostHandMaterial, GetOwner());
-        if (MID)
-        {
-            MID->SetVectorParameterValue(LatencyColorParam, FLinearColor(1.f, 0.0f, 0.0f, 1.f));
-            MID->SetScalarParameterValue(TEXT("Alpha param"), 0.7f);
-            for (int32 i = 0; i < Comp->GetNumMaterials(); ++i)
-                Comp->SetMaterial(i, MID);
-        }
-    };
-    SetupBoundaryPlaneMID(BoundaryPlaneMeshComp,       BoundaryPlaneMID_);
-    SetupBoundaryPlaneMID(BoundaryPlaneLeftMeshComp,   BoundaryPlaneLeftMID_);
-    SetupBoundaryPlaneMID(BoundaryPlaneRightMeshComp,  BoundaryPlaneRightMID_);
-    SetupBoundaryPlaneMID(BoundaryPlaneTorsoMeshComp,  BoundaryPlaneTorsoMID_);
-
     ApplyLatencyColor();
 }
 
@@ -771,118 +722,6 @@ void UGhostOverlayComponent::UpdateLatencyState(float DeltaTime)
 // ---------------------------------------------------------------------------
 // ApplyLatencyColor
 // ---------------------------------------------------------------------------
-
-void UGhostOverlayComponent::UpdateBoundaryPlane()
-{
-    // --- Protocol-space quaternions for standing-up planes ---
-    // Y-wall (normal = protocol +Y): rotate horizontal plane -90° around protocol X
-    static const float kYWallQuat[4]    = { 0.7071f, -0.7071f, 0.f, 0.f };
-    // Torso wall (normal = protocol +X): rotate horizontal plane +90° around protocol Y
-    static const float kTorsoWallQuat[4] = { 0.7071f, 0.f, 0.7071f, 0.f };
-    static const float kIdentQuat[4]     = { 1.f, 0.f, 0.f, 0.f };
-
-    const float Margin = WorkspaceBoundaryMarginM_;
-
-    // Clamp helper: center a side plane's Z so it doesn't float too high/low
-    // Side planes are 0.5m tall → half-height 0.25m
-    constexpr float kSideHalfH = 0.25f;
-    auto SideCenterZ = [&](float ArmZ) {
-        return FMath::Clamp(ArmZ,
-            WorkspaceLowerBoundZ_ + kSideHalfH,
-            WorkspaceLowerBoundZ_ + 0.7f + kSideHalfH); // max center ~1.1m for table work height
-    };
-
-    // ---- Floor plane (Z-min) ----
-    bool bFloor = false;
-    float FloorX = 0.f, FloorY = 0.f;
-    for (uint8 Arm = 0; Arm < 2; ++Arm)
-    {
-        const FIntentPose& P = IntentPoses_[Arm];
-        if (!P.bSeeded) continue;
-        if (P.Position[2] < WorkspaceLowerBoundZ_ + Margin)
-        {
-            bFloor = true; FloorX = P.Position[0]; FloorY = P.Position[1]; break;
-        }
-    }
-    if (BoundaryPlaneMeshComp)
-    {
-        BoundaryPlaneMeshComp->SetVisibility(bFloor);
-        if (bFloor)
-        {
-            // Shift center 0.20m toward torso (-X) so the plane better covers the table
-            const float Pos[3] = { FloorX - 0.20f, FloorY, WorkspaceLowerBoundZ_ };
-            ApplyArmPoseToMesh(BoundaryPlaneMeshComp, Pos, kIdentQuat, FRotator::ZeroRotator);
-        }
-    }
-
-    // ---- +Y wall (left workspace edge) ----
-    bool bLeft = false;
-    float LeftX = 0.f, LeftZ = 0.f;
-    for (uint8 Arm = 0; Arm < 2; ++Arm)
-    {
-        const FIntentPose& P = IntentPoses_[Arm];
-        if (!P.bSeeded) continue;
-        if (P.Position[1] > WorkspaceMaxY_ - Margin)
-        {
-            bLeft = true; LeftX = P.Position[0]; LeftZ = SideCenterZ(P.Position[2]); break;
-        }
-    }
-    if (BoundaryPlaneLeftMeshComp)
-    {
-        BoundaryPlaneLeftMeshComp->SetVisibility(bLeft);
-        if (bLeft)
-        {
-            // Shift center 0.20m toward torso (-X) so the plane aligns with the actual workspace
-            const float Pos[3] = { LeftX - 0.20f, WorkspaceMaxY_, LeftZ };
-            ApplyArmPoseToMesh(BoundaryPlaneLeftMeshComp, Pos, kYWallQuat, FRotator::ZeroRotator);
-        }
-    }
-
-    // ---- -Y wall (right workspace edge) ----
-    bool bRight = false;
-    float RightX = 0.f, RightZ = 0.f;
-    for (uint8 Arm = 0; Arm < 2; ++Arm)
-    {
-        const FIntentPose& P = IntentPoses_[Arm];
-        if (!P.bSeeded) continue;
-        if (P.Position[1] < WorkspaceMinY_ + Margin)
-        {
-            bRight = true; RightX = P.Position[0]; RightZ = SideCenterZ(P.Position[2]); break;
-        }
-    }
-    if (BoundaryPlaneRightMeshComp)
-    {
-        BoundaryPlaneRightMeshComp->SetVisibility(bRight);
-        if (bRight)
-        {
-            // Shift center 0.20m toward torso (-X) so the plane aligns with the actual workspace
-            const float Pos[3] = { RightX - 0.20f, WorkspaceMinY_, RightZ };
-            ApplyArmPoseToMesh(BoundaryPlaneRightMeshComp, Pos, kYWallQuat, FRotator::ZeroRotator);
-        }
-    }
-
-    // ---- -X wall (torso / towards robot base) ----
-    bool bTorso = false;
-    float TorsoY = 0.f, TorsoZ = 0.f;
-    for (uint8 Arm = 0; Arm < 2; ++Arm)
-    {
-        const FIntentPose& P = IntentPoses_[Arm];
-        if (!P.bSeeded) continue;
-        if (P.Position[0] < WorkspaceMinX_ + Margin)
-        {
-            bTorso = true; TorsoY = P.Position[1]; TorsoZ = SideCenterZ(P.Position[2]); break;
-        }
-    }
-    if (BoundaryPlaneTorsoMeshComp)
-    {
-        BoundaryPlaneTorsoMeshComp->SetVisibility(bTorso);
-        if (bTorso)
-        {
-            const float Pos[3] = { WorkspaceMinX_, TorsoY, TorsoZ };
-            ApplyArmPoseToMesh(BoundaryPlaneTorsoMeshComp, Pos, kTorsoWallQuat, FRotator::ZeroRotator);
-        }
-    }
-}
 
 void UGhostOverlayComponent::UpdateGhostOpacity()
 {

@@ -100,11 +100,12 @@ public:
     float GhostMinOpacity_     = 0.35f;
     float GhostMaxOpacity_     = 0.95f;
 
-    // Workspace boundary planes — set from config
+    // Workspace bounds — set from config. Drives the ghost's own past-limit red tint
+    // (CommandLimitColor) via IsWithinWorkspace()/bGhostPastBounds_. The boundary proximity
+    // visualization itself lives in the standalone UWorkspaceBoundaryComponent, which reads
+    // these same bounds independently (see GetWorkspaceBounds()).
     float WorkspaceLowerBoundZ_     = 0.435f;
     float WorkspaceBoundaryMarginM_ = 0.05f;
-    float BoundaryPlaneWidthM_      = 1.8f;
-    float BoundaryPlaneHeightM_     = 0.96f;
     // Lateral workspace limits
     float WorkspaceMinX_ =  0.4f;
     float WorkspaceMaxY_ =  0.4f;
@@ -204,6 +205,31 @@ public:
     USceneComponent* GetRightWristAnchor() const { return GhostMeshComp; }
     USceneComponent* GetLeftWristAnchor()  const { return GhostLeftMeshComp; }
 
+    // World-frame workspace bounds (torso/left/right/floor only — matches the four faces
+    // the ghost itself reacts to). Lets UWorkspaceBoundaryComponent read the same numbers
+    // GhostOverlayComponent uses for its own past-limit tint, without a second config load.
+    float GetWorkspaceMinX()  const { return WorkspaceMinX_; }
+    float GetWorkspaceMaxY()  const { return WorkspaceMaxY_; }
+    float GetWorkspaceMinY()  const { return WorkspaceMinY_; }
+    float GetWorkspaceMinZ()  const { return WorkspaceLowerBoundZ_; }
+
+    // Ghost EE position for the given arm this tick (protocol/world frame), or false if the
+    // arm hasn't seeded an intent pose yet.
+    bool GetGhostEEPosition(uint8 ArmIndex, float OutPosition[3]) const;
+
+    // Anchor to attach additional overlay meshes to so they sit in the same camera-relative
+    // capture rig as the ghost itself (this system composites onto the video feed via a
+    // SceneCapture, not plain in-world placement — anything meant to appear "in the video"
+    // must go through this rig, not a bare SetWorldLocation).
+    USceneComponent* GetCaptureAnchor() const { return SceneCapture; }
+
+    // Public wrapper around the same per-tick pose transform the ghost meshes use (protocol
+    // position/quaternion -> camera-relative capture space). Lets an externally registered
+    // mesh position itself identically to how the ghost's own meshes are placed.
+    bool ApplyOverlayPose(UStaticMeshComponent* Mesh, const float Position[3], const float Quaternion[4], const FRotator& EEOffset = FRotator::ZeroRotator) {
+        return ApplyArmPoseToMesh(Mesh, Position, Quaternion, EEOffset);
+    }
+
 private:
     void LoadAssets();
     void CreateRenderTarget();
@@ -219,7 +245,6 @@ private:
     void UpdateLatencyState(float DeltaTime);
     void ApplyLatencyColor();
     void UpdateGhostOpacity();
-    void UpdateBoundaryPlane();
 
     bool ApplyArmPoseToMesh(UStaticMeshComponent* Mesh, const float Position[3], const float  Quaternion[4], const FRotator&  EEOffset, FQuat* OutR_HW = nullptr);
 
@@ -297,24 +322,6 @@ private:
     // Post-process MID for stereo ghost composite (null in mono mode).
     UPROPERTY()
     TObjectPtr<UMaterialInstanceDynamic> PostProcessGhostMID_;
-
-    UPROPERTY()
-    TObjectPtr<UStaticMeshComponent> BoundaryPlaneMeshComp;       // floor (z-min)
-    UPROPERTY()
-    TObjectPtr<UStaticMeshComponent> BoundaryPlaneLeftMeshComp;   // +Y wall
-    UPROPERTY()
-    TObjectPtr<UStaticMeshComponent> BoundaryPlaneRightMeshComp;  // -Y wall
-    UPROPERTY()
-    TObjectPtr<UStaticMeshComponent> BoundaryPlaneTorsoMeshComp;  // -X (torso) wall
-
-    UPROPERTY()
-    TObjectPtr<UMaterialInstanceDynamic> BoundaryPlaneMID_;
-    UPROPERTY()
-    TObjectPtr<UMaterialInstanceDynamic> BoundaryPlaneLeftMID_;
-    UPROPERTY()
-    TObjectPtr<UMaterialInstanceDynamic> BoundaryPlaneRightMID_;
-    UPROPERTY()
-    TObjectPtr<UMaterialInstanceDynamic> BoundaryPlaneTorsoMID_;
 
     // Latency state — written by SetVideoLatencyMs (pawn thread), consumed in Tick.
     float RawLatencyMs_      = 0.f;

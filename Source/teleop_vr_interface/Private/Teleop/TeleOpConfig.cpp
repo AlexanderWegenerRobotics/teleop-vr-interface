@@ -139,6 +139,18 @@ bool UTeleOpConfig::LoadRobot(const FString& Path) {
     Obj->TryGetNumberField(TEXT("workspace_max_y"), Robot.WorkspaceMaxY);
     Obj->TryGetNumberField(TEXT("workspace_min_y"), Robot.WorkspaceMinY);
 
+    Obj->TryGetNumberField(TEXT("boundary_ttc_horizon_s"),         Robot.BoundaryTtcHorizonS);
+    Obj->TryGetNumberField(TEXT("boundary_dist_floor_m"),          Robot.BoundaryDistFloorM);
+    Obj->TryGetNumberField(TEXT("boundary_ttc_engage_distance_m"), Robot.BoundaryTtcEngageDistanceM);
+    Obj->TryGetNumberField(TEXT("boundary_on_threshold"),          Robot.BoundaryOnThreshold);
+    Obj->TryGetNumberField(TEXT("boundary_off_threshold"),         Robot.BoundaryOffThreshold);
+    Obj->TryGetNumberField(TEXT("boundary_attack_s"),              Robot.BoundaryAttackS);
+    Obj->TryGetNumberField(TEXT("boundary_release_s"),             Robot.BoundaryReleaseS);
+    Obj->TryGetNumberField(TEXT("boundary_min_on_s"),              Robot.BoundaryMinOnS);
+    Obj->TryGetNumberField(TEXT("boundary_radius_min_cm"),         Robot.BoundaryRadiusMinCm);
+    Obj->TryGetNumberField(TEXT("boundary_radius_max_cm"),         Robot.BoundaryRadiusMaxCm);
+    Obj->TryGetNumberField(TEXT("boundary_grid_spacing_cm"),       Robot.BoundaryGridSpacingCm);
+
     const TArray<TSharedPtr<FJsonValue>>* Arr = nullptr;
     if (Obj->TryGetArrayField(TEXT("wrist_pivot_right"), Arr) && Arr && Arr->Num() == 3)
         Robot.WristPivotRight = FVector((*Arr)[0]->AsNumber(), (*Arr)[1]->AsNumber(), (*Arr)[2]->AsNumber());

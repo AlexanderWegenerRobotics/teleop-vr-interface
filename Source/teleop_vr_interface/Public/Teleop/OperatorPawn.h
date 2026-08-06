@@ -21,6 +21,7 @@
 #include "UI/VoiceAnnotatorComponent.h"
 #include "Video/GhostOverlayComponent.h"
 #include "Video/GraspIndicatorComponent.h"
+#include "Video/WorkspaceBoundaryComponent.h"
 #include "Networking/UdpSocket.h"
 
 #include "OperatorPawn.generated.h"
@@ -75,6 +76,8 @@ protected:
 	UPROPERTY() TObjectPtr<UGhostOverlayComponent>  GhostOverlay;
 	UPROPERTY() TObjectPtr<UGraspIndicatorComponent> LeftGraspIndicator;
 	UPROPERTY() TObjectPtr<UGraspIndicatorComponent> RightGraspIndicator;
+	UPROPERTY() TObjectPtr<UWorkspaceBoundaryComponent> LeftWorkspaceBoundary;
+	UPROPERTY() TObjectPtr<UWorkspaceBoundaryComponent> RightWorkspaceBoundary;
 
 	UPROPERTY(EditAnywhere, Category = "Logging")
 	FString LogBaseDirectory = TEXT("Saved/Logs/TeleOp/");

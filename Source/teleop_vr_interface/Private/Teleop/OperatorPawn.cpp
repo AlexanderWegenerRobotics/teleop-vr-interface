@@ -136,6 +136,14 @@ AOperatorPawn::AOperatorPawn() {
 		RightGraspIndicator->GlyphMaterial = LoadedGlyphMat;
 	}
 
+	LeftWorkspaceBoundary  = CreateDefaultSubobject<UWorkspaceBoundaryComponent>(TEXT("LeftWorkspaceBoundary"));
+	RightWorkspaceBoundary = CreateDefaultSubobject<UWorkspaceBoundaryComponent>(TEXT("RightWorkspaceBoundary"));
+
+	if (UMaterialInterface* LoadedPatchMat = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Materials/MI_BoundaryPatch.MI_BoundaryPatch"))) {
+		LeftWorkspaceBoundary->PatchMaterial  = LoadedPatchMat;
+		RightWorkspaceBoundary->PatchMaterial = LoadedPatchMat;
+	}
+
 	static ConstructorHelpers::FObjectFinder<UInputMappingContext> IMC(TEXT("/Game/Input/IMC_PoseMapper.IMC_PoseMapper"));
 	if (IMC.Succeeded()) InputMappingContext = IMC.Object;
 
@@ -199,8 +207,21 @@ void AOperatorPawn::BeginPlay() {
 	GhostOverlay->WorkspaceMinX_            = Config->Robot.WorkspaceMinX;
 	GhostOverlay->WorkspaceMaxY_            = Config->Robot.WorkspaceMaxY;
 	GhostOverlay->WorkspaceMinY_            = Config->Robot.WorkspaceMinY;
-	GhostOverlay->BoundaryPlaneWidthM_  = Config->Overlay.BoundaryPlaneWidthM;
-	GhostOverlay->BoundaryPlaneHeightM_ = Config->Overlay.BoundaryPlaneHeightM;
+
+	for (UWorkspaceBoundaryComponent* Boundary : { LeftWorkspaceBoundary, RightWorkspaceBoundary }) {
+		Boundary->TtcHorizonS        = Config->Robot.BoundaryTtcHorizonS;
+		Boundary->DistFloorM         = Config->Robot.BoundaryDistFloorM;
+		Boundary->TtcEngageDistanceM = Config->Robot.BoundaryTtcEngageDistanceM;
+		Boundary->OnThreshold        = Config->Robot.BoundaryOnThreshold;
+		Boundary->OffThreshold       = Config->Robot.BoundaryOffThreshold;
+		Boundary->AttackS            = Config->Robot.BoundaryAttackS;
+		Boundary->ReleaseS           = Config->Robot.BoundaryReleaseS;
+		Boundary->MinOnS             = Config->Robot.BoundaryMinOnS;
+		Boundary->RadiusMinCm        = Config->Robot.BoundaryRadiusMinCm;
+		Boundary->RadiusMaxCm        = Config->Robot.BoundaryRadiusMaxCm;
+		Boundary->GridSpacingCm      = Config->Robot.BoundaryGridSpacingCm;
+	}
+
 	GhostOverlay->LatencyOkMs              = Config->Overlay.LatencyOkMs;
 	GhostOverlay->LatencyWarnMs            = Config->Overlay.LatencyWarnMs;
 	GhostOverlay->LatencyBadMs             = Config->Overlay.LatencyBadMs;
@@ -244,6 +265,9 @@ void AOperatorPawn::BeginPlay() {
 
 	LeftGraspIndicator->Initialize(GhostOverlay, ComLink, 0);
 	RightGraspIndicator->Initialize(GhostOverlay, ComLink, 1);
+
+	LeftWorkspaceBoundary->Initialize(GhostOverlay, 0);
+	RightWorkspaceBoundary->Initialize(GhostOverlay, 1);
 
 	if (Config->Stream.bStereo) {
 		VideoFeed->SetGhostTextures(GhostOverlay->GetRenderTargetLeft(), GhostOverlay->GetRenderTargetRight());

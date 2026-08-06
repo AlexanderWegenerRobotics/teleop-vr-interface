@@ -1,6 +1,6 @@
 {
     "remote_ip": "127.0.0.1",
-    "avatar":    { "send": 7000, "receive": 8000 },
+    "avatar":    { "send": 7300, "receive": 8000 },
     "arm_left":  { "send": 7001, "receive": 8001 },
     "arm_right": { "send": 7002, "receive": 8002 },
     "head":      { "send": 7003, "receive": 8003 },

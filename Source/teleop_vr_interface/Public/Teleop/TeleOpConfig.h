@@ -88,6 +88,21 @@ struct FRobotConfig
     // values previously hardcoded in GhostOverlayComponent::SetIntentPose.
     FQuat ControllerToEEQuatRight = FQuat(0.5f, -0.5f, 0.5f,  0.5f);
     FQuat ControllerToEEQuatLeft  = FQuat(0.5f,  0.5f, 0.5f, -0.5f);
+
+    // Workspace boundary proximity cue (UWorkspaceBoundaryComponent). Severity blends a
+    // time-to-contact term with a raw-distance term; see severity formula in
+    // WorkspaceBoundaryComponent.cpp for details.
+    float BoundaryTtcHorizonS        = 0.5f;   // ttc below this -> s_ttc rises toward 1
+    float BoundaryDistFloorM         = 0.15f;  // distance below this -> s_dist rises toward 1
+    float BoundaryTtcEngageDistanceM = 0.4f;   // s_ttc forced to 0 when raw distance exceeds this — stops fast/jittery hand motion far from a wall from lighting up the cue on numerics alone
+    float BoundaryOnThreshold        = 0.35f;
+    float BoundaryOffThreshold       = 0.20f;
+    float BoundaryAttackS            = 0.12f;
+    float BoundaryReleaseS           = 0.35f;
+    float BoundaryMinOnS             = 0.30f;
+    float BoundaryRadiusMinCm        = 8.0f;
+    float BoundaryRadiusMaxCm        = 32.0f;
+    float BoundaryGridSpacingCm      = 5.0f;
 };
 
 USTRUCT()
