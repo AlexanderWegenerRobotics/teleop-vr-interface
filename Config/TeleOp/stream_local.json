@@ -5,7 +5,7 @@
     "timestamp_port":       5006,
     "status_port":          5007,
     "report_interval_ms":   500,
-    "stereo":               true,
+    "stereo":               false,
     "right_port":           5006,
     "right_feedback_port":  5008,
     "right_status_port":    5009,
@@ -13,5 +13,15 @@
         { "name": "camera right", "port": 5010, "feedback_port": 5011, "status_port": 5012 },
         { "name": "camera left",  "port": 5013, "feedback_port": 5014, "status_port": 5015 },
         { "name": "operator",     "port": 5016, "local_preview": true }
-    ]
+    ],
+
+    "_twin_stream_comment": "Twin's head-cam feed, registered as a second MAIN-VIEW source (viewmodeButton toggles VideoFeed between this and the avatar stream above) -- not a PiP entry. Ports match config/pipeline_config_twin_overlay_local.yaml's head_cam override (avatar's 5004/5005/5007 + 900) in the simulator repo. Set \"enabled\": false when the twin process isn't running -- the source is then never registered (no socket, no decode thread, no reconnect timer) and the main view is avatar-only. Absent \"enabled\" defaults to true.",
+    "twin_stream": {
+        "enabled": false,
+        "name": "TWIN",
+        "remote_ip": "127.0.0.1",
+        "port": 5904,
+        "feedback_port": 5905,
+        "status_port": 5907
+    }
 }

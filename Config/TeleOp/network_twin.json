@@ -1,0 +1,9 @@
+{
+    "_comment": "Twin link -- independent from network.json/network_local.json on purpose (see TeleOpConfig::LoadNetworkTwin). The twin is expected to always run locally, so this file normally doesn't need to change when network.json is swapped between local/robot. UPDATED to match config/robot_config_twin_overlay_local.yaml in the simulator repo (the '+900 to every base port' overlay applied when role: twin runs locally alongside role: avatar): arm_left/arm_right/head are network_local.json's values +900, matching the send/receive swap already established there (my send = their receive_port, my receive = their send_port). The 'avatar' pair is derived the same way from robot_config_local.yaml's avatar.transmission base values (send_port 8000 / receive_port 7000) rather than from network_local.json's own avatar.send=7300, since that value doesn't follow the same swap pattern as the device entries (looks like a pre-existing quirk unrelated to twin work) -- flag it if twin's state/reset commands don't come through and we'll dig into that separately.",
+    "remote_ip": "127.0.0.1",
+    "avatar":    { "send": 7900, "receive": 8900 },
+    "arm_left":  { "send": 7901, "receive": 8901 },
+    "arm_right": { "send": 7902, "receive": 8902 },
+    "head":      { "send": 7903, "receive": 8903 },
+    "recording_port": 0
+}

@@ -157,6 +157,21 @@ private:
 	TArray<FString>          CurrentMenuStreams_;
 	bool                     bMenuOpen_            = false;
 
+	// Cached out of Config (a BeginPlay-local, not a member -- see
+	// AOperatorPawn::BeginPlay) so the viewmodeButton handler in
+	// UpdateStateMachine can use them without holding onto UTeleOpConfig.
+	bool    bHasTwinMainStream_ = false;
+	FString TwinMainStreamKey_;   // VideoFeedComponent registration key (== Config->Stream.TwinStream.Name)
+	FString TwinMainStreamLabel_; // viewmode_label text when twin is active (currently same as the key)
+
+	// PiP's "TWIN" entry shares the already-running main-view TWIN source's
+	// decode (VideoFeedComponent::UpdateSourceTexture) instead of opening a
+	// second receiver -- two independent GStreamer receivers can't both bind
+	// the same UDP port anyway, and a second decode would cost GPU we don't
+	// have spare. Own texture pointer since PiPTextures_ is only for entries
+	// that own their own IVideoSource.
+	UTexture2D* PiPSharedTwinTexture_ = nullptr;
+
 	// PiP gaze-driven expand.
 	// PiPExpandScale: multiplier applied to the widget's normal size when expanded (1.5 = 50% bigger).
 	UPROPERTY(EditAnywhere, Category = "PiP") float     PiPExpandScale        = 1.5f;

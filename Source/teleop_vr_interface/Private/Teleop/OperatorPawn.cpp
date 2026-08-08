@@ -16,6 +16,18 @@ extern ENGINE_API uint32 GGPUFrameTime;
 #endif
 
 namespace {
+// Internal VideoFeedComponent registration key for the avatar main-view
+// source. The twin main-view source (when configured) is registered under
+// Config->Stream.TwinStream.Name instead -- see AOperatorPawn::BeginPlay and
+// the viewmodeButton handler below.
+const FString kAvatarMainSourceName = TEXT("AvatarStream");
+// Display text for viewmode_label when avatar is active -- kept separate
+// from kAvatarMainSourceName above (that one's just VideoFeedComponent's
+// internal dictionary key, not meant to be user-facing). Twin's label comes
+// straight from stream.json's twin_stream.name instead (currently "TWIN"),
+// so this is the one hardcoded half of the pair.
+const FString kAvatarMainLabel = TEXT("AVATAR");
+
 struct FGazeSampleMsg {
     uint64_t frame_id     = 0;
     float    gaze_px_x    = 0.f;
@@ -251,14 +263,52 @@ void AOperatorPawn::BeginPlay() {
 	ComLink->HeadSendPort = Config->Network.Head.Send;
 	ComLink->HeadReceivePort = Config->Network.Head.Receive;
 
+	// Twin link -- independent config (network_twin.json), see ComLink.h.
+	ComLink->TwinIP = Config->NetworkTwin.RemoteIP;
+	ComLink->TwinSendPort = Config->NetworkTwin.Avatar.Send;
+	ComLink->TwinReceivePort = Config->NetworkTwin.Avatar.Receive;
+	ComLink->TwinArmLeftSendPort = Config->NetworkTwin.ArmLeft.Send;
+	ComLink->TwinArmLeftReceivePort = Config->NetworkTwin.ArmLeft.Receive;
+	ComLink->TwinArmRightSendPort = Config->NetworkTwin.ArmRight.Send;
+	ComLink->TwinArmRightReceivePort = Config->NetworkTwin.ArmRight.Receive;
+	ComLink->TwinHeadSendPort = Config->NetworkTwin.Head.Send;
+	ComLink->TwinHeadReceivePort = Config->NetworkTwin.Head.Receive;
+
 	FReceiverConfig GstConfig;
 	GstConfig.Port = Config->Stream.Port;
 	GstConfig.FeedbackPort = Config->Stream.FeedbackPort;
 	GstConfig.SenderIP         = Config->Stream.RemoteIP;
 	GstConfig.ReportIntervalMs = Config->Stream.ReportIntervalMs;
 	GstConfig.StatusPort       = Config->Stream.StatusPort;
-	VideoFeed->RegisterSource(TEXT("AvatarStream"), MakeUnique<FGStreamerSource>(GstConfig));
+	VideoFeed->RegisterSource(kAvatarMainSourceName, MakeUnique<FGStreamerSource>(GstConfig));
 	VideoFeed->SetStereoMode(Config->Stream.bStereo);
+
+	// Twin's head-cam feed as a second main-view source (viewmodeButton
+	// toggles between this and avatar, below) -- optional, see
+	// FStreamConfig::TwinStream. Avatar was registered first above so it
+	// stays VideoFeedComponent's default active source ("main camera comes
+	// from avatar when available").
+	if (Config->Stream.bHasTwinStream) {
+		FReceiverConfig TwinGstConfig;
+		TwinGstConfig.Port             = Config->Stream.TwinStream.Port;
+		TwinGstConfig.FeedbackPort     = Config->Stream.TwinStream.FeedbackPort;
+		// Twin often runs on a different host than the avatar (e.g. avatar
+		// remote, twin on the operator's own machine) -- TwinRemoteIP is
+		// optional in twin_stream's JSON; empty falls back to the avatar's
+		// RemoteIP for the local dual-run test case where they coincide.
+		TwinGstConfig.SenderIP = Config->Stream.TwinRemoteIP.IsEmpty()
+			? Config->Stream.RemoteIP
+			: Config->Stream.TwinRemoteIP;
+		TwinGstConfig.ReportIntervalMs = Config->Stream.ReportIntervalMs;
+		TwinGstConfig.StatusPort       = Config->Stream.TwinStream.StatusPort;
+		VideoFeed->RegisterSource(Config->Stream.TwinStream.Name, MakeUnique<FGStreamerSource>(TwinGstConfig));
+
+		// Cached for the viewmodeButton handler in UpdateStateMachine, which
+		// runs long after this BeginPlay-local Config pointer is gone.
+		bHasTwinMainStream_  = true;
+		TwinMainStreamKey_   = Config->Stream.TwinStream.Name;
+		TwinMainStreamLabel_ = Config->Stream.TwinStream.Name;
+	}
 	GhostOverlay->SetStereoMode(Config->Stream.bStereo);
 
 	Super::BeginPlay();
@@ -295,6 +345,14 @@ void AOperatorPawn::BeginPlay() {
 	UIBinder->SetVisibility(FName("episodeAnnotationCanvas"), false);
 	UIBinder->SetVisibility(FName("settings_canvas"), false);
 
+	// Main-view avatar/twin label -- debug-simple text readout for now (see
+	// the viewmodeButton handler below for the toggle itself). Requires a
+	// TextBlock named "viewmode_label" in the widget; SetText no-ops with a
+	// warning if it isn't there yet, so this is safe even before that widget
+	// exists.
+	if (Config->Stream.bHasTwinStream)
+		UIBinder->SetText(FName("viewmode_label"), *kAvatarMainLabel); // avatar is always the initial active source
+
 	for (const FPiPStreamConfig& S : Config->Stream.PiPStreams) {
 		TUniquePtr<IVideoSource> Src;
 		if (S.bLocalPreview) {
@@ -314,7 +372,15 @@ void AOperatorPawn::BeginPlay() {
 		PiPTextures_.Add(nullptr);
 		PiPSourceNames_.Add(S.Name);
 	}
-	
+
+	// TWIN in the PiP menu shares the already-running main-view TWIN source's
+	// decode instead of opening a second receiver on the same port (see
+	// VideoFeedComponent::UpdateSourceTexture and the Tick-time display logic
+	// below) -- deliberately NOT added to PiPSources_/PiPTextures_, only to
+	// the name list the menu is built from.
+	if (bHasTwinMainStream_)
+		PiPSourceNames_.Add(TwinMainStreamLabel_);
+
 	const float LatencyWarn = Config->Hud.LatencyWarningMs;
 	UIBinder->BindPlot(FName("videoLatencyPlot"), LatencyHistory.GetSamplesPtr(), nullptr, LatencyHistory.Capacity(), LatencyHistory.GetHeadPtr(), 0.0f, LatencyWarn * 2.0f);
 	UIBinder->SetPlotThreshold(FName("videoLatencyPlot"), LatencyWarn);
@@ -507,13 +573,23 @@ void AOperatorPawn::Tick(float DeltaTime) {
 	UpdateInfoBar();
 
 	if (!ActivePiPStreamName_.IsEmpty()) {
-		const int32 Idx = PiPSourceNames_.IndexOfByKey(ActivePiPStreamName_);
-		if (Idx != INDEX_NONE) {
-			PiPSources_[Idx]->UpdateTexture(PiPTextures_[Idx]);
-			const bool bReceiving = PiPSources_[Idx]->GetStats().bIsReceiving;
+		if (bHasTwinMainStream_ && ActivePiPStreamName_ == TwinMainStreamLabel_) {
+			// Shared decode with the main view -- see VideoFeedComponent::
+			// UpdateSourceTexture. No separate receiver, no extra decode.
+			VideoFeed->UpdateSourceTexture(TwinMainStreamKey_, PiPSharedTwinTexture_);
+			const bool bReceiving = VideoFeed->GetSourceStats(TwinMainStreamKey_).bIsReceiving;
 			UIBinder->SetVisibility(FName("pip_canvas"), bReceiving);
-			if (bReceiving && PiPTextures_[Idx])
-				UIBinder->SetImageTexture(FName("pip_image"), PiPTextures_[Idx]);
+			if (bReceiving && PiPSharedTwinTexture_)
+				UIBinder->SetImageTexture(FName("pip_image"), PiPSharedTwinTexture_);
+		} else {
+			const int32 Idx = PiPSourceNames_.IndexOfByKey(ActivePiPStreamName_);
+			if (Idx != INDEX_NONE && PiPSources_.IsValidIndex(Idx)) {
+				PiPSources_[Idx]->UpdateTexture(PiPTextures_[Idx]);
+				const bool bReceiving = PiPSources_[Idx]->GetStats().bIsReceiving;
+				UIBinder->SetVisibility(FName("pip_canvas"), bReceiving);
+				if (bReceiving && PiPTextures_[Idx])
+					UIBinder->SetImageTexture(FName("pip_image"), PiPTextures_[Idx]);
+			}
 		}
 	}
 
@@ -833,6 +909,25 @@ void AOperatorPawn::UpdateStateMachine() {
 			UIBinder->ShowCameraMenu(CurrentMenuStreams_, ActivePiPStreamName_);
 			bMenuOpen_ = true;
 			UIBinder->SetButtonToggled(FName("viewpointButton"), true);
+		}
+	}
+
+	// Main-view avatar/twin toggle. Two-way toggle, no menu -- see
+	// VideoFeedComponent::SetActiveSource: this is a cheap pointer swap
+	// between two already-running sources, safe to call as often as wanted
+	// (later: driven by the recommendation system instead of this button).
+	// No-op when no twin_stream is configured (stream.json), so avatar-only
+	// deployments are unaffected.
+	if (ButtonPressed == FName("viewmodeButton") && bHasTwinMainStream_) {
+		const bool bCurrentlyAvatar = (VideoFeed->GetActiveSourceName() == kAvatarMainSourceName);
+		// SourceKey selects which registered source becomes active (must match
+		// RegisterSource's key); Label is the separate user-facing text.
+		const FString TargetSourceKey = bCurrentlyAvatar ? TwinMainStreamKey_   : kAvatarMainSourceName;
+		const FString TargetLabel     = bCurrentlyAvatar ? TwinMainStreamLabel_ : kAvatarMainLabel;
+		if (VideoFeed->SetActiveSource(TargetSourceKey)) {
+			UIBinder->SetText(FName("viewmode_label"), *TargetLabel);
+			// Toggled-on == twin is now active (i.e. we just switched away from avatar).
+			UIBinder->SetButtonToggled(FName("viewmodeButton"), bCurrentlyAvatar);
 		}
 	}
 

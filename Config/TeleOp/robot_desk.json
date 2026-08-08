@@ -1,0 +1,27 @@
+{
+    "workspace_lower_bound_z":   0.0,
+    "workspace_boundary_margin": 0.0,
+    "workspace_min_x":  1.2,
+    "workspace_max_y":  0.7,
+    "workspace_min_y": -0.7,
+
+    "_comment_boundary_cue": "Tunables for the workspace-boundary proximity cue (UWorkspaceBoundaryComponent). Tune ttc_horizon_s against logged episodes, not intuition — the cue should be visible well under 10% of normal operating time.",
+    "boundary_ttc_horizon_s": 0.5,
+    "boundary_dist_floor_m": 0.15,
+    "boundary_ttc_engage_distance_m": 0.4,
+    "boundary_on_threshold": 0.35,
+    "boundary_off_threshold": 0.20,
+    "boundary_attack_s": 0.12,
+    "boundary_release_s": 0.35,
+    "boundary_min_on_s": 0.30,
+    "boundary_radius_min_cm": 10.0,
+    "boundary_radius_max_cm": 40.0,
+    "boundary_grid_spacing_cm": 5.0,
+
+    "wrist_pivot_right": [-5.9,  2.1, 3.4],
+    "wrist_pivot_left":  [-5.9, -2.1, 3.4],
+
+    "_comment_controller_to_ee": "Controller->EE orientation retarget, [w, x, y, z]. Must match the arm's controller_axis_map.",
+    "controller_to_ee_quat_right": [0.5,  0.5, -0.5, 0.5],
+    "controller_to_ee_quat_left":  [-0.5, 0.5,  0.5, 0.5]
+}

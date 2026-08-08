@@ -13,5 +13,15 @@
         { "name": "camera right", "port": 5010, "feedback_port": 5011, "status_port": 5012 },
         { "name": "camera left",  "port": 5013, "feedback_port": 5014, "status_port": 5015 },
         { "name": "operator",     "port": 5016, "local_preview": true }
-    ]
+    ],
+
+    "_twin_stream_comment": "Twin's head-cam feed, registered as a second MAIN-VIEW source (viewmodeButton toggles VideoFeed between this and the avatar stream above) -- not a PiP entry. remote_ip is separate from the top-level remote_ip above since twin usually runs on a different host than the avatar (here: twin on this same operator machine, avatar remote). Ports match config/pipeline_config_twin_overlay_local.yaml's head_cam override (avatar's base 5004/5005/5007 + 900) in the simulator repo -- unconditionally applied whenever a process launches with --twin, regardless of where it runs.",
+    "twin_stream": {
+        "enabled": true,
+        "name": "TWIN",
+        "remote_ip": "127.0.0.1",
+        "port": 5904,
+        "feedback_port": 5905,
+        "status_port": 5907
+    }
 }

@@ -30,7 +30,27 @@ public:
     UPROPERTY() int32 HeadSendPort      = 7003;
     UPROPERTY() int32 HeadReceivePort   = 8003;
 
+    // --- twin configuration (set before BeginPlay, independent of the
+    // avatar fields above -- see docs/twin_concept.md and network_twin.json).
+    // Twin is a second, independent peer: commands mirror to it (the "local
+    // tee" the twin's predictive display relies on), but avatar-facing state
+    // getters below (GetAvatarState/IsAvatarAlive/etc.) are untouched -- they
+    // keep reflecting the avatar only. Use IsTwinAlive()/GetTwinState() etc.
+    // to query the twin's link independently. ---
+    UPROPERTY() FString TwinIP = TEXT("127.0.0.1");
+    UPROPERTY() int32 TwinSendPort    = 7500;
+    UPROPERTY() int32 TwinReceivePort = 8500;
+    UPROPERTY() int32 TwinArmLeftSendPort    = 7001;
+    UPROPERTY() int32 TwinArmLeftReceivePort = 8001;
+    UPROPERTY() int32 TwinArmRightSendPort    = 7002;
+    UPROPERTY() int32 TwinArmRightReceivePort = 8002;
+    UPROPERTY() int32 TwinHeadSendPort    = 7003;
+    UPROPERTY() int32 TwinHeadReceivePort = 8003;
+
     // --- device streams ---
+    // Sends to both the avatar and the twin (when twin channels are open --
+    // see BeginPlay). Avatar-facing reads (HasNewArmState/ReadArmState/...)
+    // are unaffected: they still read from the avatar streams only.
     void SendArmCommand(ArmCommandMsg& Msg, uint8 DeviceIndex = 0);
     void SendHeadCommand(HeadCommandMsg& Msg);
 
@@ -41,6 +61,12 @@ public:
     HeadStateMsg ReadHeadState();
 
     // --- command link (avatar system channel) ---
+    // SendStateRequest/SendReliable also mirror to the twin's CommandLink
+    // (independent sequence numbers/retries/ack tracking per peer -- exactly
+    // what's wanted since avatar and twin are separate machines/processes).
+    // RegisterHandler is intentionally avatar-only: it drives existing app
+    // state/HUD logic that should keep reflecting the avatar, not double-fire
+    // per peer. Use the Twin* status accessors below for twin-specific reads.
     void SendStateRequest(SysState RequestedState);
     void SendReliable(const std::string& MsgType, const msgpack::sbuffer& Payload, bool AckRequested = false);
     void RegisterHandler(const std::string& MsgType, FMsgHandler Handler);
@@ -61,6 +87,16 @@ public:
     UFUNCTION(BlueprintCallable, Category = "ComLink")
     uint8 GetAvatarFaultCode() const;
 
+    // --- twin status (independent of the avatar getters above) ---
+    UFUNCTION(BlueprintCallable, Category = "ComLink")
+    bool IsTwinAlive() const;
+
+    UFUNCTION(BlueprintCallable, Category = "ComLink")
+    ESysState GetTwinState() const;
+
+    UFUNCTION(BlueprintCallable, Category = "ComLink")
+    bool IsTwinArmAlive(uint8 DeviceIndex = 0) const;
+
     SysState  GetArmRemoteState(uint8 DeviceIndex = 0) const;
     FaultCode GetArmRemoteFault(uint8 DeviceIndex = 0) const;
     SysState  GetHeadRemoteState() const;
@@ -75,6 +111,13 @@ private:
     TUniquePtr<ArmStream>   ArmStreams_[2];
     TUniquePtr<HeadStream>  HeadStream_;
     TUniquePtr<CommandLink>  CmdLink_;
+
+    // Twin's own set of peers -- separate sockets/streams, opened only if
+    // TwinIP/Twin*Port are non-zero (see BeginPlay). Mirrors of the avatar
+    // set above, never merged with it.
+    TUniquePtr<ArmStream>   TwinArmStreams_[2];
+    TUniquePtr<HeadStream>  TwinHeadStream_;
+    TUniquePtr<CommandLink>  TwinCmdLink_;
 
     bool bWasAvatarAlive_ = false;
     float HeartbeatAccum_ = 0.0f;

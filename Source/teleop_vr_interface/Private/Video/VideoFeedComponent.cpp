@@ -1,5 +1,6 @@
 #include "Video/VideoFeedComponent.h"
 #include "Teleop/OperatorPawn.h"
+#include "Async/Async.h"
 #include "Camera/CameraComponent.h"
 #include "Engine/Texture2D.h"
 #include "Engine/TextureRenderTarget2D.h"
@@ -39,20 +40,33 @@ void UVideoFeedComponent::BeginPlay()
 
     CreateStereoLayer();
 
+    // Every registered source starts decoding now and keeps running
+    // continuously for the component's lifetime -- not just the active one.
+    // This is what makes SetActiveSource a cheap pointer swap instead of a
+    // pipeline teardown/rebuild (see SetActiveSource below).
     for (auto& Pair : Sources_)
+    {
         Pair.Value->Initialize();
+        Pair.Value->Start();
+    }
 
     if (ActiveSource_)
-    {
-        ActiveSource_->Start();
-        UE_LOG(LogTemp, Log, TEXT("VideoFeed: started source '%s'"), *ActiveSourceName_);
-    }
+        UE_LOG(LogTemp, Log, TEXT("VideoFeed: active source '%s'"), *ActiveSourceName_);
 
     UE_LOG(LogTemp, Log, TEXT("VideoFeed: BeginPlay complete, %d source(s), stereo=%s"),
         Sources_.Num(), bStereo_ ? TEXT("true") : TEXT("false"));
 }
 
 void UVideoFeedComponent::EndPlay(const EEndPlayReason::Type EndPlayReason) {
+    // Restart tasks hold raw IVideoSource pointers into Sources_, so they must
+    // all have finished before we Stop() or destroy anything.
+    for (auto& Pair : Reconnect_)
+    {
+        if (Pair.Value.Pending.IsValid())
+            Pair.Value.Pending.Wait();
+    }
+    Reconnect_.Empty();
+
     for (auto& Pair : Sources_)
         Pair.Value->Stop();
 
@@ -71,7 +85,59 @@ void UVideoFeedComponent::EndPlay(const EEndPlayReason::Type EndPlayReason) {
 void UVideoFeedComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) {
     Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
-    if (!ActiveSource_ || !VideoTexture) return;
+    // ---- Per-source auto-reconnect -----------------------------------------
+    // Runs for every registered source, not just the active one (stats reads
+    // are cheap -- no texture copy involved), so a source currently off-screen
+    // still gets recovered if it drops instead of only starting its timer once
+    // someone switches to it.
+    //
+    // The restart is dispatched to a worker thread and this tick returns
+    // immediately: Start() blocks inside GStreamer's state change (seconds, in
+    // the worst case), and running that inline here stalled the game thread
+    // hard enough to stop frame submission to the compositor.
+    for (auto& Pair : Sources_)
+    {
+        IVideoSource* Src = Pair.Value.Get();
+        FReconnectState& State = Reconnect_.FindOrAdd(Pair.Key);
+
+        // A restart is still running -- leave this source completely alone.
+        if (State.Pending.IsValid())
+        {
+            if (!State.Pending.IsReady())
+                continue;
+            State.Pending = TFuture<void>();   // finished; resume normal monitoring
+            State.AccumSec = 0.0f;
+        }
+
+        if (Src->GetStats().bIsReceiving)
+        {
+            State.AccumSec = 0.0f;
+            State.Attempt  = 0;      // healthy again -- collapse the backoff
+            continue;
+        }
+
+        State.AccumSec += DeltaTime;
+        const float Delay = ReconnectDelayFor(State.Attempt);
+        if (State.AccumSec < Delay)
+            continue;
+
+        State.AccumSec = 0.0f;
+        UE_LOG(LogTemp, Warning,
+            TEXT("VideoFeed: no frames for %.0f s — restarting pipeline '%s' (attempt %d, next retry in %.0f s)"),
+            Delay, *Pair.Key, State.Attempt + 1, ReconnectDelayFor(State.Attempt + 1));
+        State.Attempt++;
+
+        // Raw Src pointer is safe: EndPlay waits on every pending future before
+        // Sources_ is touched, so the source outlives this task.
+        State.Pending = Async(EAsyncExecution::ThreadPool, [Src]()
+        {
+            Src->Stop();
+            Src->Initialize();
+            Src->Start();
+        });
+    }
+
+    if (!ActiveSource_ || !VideoTexture || IsSourceBusy(ActiveSourceName_)) return;
 
     UTexture2D* TexturePtr = VideoTexture;
     ActiveSource_->UpdateTexture(TexturePtr);
@@ -102,29 +168,9 @@ void UVideoFeedComponent::TickComponent(float DeltaTime, ELevelTick TickType, FA
         PostProcessMID_->SetTextureParameterValue(TEXT("VideoRight"), VideoTexture);
     }
 
-    // ---- Auto-reconnect ---------------------------------------------------- //
-    // If the pipeline drops (GStreamer exits or the sender disappears), the frame
-    // pull thread stops and bIsReceiving goes false.  After kReconnectTimeoutSec
-    // of silence we Stop() + Initialize() + Start() to reopen the UDP socket and
-    // restart the GStreamer pipeline without requiring a full session restart.
-    const bool bReceiving = ActiveSource_->GetStats().bIsReceiving;
-    if (!bReceiving)
-    {
-        NotReceivingAccumSec_ += DeltaTime;
-        if (NotReceivingAccumSec_ >= kReconnectTimeoutSec)
-        {
-            NotReceivingAccumSec_ = 0.0f;
-            UE_LOG(LogTemp, Warning, TEXT("VideoFeed: no frames for %.0f s — restarting pipeline '%s'"),
-                kReconnectTimeoutSec, *ActiveSourceName_);
-            ActiveSource_->Stop();
-            ActiveSource_->Initialize();
-            ActiveSource_->Start();
-        }
-    }
-    else
-    {
-        NotReceivingAccumSec_ = 0.0f;
-    }
+    // Auto-reconnect for the active source is handled by the generic
+    // per-source loop at the top of this function (it covers every
+    // registered source, active or not).
 }
 
 void UVideoFeedComponent::SetStereoMode(bool bStereo)
@@ -161,29 +207,59 @@ bool UVideoFeedComponent::SetActiveSource(const FString& Name)
         return false;
     }
 
-    if (ActiveSource_) ActiveSource_->Stop();
-
+    // Deliberately no Stop()/Initialize()/Start() here: every registered
+    // source is already running continuously since BeginPlay (see above), so
+    // switching the active view is just repointing which one feeds the
+    // texture -- no pipeline teardown, no reconnect hitch. Safe to call
+    // often and repeatedly (e.g. from a future autonomous view-selection
+    // policy).
     ActiveSourceName_ = Name;
     ActiveSource_ = Found->Get();
 
-    ActiveSource_->Initialize();
-    ActiveSource_->Start();
-
-    UE_LOG(LogTemp, Log, TEXT("VideoFeed: switched to source '%s'"), *Name);
+    UE_LOG(LogTemp, Log, TEXT("VideoFeed: active source -> '%s'"), *Name);
     return true;
 }
 
 FString UVideoFeedComponent::GetActiveSourceName() const { return ActiveSourceName_; }
 
+// A restart task owns the source's internals while it runs (Initialize()
+// destroys and rebuilds the receiver), so the game thread reports the source as
+// simply "not receiving" for that window rather than racing it.
+bool UVideoFeedComponent::IsSourceBusy(const FString& Name) const
+{
+    const FReconnectState* State = Reconnect_.Find(Name);
+    return State && State->Pending.IsValid() && !State->Pending.IsReady();
+}
+
+float UVideoFeedComponent::ReconnectDelayFor(int32 Attempt) const
+{
+    const float Delay = kReconnectBaseSec * FMath::Pow(2.0f, static_cast<float>(FMath::Min(Attempt, 16)));
+    return FMath::Min(Delay, kReconnectMaxSec);
+}
+
 FVideoSourceStats UVideoFeedComponent::GetStreamStats() const
 {
-    if (ActiveSource_) return ActiveSource_->GetStats();
+    if (ActiveSource_ && !IsSourceBusy(ActiveSourceName_)) return ActiveSource_->GetStats();
     return FVideoSourceStats{};
+}
+
+bool UVideoFeedComponent::UpdateSourceTexture(const FString& Name, UTexture2D*& OutTexture)
+{
+    auto* Found = Sources_.Find(Name);
+    if (!Found || IsSourceBusy(Name)) return false;
+    return (*Found)->UpdateTexture(OutTexture);
+}
+
+FVideoSourceStats UVideoFeedComponent::GetSourceStats(const FString& Name) const
+{
+    auto* Found = Sources_.Find(Name);
+    if (!Found || IsSourceBusy(Name)) return FVideoSourceStats{};
+    return (*Found)->GetStats();
 }
 
 bool UVideoFeedComponent::IsReceiving() const
 {
-    if (ActiveSource_) return ActiveSource_->GetStats().bIsReceiving;
+    if (ActiveSource_ && !IsSourceBusy(ActiveSourceName_)) return ActiveSource_->GetStats().bIsReceiving;
     return false;
 }
 

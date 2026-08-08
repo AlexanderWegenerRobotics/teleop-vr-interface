@@ -49,6 +49,13 @@ extern "C" bool GStreamerStartPipeline(void* pipeline)
 
 // Blocks until the pipeline actually reaches PLAYING (or fails/times out) — catches
 // decoders that accept the state change asynchronously then fail to negotiate.
+//
+// NOTE: our receive pipelines are driven by udpsrc, which is a *live* source, so they
+// never preroll. GStreamer signals that with GST_STATE_CHANGE_NO_PREROLL, which is a
+// success return for live pipelines -- not a failure. Treating it as failure (as this
+// did originally) made the nvh264dec path look broken 100% of the time: every Start()
+// burned the full timeout here and then fell back to CPU decode. Accept both returns
+// and let `state` be the real verdict.
 extern "C" bool GStreamerWaitForPlaying(void* pipeline, int timeout_ms)
 {
     if (!pipeline) return false;
@@ -56,7 +63,10 @@ extern "C" bool GStreamerWaitForPlaying(void* pipeline, int timeout_ms)
     GstStateChangeReturn ret = gst_element_get_state(
         GST_ELEMENT(pipeline), &state, &pending,
         (GstClockTime)timeout_ms * GST_MSECOND);
-    return ret == GST_STATE_CHANGE_SUCCESS && state == GST_STATE_PLAYING;
+
+    const bool bResolved = (ret == GST_STATE_CHANGE_SUCCESS) ||
+                           (ret == GST_STATE_CHANGE_NO_PREROLL);
+    return bResolved && state == GST_STATE_PLAYING;
 }
 
 extern "C" void GStreamerStopPipeline(void* pipeline)

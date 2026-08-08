@@ -52,6 +52,22 @@ struct FStreamConfig
     int32   RightFeedbackPort     = 5008;
     int32   RightStatusPort       = 5009;
     TArray<FPiPStreamConfig> PiPStreams;
+
+    // Twin's head-cam feed, registered as a second *main-view* source (see
+    // VideoFeedComponent's Sources_ / SetActiveSource) alongside the avatar
+    // stream above -- not a PiP entry. Optional: bHasTwinStream is false when
+    // "twin_stream" is absent from stream.json, so older configs keep working
+    // with the avatar-only main view. TwinStream.Name doubles as both the
+    // internal source-registration key and the on-screen label text.
+    bool             bHasTwinStream = false;
+    FPiPStreamConfig TwinStream;
+
+    // Twin frequently runs on a *different* host than the avatar (e.g. avatar
+    // on remote hardware, twin on the operator's own machine) -- unlike
+    // PiPStreams, which all assume the avatar's RemoteIP above. Optional in
+    // twin_stream's JSON; empty means "same host as avatar" (the local
+    // dual-run test case, where they happen to coincide).
+    FString TwinRemoteIP;
 };
 
 USTRUCT()
@@ -137,7 +153,8 @@ class TELEOP_VR_INTERFACE_API UTeleOpConfig : public UObject
 
 public:
 
-    FNetworkConfig Network;
+    FNetworkConfig Network;      // avatar link -- swapped between local/robot per deployment
+    FNetworkConfig NetworkTwin;  // twin link -- independent file, expected to stay local/fixed
     FStreamConfig  Stream;
     FHudConfig     Hud;
     FRobotConfig   Robot;
@@ -149,6 +166,8 @@ public:
 private:
 
     bool LoadNetwork(const FString& Path);
+    bool LoadNetworkTwin(const FString& Path);
+    bool LoadNetworkInto(const FString& Path, FNetworkConfig& OutNetwork, const FString& Context);
     bool LoadStream(const FString& Path);
     bool LoadHud(const FString& Path);
     bool LoadRobot(const FString& Path);

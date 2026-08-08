@@ -20,14 +20,16 @@ bool UTeleOpConfig::Load(const FString& RootConfigPath) {
 
     const FString BaseDir = FPaths::GetPath(RootConfigPath);
 
-    FString NetworkPath, StreamPath, HudPath, RobotPath, GhostPath;
-    if (!RequireString(Root, TEXT("network"), NetworkPath, TEXT("config.json"))) return false;
+    FString NetworkPath, NetworkTwinPath, StreamPath, HudPath, RobotPath, GhostPath;
+    if (!RequireString(Root, TEXT("network"),      NetworkPath,     TEXT("config.json"))) return false;
+    if (!RequireString(Root, TEXT("network_twin"), NetworkTwinPath, TEXT("config.json"))) return false;
     if (!RequireString(Root, TEXT("stream"),  StreamPath,  TEXT("config.json"))) return false;
     if (!RequireString(Root, TEXT("hud"),     HudPath,     TEXT("config.json"))) return false;
     if (!RequireString(Root, TEXT("robot"),   RobotPath,   TEXT("config.json"))) return false;
     if (!RequireString(Root, TEXT("overlay"), GhostPath,   TEXT("config.json"))) return false;
 
-    if (!LoadNetwork(BaseDir / NetworkPath)) return false;
+    if (!LoadNetwork(BaseDir / NetworkPath))         return false;
+    if (!LoadNetworkTwin(BaseDir / NetworkTwinPath)) return false;
     if (!LoadStream(BaseDir / StreamPath))   return false;
     if (!LoadHud(BaseDir / HudPath))         return false;
     if (!LoadRobot(BaseDir / RobotPath))     return false;
@@ -35,6 +37,7 @@ bool UTeleOpConfig::Load(const FString& RootConfigPath) {
 
     UE_LOG(LogTemp, Log, TEXT("TeleOpConfig: Loaded successfully"));
     UE_LOG(LogTemp, Log, TEXT("  Network  � remote: %s  avatar: %d/%d"), *Network.RemoteIP, Network.Avatar.Send, Network.Avatar.Receive);
+    UE_LOG(LogTemp, Log, TEXT("  NetworkTwin � remote: %s  avatar: %d/%d"), *NetworkTwin.RemoteIP, NetworkTwin.Avatar.Send, NetworkTwin.Avatar.Receive);
     UE_LOG(LogTemp, Log, TEXT("  Stream(right)  stereo: %s  port: %d  feedback: %d  status: %d"),
         Stream.bStereo ? TEXT("true") : TEXT("false"),
         Stream.RightPort, Stream.RightFeedbackPort, Stream.RightStatusPort);
@@ -45,6 +48,21 @@ bool UTeleOpConfig::Load(const FString& RootConfigPath) {
 }
 
 bool UTeleOpConfig::LoadNetwork(const FString& Path) {
+    return LoadNetworkInto(Path, Network, TEXT("network.json"));
+}
+
+bool UTeleOpConfig::LoadNetworkTwin(const FString& Path) {
+    return LoadNetworkInto(Path, NetworkTwin, TEXT("network_twin.json"));
+}
+
+// Shared parser for both the avatar link (network.json / network_local.json,
+// swapped between local/robot per deployment) and the twin link
+// (network_twin.json, expected to stay fixed/local -- see ComLink's Twin*
+// fields). Same on-disk shape either way; recording_port is only meaningful
+// for the avatar file today (the recorder is driven off the avatar link) but
+// is still required in both for schema consistency -- point network_twin.json's
+// recording_port at the same local recorder if/when that becomes relevant.
+bool UTeleOpConfig::LoadNetworkInto(const FString& Path, FNetworkConfig& OutNetwork, const FString& Context) {
     TSharedPtr<FJsonObject> Obj;
     if (!ReadJsonFile(Path, Obj))
     {
@@ -52,13 +70,12 @@ bool UTeleOpConfig::LoadNetwork(const FString& Path) {
         return false;
     }
 
-    const FString Context = TEXT("network.json");
-    if (!RequireString(Obj, TEXT("remote_ip"), Network.RemoteIP, Context)) return false;
-    if (!ReadPortPair(Obj, TEXT("avatar"), Network.Avatar, Context)) return false;
-    if (!ReadPortPair(Obj, TEXT("arm_left"), Network.ArmLeft, Context)) return false;
-    if (!ReadPortPair(Obj, TEXT("arm_right"), Network.ArmRight, Context)) return false;
-    if (!ReadPortPair(Obj, TEXT("head"), Network.Head, Context)) return false;
-    if (!RequireInt(Obj, TEXT("recording_port"), Network.RecordingPort, Context)) return false;
+    if (!RequireString(Obj, TEXT("remote_ip"), OutNetwork.RemoteIP, Context)) return false;
+    if (!ReadPortPair(Obj, TEXT("avatar"), OutNetwork.Avatar, Context)) return false;
+    if (!ReadPortPair(Obj, TEXT("arm_left"), OutNetwork.ArmLeft, Context)) return false;
+    if (!ReadPortPair(Obj, TEXT("arm_right"), OutNetwork.ArmRight, Context)) return false;
+    if (!ReadPortPair(Obj, TEXT("head"), OutNetwork.Head, Context)) return false;
+    if (!RequireInt(Obj, TEXT("recording_port"), OutNetwork.RecordingPort, Context)) return false;
 
     return true;
 }
@@ -97,6 +114,34 @@ bool UTeleOpConfig::LoadStream(const FString& Path) {
             (*Entry)->TryGetBoolField(TEXT("local_preview"),   S.bLocalPreview);
             Stream.PiPStreams.Add(S);
         }
+    }
+
+    // Optional second main-view source (see FStreamConfig::TwinStream). Reuses
+    // FPiPStreamConfig's shape (name/port/feedback_port/status_port) even
+    // though it isn't a PiP entry -- same fields are needed either way.
+    const TSharedPtr<FJsonObject>* TwinObj = nullptr;
+    if (Obj->TryGetObjectField(TEXT("twin_stream"), TwinObj) && TwinObj) {
+        (*TwinObj)->TryGetStringField(TEXT("name"),          Stream.TwinStream.Name);
+        (*TwinObj)->TryGetNumberField(TEXT("port"),          Stream.TwinStream.Port);
+        (*TwinObj)->TryGetNumberField(TEXT("feedback_port"), Stream.TwinStream.FeedbackPort);
+        (*TwinObj)->TryGetNumberField(TEXT("status_port"),   Stream.TwinStream.StatusPort);
+        // Optional -- absent means "same host as the avatar stream" (see
+        // FStreamConfig::TwinRemoteIP).
+        (*TwinObj)->TryGetStringField(TEXT("remote_ip"),     Stream.TwinRemoteIP);
+
+        // "enabled" lets a session opt out of the twin without deleting the
+        // block, for the common case where the twin process simply isn't
+        // running. Disabled means the source is never registered at all --
+        // no socket, no decode thread, no reconnect timer, and no twin entry
+        // in the main-view toggle. Absent defaults to true so existing
+        // configs behave as before.
+        bool bTwinEnabled = true;
+        (*TwinObj)->TryGetBoolField(TEXT("enabled"), bTwinEnabled);
+
+        Stream.bHasTwinStream = bTwinEnabled && !Stream.TwinStream.Name.IsEmpty();
+
+        if (!bTwinEnabled)
+            UE_LOG(LogTemp, Log, TEXT("TeleOpConfig: twin stream disabled via \"enabled\": false — avatar-only main view"));
     }
 
     return true;
