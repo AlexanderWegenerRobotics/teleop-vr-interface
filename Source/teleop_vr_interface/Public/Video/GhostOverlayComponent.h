@@ -7,6 +7,7 @@
 #include "Components/StaticMeshComponent.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "Shared/protocol.hpp"
+#include "Teleop/TeleOpConfig.h"
 #include "GhostOverlayComponent.generated.h"
 
 class UCameraComponent;
@@ -33,6 +34,8 @@ public:
     void SetCamera(UCameraComponent* InCamera) { CameraRef = InCamera; }
     void SetComLink(UComLink* InComLink) { ComLinkRef = InComLink; }
     void SetStereoMode(bool bStereo) { bStereo_ = bStereo; }
+    void SetGhostVisible(bool bVisible);
+    bool IsGhostVisible() const { return bGhostVisible_; }
     UTextureRenderTarget2D* GetRenderTarget()      const { return CaptureRT; }
     UTextureRenderTarget2D* GetRenderTargetLeft()  const { return CaptureRTLeft; }
     UTextureRenderTarget2D* GetRenderTargetRight() const { return CaptureRTRight; }
@@ -135,6 +138,12 @@ public:
     UPROPERTY(EditAnywhere, Category = "Ghost|Overlay", meta = (ClampMin = "0.5", ClampMax = "1.0"))
     float FOVCoverage = 0.85f;
 
+    // HMD horizontal FOV used to size the face-locked quad. Must match the value
+    // UVideoFeedComponent sizes the video quad with, or the ghost drifts off the
+    // image it annotates -- both are set from overlay.json's hmd_hfov_deg.
+    UPROPERTY(EditAnywhere, Category = "Ghost|Overlay")
+    float HmdHFovDeg = 110.f;
+
     UPROPERTY(EditAnywhere, Category = "Ghost|Capture")
     float CaptureFOV = 75.2f;          // mono mode capture FOV
 
@@ -148,11 +157,34 @@ public:
     UPROPERTY(EditAnywhere, Category = "Ghost|Capture")
     FIntPoint RenderTargetSize = FIntPoint(1280, 960);
 
+    // ---- Viewpoint -------------------------------------------------------- //
+    // Which camera the overlay is reprojected through. Both modes resolve to the
+    // same 6-DoF extrinsics (see ResolveCameraPose); they differ only in where
+    // those extrinsics come from. Set from config in OperatorPawn::BeginPlay.
+    UPROPERTY(EditAnywhere, Category = "Ghost|Viewpoint")
+    EOverlayViewpointMode ViewpointMode = EOverlayViewpointMode::HeadTracked;
+
+    // HeadTracked: camera rides the avatar's pan/tilt head. Position is
+    // recomputed each tick from the measured servo angles in HeadStateMsg.
     UPROPERTY(EditAnywhere, Category = "Ghost|HeadCam")
     FVector HeadBasePosition = FVector(0.f, 0.f, 1.844f);
 
     UPROPERTY(EditAnywhere, Category = "Ghost|HeadCam")
     FVector CamOffsetInHead = FVector(0.05f, 0.f, 0.035f);
+
+    // Static: fixed camera, pose constant for the session. Same convention as a
+    // MuJoCo `type: fixed` camera so the numbers copy straight across from the
+    // sim scene config. Protocol frame throughout (X forward, Y left, Z up).
+    UPROPERTY(EditAnywhere, Category = "Ghost|StaticCam")
+    FVector StaticCamPos = FVector(1.3f, -0.3f, 1.3f);
+
+    UPROPERTY(EditAnywhere, Category = "Ghost|StaticCam")
+    FVector StaticCamLookAt = FVector(0.65f, 0.f, 0.73f);
+
+    // Only resolves roll about the view axis; orthogonalised against the view
+    // direction, so it does not need to be exactly perpendicular.
+    UPROPERTY(EditAnywhere, Category = "Ghost|StaticCam")
+    FVector StaticCamUp = FVector(0.f, 0.f, 1.f);
 
     UPROPERTY(EditAnywhere, Category = "Ghost|Mesh")
     FRotator EEFrameOffset = FRotator::ZeroRotator;
@@ -242,6 +274,19 @@ private:
     void UpdateFingerPose(UStaticMeshComponent* LFinger, UStaticMeshComponent* RFinger,
                           UTrackedControllerComponent* Tracked);
     FQuat UpdateCaptureTransforms(const FQuat& R_HW_Protocol);
+
+    // Resolves this tick's video-camera extrinsics in the protocol frame:
+    // OutCamPos = camera position in world, OutCamRot = camera->world rotation
+    // (camera looks down its own +X, +Y left, +Z up).
+    //
+    // This is the single place the viewpoint enters the overlay. Everything
+    // drawn into the capture -- both ghosts, fingers, grasp indicator, workspace
+    // boundary -- is reprojected through ApplyArmPoseToMesh, which uses this.
+    void ResolveCameraPose(FVector& OutCamPos, FQuat& OutCamRot) const;
+
+    // One-shot startup log of the resolved viewpoint, so a misaligned overlay is
+    // diagnosable from the log instead of by eye.
+    void LogResolvedViewpoint() const;
     void UpdateLatencyState(float DeltaTime);
     void ApplyLatencyColor();
     void UpdateGhostOpacity();
@@ -305,6 +350,7 @@ private:
 
     bool bPipelineReady = false;
     bool bStereo_       = false;
+    bool bGhostVisible_ = false;
 
     // Stereo eye captures and render targets (null in mono mode).
     UPROPERTY()

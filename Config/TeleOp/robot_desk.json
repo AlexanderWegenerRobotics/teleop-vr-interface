@@ -1,7 +1,7 @@
 {
-    "workspace_lower_bound_z":   0.0,
+    "workspace_lower_bound_z":   0.71,
     "workspace_boundary_margin": 0.0,
-    "workspace_min_x":  1.2,
+    "workspace_min_x":  0.4,
     "workspace_max_y":  0.7,
     "workspace_min_y": -0.7,
 
@@ -22,6 +22,6 @@
     "wrist_pivot_left":  [-5.9, -2.1, 3.4],
 
     "_comment_controller_to_ee": "Controller->EE orientation retarget, [w, x, y, z]. Must match the arm's controller_axis_map.",
-    "controller_to_ee_quat_right": [0.5,  0.5, -0.5, 0.5],
-    "controller_to_ee_quat_left":  [-0.5, 0.5,  0.5, 0.5]
+    "controller_to_ee_quat_right": [1, 0, 0, 0],
+    "controller_to_ee_quat_left":  [1, 0, 0, 0]
 }

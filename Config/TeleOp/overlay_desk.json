@@ -1,0 +1,42 @@
+{
+    "_scenario_comment": "Desk scenario: single Franka, no pan/tilt head device, video comes from the fixed 'desk_cam' in the simulator's sim_config_franka_desk.yaml. Select this file by setting \"overlay\": \"overlay_desk.json\" in config.json (same indirection already used for robot/stream/network). Everything below is identical to overlay.json except the viewpoint block and capture FOV.",
+
+    "near_threshold_m":      0.03,
+    "far_threshold_m":       0.15,
+    "min_opacity":           0.15,
+    "max_opacity":           0.85,
+
+    "latency_ok_ms":         100.0,
+    "latency_warn_ms":       150.0,
+    "latency_bad_ms":        300.0,
+    "latency_bad_exit_ms":   200.0,
+
+    "_viewpoint_comment": "STATIC viewpoint. pos/look_at are copied verbatim from the 'desk_cam' entry in the simulator's config/sim_config_franka_desk.yaml -- if you move the camera there, mirror it here or the overlay will be wrong in a way that looks like a bug in the ghost math. (Stage 2 removes this duplication by having the avatar send its extrinsics + fovy over the reliable UDP link at startup.) The head_tracked block is kept populated so switching back is a one-word edit to \"mode\".",
+    "viewpoint": {
+        "mode": "static",
+        "static": {
+            "pos":     [1.6, -1.1, 1.35],
+            "look_at": [0.35, 0.0, 0.95],
+            "up":      [0.0, 0.0, 1.0]
+        },
+        "head_tracked": {
+            "head_base_position": [0.0, 0.0, 1.844],
+            "cam_offset_in_head": [0.05, 0.0, 0.035]
+        }
+    },
+
+    "_capture_fov_comment": "HORIZONTAL FOV in degrees; MuJoCo gives VERTICAL fovy, so hfov = 2*atan(tan(fovy/2) * width/height). desk_cam is set to fovy=60 at 1280x960 to match the head cams (~RealSense-class optics) -> 2*atan(tan(30)*4/3) = 75.2. If you change desk_cam's fovy in the sim, recompute this. stereo_* values are unused here: a single fixed camera has one viewpoint, so the ghost is forced to mono (see GhostOverlayComponent::BeginPlay) and the stream config should have \"stereo\": false.",
+    "capture_fov":           75.2,
+    "stereo_capture_fov":    75.2,
+    "stereo_eye_offset_cm":  3.05,
+    "render_target_width":   1280,
+    "render_target_height":  960,
+
+    "_quad_comment": "Face-locked quad geometry, shared by the ghost overlay layer AND the video layer (and read by gaze projection). Keep these in sync with whatever the video is sized against. hmd_hfov_deg is the headset's horizontal FOV -- ~110 for Vive Pro / Pro Eye. These describe the HEADSET, not the scene camera, so they do not change between scenarios.",
+    "plane_distance":        700.0,
+    "fov_coverage":          0.85,
+    "hmd_hfov_deg":          110.0,
+
+    "boundary_plane_width_m":  1.8,
+    "boundary_plane_height_m": 0.96
+}

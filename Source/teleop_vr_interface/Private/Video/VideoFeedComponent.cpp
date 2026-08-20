@@ -323,11 +323,15 @@ void UVideoFeedComponent::CreateStereoLayer()
     UE_LOG(LogTemp, Log, TEXT("VideoFeed: stereo layer created at %.0f cm"), PlaneDistance);
 }
 
+// HmdHFovDeg / PlaneDistance / FOVCoverage must match UGhostOverlayComponent's
+// copies -- all three come from overlay.json so there is one source of truth.
+// They also feed FGazeProjection (see OperatorPawn), so a mismatch mistargets
+// gaze as well as misplacing the ghost.
 void UVideoFeedComponent::UpdateLayerSize(int32 Width, int32 Height)
 {
     if (!StereoLayer || Width <= 0 || Height <= 0) return;
 
-    float HalfFOVRad = FMath::DegreesToRadians(110.0f * 0.5f * FOVCoverage);
+    float HalfFOVRad = FMath::DegreesToRadians(HmdHFovDeg * 0.5f * FOVCoverage);
     float HalfWidth = PlaneDistance * FMath::Tan(HalfFOVRad);
     float AspectRatio = static_cast<float>(Width) / static_cast<float>(Height);
     float HalfHeight = HalfWidth / AspectRatio;

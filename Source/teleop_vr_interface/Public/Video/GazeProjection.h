@@ -84,9 +84,13 @@ struct FGazeProjection
         float FOVCoverage,
         float AspectRatio,   // Width / Height of the video stream
         float& OutQuadWidth,
-        float& OutQuadHeight)
+        float& OutQuadHeight,
+        // Headset horizontal FOV in degrees. Pass VideoFeed's copy (set from
+        // overlay.json's hmd_hfov_deg) so this matches the quad actually being
+        // rendered -- otherwise gaze lands somewhere the operator isn't looking.
+        float HmdHFovDeg = 110.0f)
     {
-        float HalfFOVRad = FMath::DegreesToRadians(110.0f * 0.5f * FOVCoverage);
+        float HalfFOVRad = FMath::DegreesToRadians(HmdHFovDeg * 0.5f * FOVCoverage);
         float HalfWidth  = PlaneDistance * FMath::Tan(HalfFOVRad);
         OutQuadWidth     = HalfWidth * 2.0f;
         OutQuadHeight    = OutQuadWidth / AspectRatio;

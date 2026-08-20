@@ -63,6 +63,12 @@ public:
     UPROPERTY(EditAnywhere, Category = "VideoFeed", meta = (ClampMin = "0.5", ClampMax = "1.0"))
     float FOVCoverage = 0.85f;
 
+    // HMD horizontal FOV used to size the face-locked video quad. Set from
+    // overlay.json's hmd_hfov_deg alongside PlaneDistance/FOVCoverage above, so
+    // this quad and the ghost overlay quad are always sized from one source.
+    UPROPERTY(EditAnywhere, Category = "VideoFeed")
+    float HmdHFovDeg = 110.0f;
+
 private:
     void CreateStereoLayer();
     void UpdateLayerSize(int32 Width, int32 Height);

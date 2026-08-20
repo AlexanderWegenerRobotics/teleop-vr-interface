@@ -121,6 +121,23 @@ struct FRobotConfig
     float BoundaryGridSpacingCm      = 5.0f;
 };
 
+// Which camera the ghost overlay is reprojected through.
+//
+// Both modes feed the same 6-DoF extrinsics used by
+// UGhostOverlayComponent::ResolveCameraPose(); they differ only in where those
+// extrinsics come from. HeadTracked derives them each tick from the avatar's
+// measured head servo angles, Static reads a fixed pose from config.
+UENUM()
+enum class EOverlayViewpointMode : uint8
+{
+    // Avatar head-cam: camera rides a pan/tilt head, pose recomputed per tick
+    // from HeadStateMsg. This is the original (and default) behaviour.
+    HeadTracked,
+    // Fixed camera somewhere in the scene, pose constant for the whole session.
+    // Matches a MuJoCo `type: fixed` camera (pos + look_at) one-for-one.
+    Static,
+};
+
 USTRUCT()
 struct FOverlayConfig
 {
@@ -133,15 +150,45 @@ struct FOverlayConfig
     float LatencyWarnMs    = 150.0f;
     float LatencyBadMs     = 300.0f;
     float LatencyBadExitMs = 200.0f;
+    // ---- Viewpoint ------------------------------------------------------- //
+    EOverlayViewpointMode ViewpointMode = EOverlayViewpointMode::HeadTracked;
+
+    // HeadTracked parameters. Both mirror the MuJoCo head model exactly:
+    // head_base_position is the head body's world position, cam_offset_in_head
+    // is the <camera pos="..."> inside that body.
     FVector HeadBasePosition = FVector(0.f, 0.f, 1.844f);
     FVector CamOffsetInHead  = FVector(0.05f, 0.f, 0.035f);
+
+    // Static parameters. Same convention as a MuJoCo `type: fixed` camera, so
+    // these can be copied verbatim out of the sim's scene config. Up is only
+    // used to resolve roll about the view axis; it is orthogonalised against
+    // the view direction, so it need not be exactly perpendicular.
+    FVector StaticCamPos    = FVector(1.3f, -0.3f, 1.3f);
+    FVector StaticCamLookAt = FVector(0.65f, 0.f, 0.73f);
+    FVector StaticCamUp     = FVector(0.f, 0.f, 1.f);
+
+    // HORIZONTAL FOV of the video camera, in degrees. MuJoCo specifies cameras
+    // by VERTICAL fovy, so convert on the way in:
+    //     hfov = 2*atan( tan(fovy/2) * width/height )
+    // e.g. the head cams' fovy=60 at 1280x960 -> 2*atan(tan(30)*4/3) = 75.2.
+    // Getting this wrong keeps the overlay aligned at the image centre while it
+    // drifts progressively toward the edges -- reads like a calibration error.
     float CaptureFOV         = 75.2f;
     float StereoCaptureFOV   = 75.2f;
     float StereoEyeOffsetCm  = 3.05f;
     int32 RenderTargetWidth  = 1280;
     int32 RenderTargetHeight = 960;
+
+    // Face-locked quad geometry. Shared by the ghost overlay layer AND the video
+    // layer -- they must agree or the ghost floats off the image it annotates,
+    // and gaze projection (which reads the video layer's copy) mistargets.
     float PlaneDistance      = 700.0f;
     float FOVCoverage        = 0.85f;
+
+    // HMD horizontal FOV in degrees, used to size those quads. Vive Pro / Pro
+    // Eye is ~110. Was hardcoded separately in VideoFeedComponent and
+    // GhostOverlayComponent; single source of truth now.
+    float HmdHFovDeg         = 110.0f;
     float BoundaryPlaneWidthM  = 1.8f;
     float BoundaryPlaneHeightM = 0.96f;
 };

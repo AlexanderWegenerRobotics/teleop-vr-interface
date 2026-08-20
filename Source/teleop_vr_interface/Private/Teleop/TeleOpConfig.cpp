@@ -245,11 +245,58 @@ bool UTeleOpConfig::LoadOverlay(const FString& Path) {
     if (!RequireInt(Obj,   TEXT("render_target_width"), Overlay.RenderTargetWidth, Context)) return false;
     if (!RequireInt(Obj,   TEXT("render_target_height"),Overlay.RenderTargetHeight,Context)) return false;
 
+    // Optional -- absent keeps the default (110, Vive Pro). Sizes the face-locked
+    // quads for both the ghost overlay and the video layer.
+    Obj->TryGetNumberField(TEXT("hmd_hfov_deg"), Overlay.HmdHFovDeg);
+
+    // Legacy flat keys. Still read first so pre-"viewpoint" overlay configs load
+    // unchanged; the nested block below overrides them when present.
     const TArray<TSharedPtr<FJsonValue>>* Arr = nullptr;
     if (Obj->TryGetArrayField(TEXT("head_base_position"), Arr) && Arr && Arr->Num() == 3)
         Overlay.HeadBasePosition = FVector((*Arr)[0]->AsNumber(), (*Arr)[1]->AsNumber(), (*Arr)[2]->AsNumber());
     if (Obj->TryGetArrayField(TEXT("cam_offset_in_head"), Arr) && Arr && Arr->Num() == 3)
         Overlay.CamOffsetInHead  = FVector((*Arr)[0]->AsNumber(), (*Arr)[1]->AsNumber(), (*Arr)[2]->AsNumber());
+
+    // Optional "viewpoint" block -- selects which camera the ghost is reprojected
+    // through. Absent means head_tracked with the flat keys above, i.e. exactly
+    // the behaviour that existed before this block was introduced.
+    const TSharedPtr<FJsonObject>* ViewObj = nullptr;
+    if (Obj->TryGetObjectField(TEXT("viewpoint"), ViewObj) && ViewObj)
+    {
+        auto ReadVec3 = [](const TSharedPtr<FJsonObject>& Src, const TCHAR* Key, FVector& Out)
+        {
+            const TArray<TSharedPtr<FJsonValue>>* V = nullptr;
+            if (Src->TryGetArrayField(Key, V) && V && V->Num() == 3)
+                Out = FVector((*V)[0]->AsNumber(), (*V)[1]->AsNumber(), (*V)[2]->AsNumber());
+        };
+
+        FString ModeStr;
+        (*ViewObj)->TryGetStringField(TEXT("mode"), ModeStr);
+        if (ModeStr.Equals(TEXT("static"), ESearchCase::IgnoreCase))
+            Overlay.ViewpointMode = EOverlayViewpointMode::Static;
+        else if (ModeStr.Equals(TEXT("head_tracked"), ESearchCase::IgnoreCase) || ModeStr.IsEmpty())
+            Overlay.ViewpointMode = EOverlayViewpointMode::HeadTracked;
+        else
+            UE_LOG(LogTemp, Warning,
+                TEXT("TeleOpConfig: unknown viewpoint.mode '%s' — falling back to head_tracked"), *ModeStr);
+
+        // Sub-blocks are read regardless of the selected mode: keeping both
+        // populated means flipping "mode" is genuinely a one-word edit.
+        const TSharedPtr<FJsonObject>* HeadObj = nullptr;
+        if ((*ViewObj)->TryGetObjectField(TEXT("head_tracked"), HeadObj) && HeadObj)
+        {
+            ReadVec3(*HeadObj, TEXT("head_base_position"), Overlay.HeadBasePosition);
+            ReadVec3(*HeadObj, TEXT("cam_offset_in_head"), Overlay.CamOffsetInHead);
+        }
+
+        const TSharedPtr<FJsonObject>* StaticObj = nullptr;
+        if ((*ViewObj)->TryGetObjectField(TEXT("static"), StaticObj) && StaticObj)
+        {
+            ReadVec3(*StaticObj, TEXT("pos"),     Overlay.StaticCamPos);
+            ReadVec3(*StaticObj, TEXT("look_at"), Overlay.StaticCamLookAt);
+            ReadVec3(*StaticObj, TEXT("up"),      Overlay.StaticCamUp);
+        }
+    }
 
     return true;
 }

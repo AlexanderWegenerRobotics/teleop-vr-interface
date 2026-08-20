@@ -28,6 +28,21 @@ void UGhostOverlayComponent::BeginPlay(){
         }
     }
 
+    // A single fixed camera has exactly one viewpoint, so there is no disparity
+    // in the video to match. Rendering the ghost through the ±IPD eye captures
+    // anyway would place it at a different apparent depth than the image behind
+    // it -- conflicting depth cues, and unpleasant to look at for long. Force
+    // mono and say so loudly, since the fix is a config change elsewhere.
+    if (ViewpointMode == EOverlayViewpointMode::Static && bStereo_)
+    {
+        UE_LOG(LogTemp, Warning,
+            TEXT("GhostOverlay: static viewpoint with stereo enabled — forcing ghost to mono. ")
+            TEXT("Set \"stereo\": false in the stream config so the video path matches."));
+        bStereo_ = false;
+    }
+
+    LogResolvedViewpoint();
+
     LoadAssets();
     CreateRenderTarget();
     CreateSceneCapture();
@@ -291,6 +306,16 @@ void UGhostOverlayComponent::RegisterOverlayComponent(UPrimitiveComponent* Comp)
     if (SceneCaptureRight) SceneCaptureRight->ShowOnlyComponents.AddUnique(Comp);
 }
 
+void UGhostOverlayComponent::SetGhostVisible(bool bVisible) {
+    bGhostVisible_ = bVisible;
+    if (StereoLayer) StereoLayer->SetVisibility(bVisible);
+    if (SceneCapture) SceneCapture->bCaptureEveryFrame = bVisible && !bStereo_;
+    if (bStereo_) {
+        if (SceneCaptureLeft)  SceneCaptureLeft->bCaptureEveryFrame  = bVisible;
+        if (SceneCaptureRight) SceneCaptureRight->bCaptureEveryFrame = bVisible;
+    }
+}
+
 void UGhostOverlayComponent::CreateStereoLayer(){
     AActor* Owner = GetOwner();
 
@@ -327,9 +352,12 @@ void UGhostOverlayComponent::CreateStereoLayer(){
 }
 
 // Size the stereo layer quad from PlaneDistance, FOVCoverage and RT aspect.
+// HmdHFovDeg / PlaneDistance / FOVCoverage must match what UVideoFeedComponent
+// uses for the video quad -- all three come from overlay.json for exactly that
+// reason. If they diverge the ghost slides off the image it annotates.
 void UGhostOverlayComponent::UpdateLayerSize() {
     if (!StereoLayer) return;
-    const float HFOVRad   = FMath::DegreesToRadians(110.f * FOVCoverage);
+    const float HFOVRad   = FMath::DegreesToRadians(HmdHFovDeg * FOVCoverage);
     const float QuadWidth = 2.f * PlaneDistance * FMath::Tan(HFOVRad * 0.5f);
     const float Aspect    = RenderTargetSize.Y > 0
         ? static_cast<float>(RenderTargetSize.X) / static_cast<float>(RenderTargetSize.Y)
@@ -552,7 +580,40 @@ void UGhostOverlayComponent::UpdateIntentPoses() {
     }
 }
 
-bool UGhostOverlayComponent::ApplyArmPoseToMesh(UStaticMeshComponent* Mesh, const float Position[3], const float Quaternion[4], const FRotator& EEOffset, FQuat* OutR_HW) {
+// Resolve the video camera's pose in the protocol frame. Camera convention:
+// looks down +X, +Y left, +Z up (matches the pan/tilt head model and MuJoCo's
+// camera frame as used elsewhere in this file).
+void UGhostOverlayComponent::ResolveCameraPose(FVector& OutCamPos, FQuat& OutCamRot) const
+{
+    if (ViewpointMode == EOverlayViewpointMode::Static)
+    {
+        const FVector Forward = (StaticCamLookAt - StaticCamPos).GetSafeNormal();
+        if (Forward.IsNearlyZero())
+        {
+            // Degenerate config (pos == look_at): fall back to identity rather
+            // than emitting a NaN rotation into every mesh transform.
+            OutCamPos = StaticCamPos;
+            OutCamRot = FQuat::Identity;
+            return;
+        }
+
+        // MakeFromXZ builds Y = Z x X (= left, given forward/up) and re-derives
+        // Z, so Up only has to be roughly right -- it gets orthogonalised.
+        OutCamRot = FRotationMatrix::MakeFromXZ(Forward, StaticCamUp.GetSafeNormal()).ToQuat();
+        OutCamPos = StaticCamPos;
+        return;
+    }
+
+    // ---- HeadTracked ------------------------------------------------------ //
+    // Camera rides a pan/tilt head: orientation is the head's, position is the
+    // head base plus the camera's mount offset rotated into world.
+    //
+    // This reduces to the original formulation exactly. The old code computed
+    //     p_cam = R_HW^-1 (p_EE - HeadBase) - CamOffsetInHead
+    // and the generic transform below computes
+    //     p_cam = R_C^-1 (p_EE - p_C)  with  p_C = HeadBase + R_HW*CamOffset
+    //           = R_HW^-1 (p_EE - HeadBase) - CamOffsetInHead
+    // i.e. the same expression, not merely an equivalent one.
     float Pan = 0.f, Tilt = 0.f;
     if (ComLinkRef && ComLinkRef->IsHeadAlive()) {
         const HeadStateMsg H = ComLinkRef->ReadHeadState();
@@ -560,16 +621,53 @@ bool UGhostOverlayComponent::ApplyArmPoseToMesh(UStaticMeshComponent* Mesh, cons
         Tilt = H.tilt;
     }
 
+    const FQuat R_HW_pan (FVector(0,  0, 1), Pan);
+    const FQuat R_HW_tilt(FVector(0, -1, 0), Tilt);
+
+    OutCamRot = R_HW_pan * R_HW_tilt;
+    OutCamPos = HeadBasePosition + OutCamRot.RotateVector(CamOffsetInHead);
+}
+
+void UGhostOverlayComponent::LogResolvedViewpoint() const
+{
+    FVector CamPos; FQuat CamRot;
+    ResolveCameraPose(CamPos, CamRot);
+    const FRotator R = CamRot.Rotator();
+
+    if (ViewpointMode == EOverlayViewpointMode::Static)
+    {
+        UE_LOG(LogTemp, Log,
+            TEXT("GhostOverlay: viewpoint=STATIC  pos=(%.3f, %.3f, %.3f)  look_at=(%.3f, %.3f, %.3f)  ")
+            TEXT("yaw=%.1f pitch=%.1f roll=%.1f  hfov=%.1f°  (protocol frame, metres)"),
+            CamPos.X, CamPos.Y, CamPos.Z,
+            StaticCamLookAt.X, StaticCamLookAt.Y, StaticCamLookAt.Z,
+            R.Yaw, R.Pitch, R.Roll, CaptureFOV);
+    }
+    else
+    {
+        UE_LOG(LogTemp, Log,
+            TEXT("GhostOverlay: viewpoint=HEAD_TRACKED  head_base=(%.3f, %.3f, %.3f)  ")
+            TEXT("cam_offset=(%.3f, %.3f, %.3f)  hfov=%.1f°  head link %s at startup"),
+            HeadBasePosition.X, HeadBasePosition.Y, HeadBasePosition.Z,
+            CamOffsetInHead.X, CamOffsetInHead.Y, CamOffsetInHead.Z,
+            CaptureFOV,
+            (ComLinkRef && ComLinkRef->IsHeadAlive()) ? TEXT("ALIVE") : TEXT("SILENT (pan/tilt assumed 0)"));
+    }
+}
+
+bool UGhostOverlayComponent::ApplyArmPoseToMesh(UStaticMeshComponent* Mesh, const float Position[3], const float Quaternion[4], const FRotator& EEOffset, FQuat* OutR_HW) {
     const FVector p_EE(Position[0],   Position[1],   Position[2]);
     const FQuat   q_EE(Quaternion[1], Quaternion[2], Quaternion[3], Quaternion[0]);
 
-    const FQuat R_HW_pan (FVector(0,  0, 1), Pan);
-    const FQuat R_HW_tilt(FVector(0, -1, 0), Tilt);
-    const FQuat R_HW = R_HW_pan * R_HW_tilt;
+    // Generic 6-DoF reprojection: world pose -> camera frame. The viewpoint is
+    // supplied by ResolveCameraPose, which is the only thing that differs
+    // between the head-tracked and static-camera scenarios.
+    FVector p_C; FQuat R_HW;
+    ResolveCameraPose(p_C, R_HW);
     const FQuat R_CH = R_HW.Inverse();
 
-    const FVector p_cam = R_CH.RotateVector(p_EE - HeadBasePosition) - CamOffsetInHead;
-    if (p_cam.X <= 0.f) return false;
+    const FVector p_cam = R_CH.RotateVector(p_EE - p_C);
+    if (p_cam.X <= 0.f) return false;   // behind the camera
 
     const FQuat   q_cam  = R_CH * q_EE;
     const FVector posUE  = CoordConvert::ProtocolToUnreal(p_cam.X, p_cam.Y, p_cam.Z);

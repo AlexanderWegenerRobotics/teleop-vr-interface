@@ -238,14 +238,29 @@ void AOperatorPawn::BeginPlay() {
 	GhostOverlay->LatencyWarnMs            = Config->Overlay.LatencyWarnMs;
 	GhostOverlay->LatencyBadMs             = Config->Overlay.LatencyBadMs;
 	GhostOverlay->LatencyBadExitMs         = Config->Overlay.LatencyBadExitMs;
+	GhostOverlay->ViewpointMode            = Config->Overlay.ViewpointMode;
 	GhostOverlay->HeadBasePosition         = Config->Overlay.HeadBasePosition;
 	GhostOverlay->CamOffsetInHead          = Config->Overlay.CamOffsetInHead;
+	GhostOverlay->StaticCamPos             = Config->Overlay.StaticCamPos;
+	GhostOverlay->StaticCamLookAt          = Config->Overlay.StaticCamLookAt;
+	GhostOverlay->StaticCamUp              = Config->Overlay.StaticCamUp;
 	GhostOverlay->CaptureFOV               = Config->Overlay.CaptureFOV;
 	GhostOverlay->StereoCaptureFOV         = Config->Overlay.StereoCaptureFOV;
 	GhostOverlay->StereoEyeOffsetCm        = Config->Overlay.StereoEyeOffsetCm;
 	GhostOverlay->PlaneDistance            = Config->Overlay.PlaneDistance;
 	GhostOverlay->FOVCoverage              = Config->Overlay.FOVCoverage;
+	GhostOverlay->HmdHFovDeg               = Config->Overlay.HmdHFovDeg;
 	GhostOverlay->RenderTargetSize         = FIntPoint(Config->Overlay.RenderTargetWidth, Config->Overlay.RenderTargetHeight);
+
+	// The video quad and the ghost overlay quad are both face-locked and must be
+	// sized identically, or the ghost slides off the image it annotates. These
+	// used to be UPROPERTY defaults on VideoFeed that happened to equal
+	// overlay.json's values; now both components read the same config fields.
+	// FGazeProjection also reads VideoFeed's copies (see below), so a mismatch
+	// would mistarget gaze on top of misplacing the ghost.
+	VideoFeed->PlaneDistance               = Config->Overlay.PlaneDistance;
+	VideoFeed->FOVCoverage                 = Config->Overlay.FOVCoverage;
+	VideoFeed->HmdHFovDeg                  = Config->Overlay.HmdHFovDeg;
 
 	RecordingSocket_ = MakeUnique<UdpSocket>();
 	UdpSocket::Config RecordingCfg;
@@ -313,6 +328,8 @@ void AOperatorPawn::BeginPlay() {
 
 	Super::BeginPlay();
 
+	GhostOverlay->SetGhostVisible(false);
+
 	LeftGraspIndicator->Initialize(GhostOverlay, ComLink, 0);
 	RightGraspIndicator->Initialize(GhostOverlay, ComLink, 1);
 
@@ -378,8 +395,15 @@ void AOperatorPawn::BeginPlay() {
 	// VideoFeedComponent::UpdateSourceTexture and the Tick-time display logic
 	// below) -- deliberately NOT added to PiPSources_/PiPTextures_, only to
 	// the name list the menu is built from.
-	if (bHasTwinMainStream_)
-		PiPSourceNames_.Add(TwinMainStreamLabel_);
+	//
+	// Menu entry is lowercased ("twin") to match the other PiP entries'
+	// casing convention ("camera right", "operator", ...); TwinMainStreamLabel_
+	// itself stays as configured ("TWIN") since that's what the persistent
+	// viewmode_label status readout uses.
+	if (bHasTwinMainStream_) {
+		TwinPiPEntryName_ = TwinMainStreamLabel_.ToLower();
+		PiPSourceNames_.Add(TwinPiPEntryName_);
+	}
 
 	const float LatencyWarn = Config->Hud.LatencyWarningMs;
 	UIBinder->BindPlot(FName("videoLatencyPlot"), LatencyHistory.GetSamplesPtr(), nullptr, LatencyHistory.Capacity(), LatencyHistory.GetHeadPtr(), 0.0f, LatencyWarn * 2.0f);
@@ -448,7 +472,7 @@ void AOperatorPawn::BeginPlay() {
 	UpdateButtonStates();
 
 	float AspectRatio = 1280.f / 720.f;
-	FGazeProjection::ComputeQuadSize(VideoFeed->PlaneDistance, VideoFeed->FOVCoverage, AspectRatio, VideoQuadWidth_, VideoQuadHeight_);
+	FGazeProjection::ComputeQuadSize(VideoFeed->PlaneDistance, VideoFeed->FOVCoverage, AspectRatio, VideoQuadWidth_, VideoQuadHeight_, VideoFeed->HmdHFovDeg);
 	{
 		FActorSpawnParameters Params;
 		Params.Owner = this;
@@ -464,9 +488,9 @@ void AOperatorPawn::BeginPlay() {
 		}
 		VideoLogger_->AddLayerSource([this]() -> UTexture* { return VideoFeed->GetVideoTexture(); }, 0, VideoUVOffset, VideoUVSize);
 		if (VideoFeed->IsStereoMode()) {
-			VideoLogger_->AddLayerSource([this]() -> UTexture* { return static_cast<UTexture*>(GhostOverlay->GetRenderTargetLeft()); }, 1);
+			VideoLogger_->AddLayerSource([this]() -> UTexture* { return GhostOverlay->IsGhostVisible() ? static_cast<UTexture*>(GhostOverlay->GetRenderTargetLeft()) : nullptr; }, 1);
 		} else {
-			VideoLogger_->AddLayerSource([this]() -> UTexture* { return static_cast<UTexture*>(GhostOverlay->GetRenderTarget()); }, 1);
+			VideoLogger_->AddLayerSource([this]() -> UTexture* { return GhostOverlay->IsGhostVisible() ? static_cast<UTexture*>(GhostOverlay->GetRenderTarget()) : nullptr; }, 1);
 		}
 		VideoLogger_->AddLayerSource([this]() -> UTexture* { return static_cast<UTexture*>(UIBinder->GetRenderTarget()); }, 2);
 
@@ -573,7 +597,7 @@ void AOperatorPawn::Tick(float DeltaTime) {
 	UpdateInfoBar();
 
 	if (!ActivePiPStreamName_.IsEmpty()) {
-		if (bHasTwinMainStream_ && ActivePiPStreamName_ == TwinMainStreamLabel_) {
+		if (bHasTwinMainStream_ && ActivePiPStreamName_ == TwinPiPEntryName_) {
 			// Shared decode with the main view -- see VideoFeedComponent::
 			// UpdateSourceTexture. No separate receiver, no extra decode.
 			VideoFeed->UpdateSourceTexture(TwinMainStreamKey_, PiPSharedTwinTexture_);
@@ -926,8 +950,8 @@ void AOperatorPawn::UpdateStateMachine() {
 		const FString TargetLabel     = bCurrentlyAvatar ? TwinMainStreamLabel_ : kAvatarMainLabel;
 		if (VideoFeed->SetActiveSource(TargetSourceKey)) {
 			UIBinder->SetText(FName("viewmode_label"), *TargetLabel);
-			// Toggled-on == twin is now active (i.e. we just switched away from avatar).
 			UIBinder->SetButtonToggled(FName("viewmodeButton"), bCurrentlyAvatar);
+			GhostOverlay->SetGhostVisible(bCurrentlyAvatar);
 		}
 	}
 

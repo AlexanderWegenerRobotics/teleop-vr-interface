@@ -47,8 +47,12 @@ extern "C" bool GStreamerStartPipeline(void* pipeline)
     return (ret != GST_STATE_CHANGE_FAILURE);
 }
 
-// Blocks until the pipeline actually reaches PLAYING (or fails/times out) — catches
-// decoders that accept the state change asynchronously then fail to negotiate.
+// Blocks until the pipeline actually reaches PLAYING (or fails/times out).
+//
+// NOTE: this is no longer used to choose between GPU and CPU decode. On a live RTP
+// pipeline "has not reached PLAYING" mostly means "the sender has not sent a keyframe
+// yet", which says nothing about decoder health -- see FGStreamerVideoReceiver::Start.
+// Kept as a general utility; do not reintroduce it as a capability probe.
 //
 // NOTE: our receive pipelines are driven by udpsrc, which is a *live* source, so they
 // never preroll. GStreamer signals that with GST_STATE_CHANGE_NO_PREROLL, which is a

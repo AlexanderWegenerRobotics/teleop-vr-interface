@@ -3,7 +3,57 @@
 #include "TextureResource.h"
 #include "RHICommandList.h"
 #include "RHI.h"
+#include <atomic>
 #include <string>
+
+// ---------------------------------------------------------------------------
+// GPU decode verdict — process-wide, decided once
+// ---------------------------------------------------------------------------
+// Whether nvh264dec actually works is a property of the machine, not of any
+// individual stream, so it is settled once and reused. Previously every stream
+// re-ran its own 4 s probe; with four streams that was 16 s of startup spent
+// re-answering the same question.
+namespace {
+    enum class EGpuVerdict : int32 { Unknown = 0, Good = 1, Bad = -1 };
+    std::atomic<int32> GGpuVerdict{ static_cast<int32>(EGpuVerdict::Unknown) };
+
+    EGpuVerdict GetGpuVerdict()          { return static_cast<EGpuVerdict>(GGpuVerdict.load()); }
+    void        SetGpuVerdict(EGpuVerdict V) { GGpuVerdict.store(static_cast<int32>(V)); }
+
+    // Watch the bus for a short grace period and report whether the pipeline
+    // raised a hard ERROR. Warnings are logged but are not grounds for demotion.
+    bool DrainBusForHardError(void* Bus, double GraceSec, FString& OutFirstError)
+    {
+        const double Deadline = FPlatformTime::Seconds() + GraceSec;
+        bool bHard = false;
+        char Buf[512];
+        bool bWarn = false;
+
+        do {
+            while (GStreamerPopBusError(Bus, Buf, sizeof(Buf), &bWarn))
+            {
+                const FString Msg = ANSI_TO_TCHAR(Buf);
+                if (bWarn)
+                {
+                    UE_LOG(LogTemp, Warning, TEXT("GStreamer: GPU decode probe warning: %s"), *Msg);
+                }
+                else
+                {
+                    if (!bHard) OutFirstError = Msg;
+                    bHard = true;
+                }
+            }
+            if (bHard) break;
+            FPlatformProcess::Sleep(0.01f);
+        } while (FPlatformTime::Seconds() < Deadline);
+
+        return bHard;
+    }
+
+    // Long enough for a decoder that cannot initialise at all to say so on the
+    // bus; short enough to be invisible at startup. Paid once per process.
+    constexpr double kGpuProbeGraceSec = 0.30;
+}
 
 // ---------------------------------------------------------------------------
 // Probe thunks
@@ -235,9 +285,12 @@ bool FGStreamerVideoReceiver::Initialize(const FReceiverConfig& Config)
     Config_ = Config;
 
     // Prefer GPU decode (nvh264dec) when present; if its pipeline can't be built (missing
-    // CUDA elements) fall back to CPU here, and if it builds but fails to reach PLAYING
-    // that is caught and recovered in Start().
-    bUsingGpuDecode_ = GStreamerNvdecAvailable();
+    // CUDA elements) fall back to CPU here, and if the decoder reports a hard error that
+    // is caught and recovered in Start().
+    //
+    // Once any stream in this process has proven the GPU decoder broken, later streams
+    // skip the attempt entirely rather than each rediscovering it.
+    bUsingGpuDecode_ = GStreamerNvdecAvailable() && GetGpuVerdict() != EGpuVerdict::Bad;
     bool bBuilt = bUsingGpuDecode_ && BuildPipeline(true);
     if (!bBuilt)
     {
@@ -314,23 +367,48 @@ bool FGStreamerVideoReceiver::Start()
         return false;
     }
 
-    // GPU decode can accept the state change then fail to negotiate during PLAYING in UE's
-    // bundled GStreamer; if it doesn't actually reach PLAYING, rebuild on CPU and restart.
-    if (bUsingGpuDecode_ && !GStreamerWaitForPlaying(Pipeline, 4000))
+    // Decide GPU vs CPU on evidence, not on a timeout.
+    //
+    // This previously waited up to 4 s for the pipeline to reach PLAYING and demoted to
+    // CPU if it didn't. That conflates three different questions -- can this machine
+    // decode on the GPU, has the pipeline finished negotiating, and is the sender
+    // actually sending -- and only measures the second. A live RTP pipeline cannot
+    // finish negotiating until the sender's first keyframe arrives, so on a stream whose
+    // sender is offline (e.g. a wrist cam that isn't running) "not PLAYING yet" simply
+    // means "no data yet". Those streams were misdiagnosed as GPU failures, permanently
+    // downgraded to software decode, and cost 4 s of blocking startup each.
+    //
+    // Now the only thing that demotes is an explicit ERROR on the bus, and the question
+    // is asked once per process. If the GPU decoder is genuinely broken it will say so
+    // here; if it breaks later, the frame-pull thread already drains and logs bus errors.
+    if (bUsingGpuDecode_ && GetGpuVerdict() == EGpuVerdict::Unknown)
     {
-        UE_LOG(LogTemp, Warning,
-               TEXT("GStreamer: GPU decode did not reach PLAYING — falling back to avdec_h264 (CPU)"));
-        GStreamerStopPipeline(Pipeline);
-        if (AppSink) { GStreamerUnrefElement(AppSink); AppSink = nullptr; }
-        if (Bus)     { GStreamerUnrefBus(Bus);         Bus     = nullptr; }
-        GStreamerDestroyPipeline(Pipeline);
-        Pipeline = nullptr;
-
-        bUsingGpuDecode_ = false;
-        if (!BuildPipeline(false) || !GStreamerStartPipeline(Pipeline))
+        FString FirstError;
+        if (DrainBusForHardError(Bus, kGpuProbeGraceSec, FirstError))
         {
-            UE_LOG(LogTemp, Error, TEXT("GStreamer: CPU fallback pipeline failed to start"));
-            return false;
+            SetGpuVerdict(EGpuVerdict::Bad);
+            UE_LOG(LogTemp, Warning,
+                   TEXT("GStreamer: nvh264dec reported an error — falling back to avdec_h264 (CPU) ")
+                   TEXT("for this and all later streams. Reason: %s"), *FirstError);
+
+            GStreamerStopPipeline(Pipeline);
+            if (AppSink) { GStreamerUnrefElement(AppSink); AppSink = nullptr; }
+            if (Bus)     { GStreamerUnrefBus(Bus);         Bus     = nullptr; }
+            GStreamerDestroyPipeline(Pipeline);
+            Pipeline = nullptr;
+
+            bUsingGpuDecode_ = false;
+            if (!BuildPipeline(false) || !GStreamerStartPipeline(Pipeline))
+            {
+                UE_LOG(LogTemp, Error, TEXT("GStreamer: CPU fallback pipeline failed to start"));
+                return false;
+            }
+        }
+        else
+        {
+            SetGpuVerdict(EGpuVerdict::Good);
+            UE_LOG(LogTemp, Log,
+                   TEXT("GStreamer: nvh264dec accepted — GPU decode confirmed for this process"));
         }
     }
 

@@ -162,7 +162,8 @@ private:
 	// UpdateStateMachine can use them without holding onto UTeleOpConfig.
 	bool    bHasTwinMainStream_ = false;
 	FString TwinMainStreamKey_;   // VideoFeedComponent registration key (== Config->Stream.TwinStream.Name)
-	FString TwinMainStreamLabel_; // viewmode_label text when twin is active (currently same as the key)
+	FString TwinMainStreamLabel_; // viewmode_label text when twin is active ("TWIN", as configured)
+	FString TwinPiPEntryName_;    // PiP menu entry text (TwinMainStreamLabel_.ToLower(), e.g. "twin")
 
 	// PiP's "TWIN" entry shares the already-running main-view TWIN source's
 	// decode (VideoFeedComponent::UpdateSourceTexture) instead of opening a
