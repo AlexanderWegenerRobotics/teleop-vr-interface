@@ -78,6 +78,27 @@ public:
     float  GetStateLatencyMs() const { return LatencyMs_; }
     float  GetMsgRateHz()      const { return MsgRateHz_; }
 
+    // Age of the newest received sample, in milliseconds: how long ago the
+    // REMOTE actually read its hardware, not how long the packet spent on the
+    // wire. GetStateLatencyMs() answers the second question and is blind to
+    // the first, because a sender whose control loop has died keeps emitting
+    // packets with fresh send timestamps.
+    //
+    // Returns -1 if the sender does not populate sample_time_ns (older build),
+    // so callers can distinguish "unknown" from "fresh". Callers should treat
+    // negative as unknown and NOT alarm on it.
+    float GetStateAgeMs() const {
+        uint64 SampleNs;
+        {
+            FScopeLock Lock(&Mutex_);
+            SampleNs = LastRecv_.header.sample_time_ns;
+        }
+        if (SampleNs == 0) return -1.f;
+        const uint64 NowNs = timestamp_ns();
+        if (NowNs <= SampleNs) return 0.f;   // clock skew; clamp rather than report negative
+        return static_cast<float>((NowNs - SampleNs) / 1000000.0);
+    }
+
     FOnStreamFault OnFaultDetected;
 
 private:

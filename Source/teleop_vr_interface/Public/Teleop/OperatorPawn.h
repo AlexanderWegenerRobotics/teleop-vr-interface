@@ -108,6 +108,14 @@ private:
 	void SendArmResume(const std::string& DeviceName);
 	void SendGazeSample();
 	void HandleVoiceAnnotation(const FVoiceAnnotation& Ann);
+
+	// Remote arm reported FAULT in its message header. Called from ComLink's
+	// receive thread, so it only records intent; the audible cue and HUD work
+	// happen on the game thread in Tick.
+	void HandleArmFault(uint8 DeviceIndex, FaultCode Code);
+	// Set by HandleArmFault, consumed and cleared in Tick.
+	TAtomic<int32> PendingArmFault_{-1};   // -1 = none, else FaultCode value
+	TAtomic<int32> PendingArmFaultIndex_{0};
 	FFrameBundle BuildFrameBundle() const;
 
 	// Tells the local operator-side RealSense recorder to start/stop, in step with the
@@ -124,6 +132,15 @@ private:
 	// True once avatar confirms ENGAGED after VR entered ENGAGED; prevents
 	// dropping back to AWAITING on stale pre-transition avatar state.
 	bool bAvatarConfirmedEngaged_ = false;
+
+	// Stale-state alarm, see UpdateHudIndicators. Edge-triggered so the
+	// operator gets one warning per episode rather than a continuous tone.
+	bool bArmStateWasStale_ = false;
+	// 5x the avatar's 200 Hz state publish period. Tight enough to catch a
+	// dead control loop within ~25 ms, loose enough not to fire on ordinary
+	// scheduling jitter or a single dropped packet.
+	static constexpr float kArmStateStaleWarnMs = 25.f;
+
 	bool bPendingVoiceReengage_   = false;
 	bool bResetMenuOpen_          = false;
 	bool bAnnotationPending_      = false;

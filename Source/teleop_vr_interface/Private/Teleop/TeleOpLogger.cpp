@@ -96,6 +96,12 @@ FString FTeleOpLogger::Open(const FString& BaseDir)
     StreamWriter_ = MakeUnique<FBufferedFileWriter>(
         SessionDir / TEXT("stream.csv"), StreamHeader());
 
+    // Separate file rather than more columns on stream.csv: this one is
+    // written at the command rate, stream.csv at the HUD rate, and merging
+    // them would either throw away command samples or pad the video stats.
+    CommandWriter_ = MakeUnique<FBufferedFileWriter>(
+        SessionDir / TEXT("command.csv"), CommandHeader());
+
     IPlatformFile& PF = FPlatformFileManager::Get().GetPlatformFile();
     EventHandle_ = PF.OpenWrite(*(SessionDir / TEXT("events.log")), false, false);
 
@@ -110,8 +116,30 @@ void FTeleOpLogger::Close()
 
     LogEvent(TEXT("SESSION_END"));
 
-    if (StreamWriter_) { StreamWriter_->Stop(); StreamWriter_.Reset(); }
-    if (EventHandle_)  { delete EventHandle_;   EventHandle_ = nullptr; }
+    if (StreamWriter_)  { StreamWriter_->Stop();  StreamWriter_.Reset(); }
+    if (CommandWriter_) { CommandWriter_->Stop(); CommandWriter_.Reset(); }
+    if (EventHandle_)   { delete EventHandle_;    EventHandle_ = nullptr; }
+}
+
+void FTeleOpLogger::WriteCommandRow(const FCommandRow& R)
+{
+    if (!CommandWriter_) return;
+
+    CommandWriter_->WriteRow(FString::Printf(
+        TEXT("%llu;%d;%u;%d;")
+        TEXT("%.6f;%.6f;%.6f;%.6f;%.6f;%.6f;%.6f;")
+        TEXT("%.3f;%.4f;%d\n"),
+        R.TimestampNs, R.DeviceIndex, R.Sequence, R.bSent ? 1 : 0,
+        R.Px, R.Py, R.Pz, R.Qw, R.Qx, R.Qy, R.Qz,
+        R.Gripper, R.ClutchFactor, R.bFullClutch ? 1 : 0));
+}
+
+FString FTeleOpLogger::CommandHeader()
+{
+    return
+        TEXT("timestamp_ns;device_index;sequence;sent;")
+        TEXT("px;py;pz;qw;qx;qy;qz;")
+        TEXT("gripper;clutch_factor;full_clutch\n");
 }
 
 void FTeleOpLogger::WriteStreamRow(const FStreamRow& R)
@@ -125,7 +153,8 @@ void FTeleOpLogger::WriteStreamRow(const FStreamRow& R)
         TEXT("%.6f;%.6f;")
         TEXT("%.2f;%.3f;%.3f;%d;")
         TEXT("%.2f;%.1f;")
-        TEXT("%.4f;%d;%.4f;%d\n"),
+        TEXT("%.4f;%d;%.4f;%d;")
+        TEXT("%d;%d;%u;%.2f;%s\n"),
         R.TimestampNs, R.OperatorState,
         R.LeftClutch,  R.LeftGear,  R.LeftGrasp,
         R.LeftPx,  R.LeftPy,  R.LeftPz,
@@ -136,7 +165,9 @@ void FTeleOpLogger::WriteStreamRow(const FStreamRow& R)
         R.HeadPan, R.HeadTilt,
         R.VideoLatencyMs, R.VideoJitterMs, R.VideoLossPct, R.VideoFps,
         R.DataLatencyMs, R.DataMsgRateHz,
-        R.LeftGripperWidth, R.LeftGripperGraspState, R.RightGripperWidth, R.RightGripperGraspState));
+        R.LeftGripperWidth, R.LeftGripperGraspState, R.RightGripperWidth, R.RightGripperGraspState,
+        R.ArmRemoteState, R.ArmRemoteFault, R.ArmDroppedPackets, R.ArmStateAgeMs,
+        R.VideoSourceName.IsEmpty() ? TEXT("-") : *R.VideoSourceName));
 }
 
 void FTeleOpLogger::LogEvent(const FString& Message)
@@ -172,5 +203,8 @@ FString FTeleOpLogger::StreamHeader()
         TEXT("head_pan;head_tilt;")
         TEXT("video_latency_ms;video_jitter_ms;video_loss_pct;video_fps;")
         TEXT("data_latency_ms;data_msg_rate_hz;")
-        TEXT("left_gripper_width;left_grasp_state;right_gripper_width;right_grasp_state\n");
+        TEXT("left_gripper_width;left_grasp_state;right_gripper_width;right_grasp_state;")
+        // Remote health + provenance. See FStreamRow for why these are separate
+        // from the link metrics above.
+        TEXT("arm_remote_state;arm_remote_fault;arm_dropped_packets;arm_state_age_ms;video_source\n");
 }

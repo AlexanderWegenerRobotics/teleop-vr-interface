@@ -341,6 +341,7 @@ void AOperatorPawn::BeginPlay() {
 	}
 
 	VoiceAnnotator->OnAnnotationReceived.AddUObject(this, &AOperatorPawn::HandleVoiceAnnotation);
+	ComLink->OnArmFault.AddUObject(this, &AOperatorPawn::HandleArmFault);
 
 	if (APlayerController* PC = Cast<APlayerController>(GetController())) {
 		if (UEnhancedInputLocalPlayerSubsystem* Subsystem = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(PC->GetLocalPlayer())) {
@@ -572,6 +573,66 @@ void AOperatorPawn::Tick(float DeltaTime) {
 	UIBinder->SetImageColor(FName("avatar_head"), ComLink->IsHeadAlive() ? FLinearColor::Green : FLinearColor::Red);
 	UIBinder->SetVisibility(FName("videoLostInfo"), !VideoFeed->IsReceiving());
 
+	// --- stale-state alarm (Tick) -------------------------------------------
+	// Packets arriving is not the same as the robot being alive. The avatar
+	// publishes arm state from its 200 Hz state thread, which keeps running --
+	// and keeps stamping fresh send timestamps -- even when the 1 kHz control
+	// thread has faulted. Every link indicator above stays green in that case.
+	//
+	// On 2026-08-09 the avatar's control loop died at t=404.7 s and the
+	// operator kept commanding for another 2.5 s: data_msg_rate_hz 200.1,
+	// data_latency_ms 50.4, video 28 fps, all nominal.
+	//
+	// sample_time_ns is stamped by the control thread when it reads the robot,
+	// so it is the one quantity that stops advancing. Alarm on its age, and do
+	// it audibly -- the existing arm indicators are small passive colour
+	// swatches competing with six live numeric plots for attention.
+	{
+		const bool bStale = ComLink->IsArmStateStale(0, kArmStateStaleWarnMs);
+		UIBinder->SetVisibility(FName("armStaleInfo"), bStale);
+		if (bStale) {
+			UIBinder->SetImageColor(FName("avatar_left_arm"), FLinearColor(255, 128, 13));
+		}
+		// Edge-triggered: one warning per stale episode, not one per tick.
+		if (bStale && !bArmStateWasStale_) {
+			SoundFeedback->Play(ESoundType::Warning);
+			if (Logger_) {
+				Logger_->LogEvent(FString::Printf(
+					TEXT("ARM_STATE_STALE side=left age_ms=%.1f remote_state=%d msg_rate_hz=%.1f"),
+					ComLink->GetArmStateAgeMs(0),
+					static_cast<int32>(ComLink->GetArmRemoteState(0)),
+					ComLink->GetArmMsgRateHz(0)));
+			}
+		} else if (!bStale && bArmStateWasStale_ && Logger_) {
+			Logger_->LogEvent(TEXT("ARM_STATE_FRESH side=left"));
+		}
+		bArmStateWasStale_ = bStale;
+	}
+
+	// --- remote fault, drained from the receive thread ----------------------
+	// Distinct from the staleness alarm above: staleness catches a control
+	// loop that stopped without saying so, this catches one that explicitly
+	// reported FAULT. Either alone would have surfaced the 2026-08-09 failure.
+	{
+		const int32 FaultValue = PendingArmFault_.Exchange(-1);
+		if (FaultValue >= 0) {
+			const int32 Index = PendingArmFaultIndex_.Load();
+			SoundFeedback->Play(ESoundType::Warning);
+			UIBinder->SetVisibility(FName("armFaultInfo"), true);
+			if (Logger_) {
+				Logger_->LogEvent(FString::Printf(
+					TEXT("ARM_REMOTE_FAULT side=%s fault_code=%d remote_state=%d"),
+					Index == 0 ? TEXT("left") : TEXT("right"),
+					FaultValue,
+					static_cast<int32>(ComLink->GetArmRemoteState(static_cast<uint8>(Index)))));
+			}
+			UE_LOG(LogTemp, Error, TEXT("OperatorPawn: remote arm %d reported FAULT (code %d)"),
+				Index, FaultValue);
+		} else if (ComLink->GetArmRemoteState(0) != SysState::FAULT) {
+			UIBinder->SetVisibility(FName("armFaultInfo"), false);
+		}
+	}
+
 	const bool bGazeFresh = Gaze->IsGazeFresh();
 	UIBinder->SetImageColor(FName("operator_eye"), bGazeFresh ? FLinearColor::Green : FLinearColor::Red);
 	UIBinder->SetVisibility(FName("gazeOfflineInfo"), !bGazeFresh);
@@ -722,6 +783,21 @@ void AOperatorPawn::Tick(float DeltaTime) {
 		ArmStateMsg RightState = ComLink->PeekArmState(1);
 		Row.RightGripperWidth = RightState.gripper_width;
 		Row.RightGripperGraspState = static_cast<uint8>(RightGraspIndicator->GetDisplayState());
+
+		// --- remote health -------------------------------------------------
+		// Everything above describes the LINK. These describe the AVATAR. On
+		// 2026-08-09 the two disagreed for 2.5 s and nothing recorded it, so
+		// afterwards it was impossible to establish from the logs whether the
+		// avatar had ever reported its fault.
+		Row.ArmRemoteState    = static_cast<uint8>(ComLink->GetArmRemoteState(0));
+		Row.ArmRemoteFault    = static_cast<uint8>(ComLink->GetArmRemoteFault(0));
+		Row.ArmDroppedPackets = static_cast<uint32>(ComLink->GetArmDroppedPackets(0));
+		Row.ArmStateAgeMs     = ComLink->GetArmStateAgeMs(0);
+
+		// Which source VideoLatencyMs actually refers to. The viewmode toggle
+		// swaps between the remote avatar feed and the loopback twin feed, and
+		// the reported latency changes by ~6x across that switch.
+		Row.VideoSourceName = VideoFeed ? VideoFeed->GetActiveSourceName() : FString();
 
 		Logger_->WriteStreamRow(Row);
 	}
@@ -1192,6 +1268,35 @@ void AOperatorPawn::SendArmCommands() {
 	bool bLeftActive = LeftArmResetState_ == EArmResetState::Idle && ComLink->GetArmRemoteState(0) == SysState::ENGAGED;
 	bool bRightActive = RightArmResetState_ == EArmResetState::Idle && ComLink->GetArmRemoteState(1) == SysState::ENGAGED;
 
+	// Log the command at the send site, not on the HUD tick. See FCommandRow:
+	// stream.csv samples the operator's hand at ~26 Hz, which is below Nyquist
+	// for the delays we are trying to measure, and it is why the
+	// hand-to-command lag was unrecoverable from the 2026-08-09 logs.
+	//
+	// Call AFTER SendArmCommand: TDeviceStream::Send takes the message by
+	// non-const reference and stamps header.sequence there, so reading it
+	// beforehand yields 0. When a twin stream is configured the same message
+	// goes to both peers and each stamps its own counter, so the value
+	// recorded is whichever wrote last -- fine as a join key against the
+	// avatar log only because both peers receive the identical command in the
+	// same tick.
+	auto LogCommand = [this](uint8 Index, const ArmCommandMsg& Msg, bool bSent,
+	                         UTrackedControllerComponent* Tracked) {
+		if (!Logger_) return;
+		FCommandRow Row;
+		Row.TimestampNs   = FTeleOpLogger::NowNs();
+		Row.DeviceIndex   = Index;
+		Row.Sequence      = Msg.header.sequence;
+		Row.bSent         = bSent;
+		Row.Px = Msg.position[0];   Row.Py = Msg.position[1];   Row.Pz = Msg.position[2];
+		Row.Qw = Msg.quaternion[0]; Row.Qx = Msg.quaternion[1];
+		Row.Qy = Msg.quaternion[2]; Row.Qz = Msg.quaternion[3];
+		Row.Gripper       = Msg.gripper;
+		Row.ClutchFactor  = Tracked ? Tracked->GetClutchFactor() : 0.f;
+		Row.bFullClutch   = Tracked ? Tracked->IsFullClutch()    : false;
+		Logger_->WriteCommandRow(Row);
+	};
+
 	FQuat HMDYawQuat = FQuat::Identity;
 	if (bHMDOriginValid_) {
 		float CaptureYaw = HMDOrigin_.GetRotation().Rotator().Yaw;
@@ -1207,6 +1312,11 @@ void AOperatorPawn::SendArmCommands() {
 		Msg.gripper = LeftTracked->IsGraspHeld() ? 1.0f : 0.0f;
 		if (bLeftActive)
 			ComLink->SendArmCommand(Msg, 0);
+		// Logged whether or not it was sent: a suppressed command still tells
+		// you what the operator was doing, and the sent flag distinguishes
+		// "operator idle" from "command withheld because the arm was not
+		// ENGAGED" -- indistinguishable in stream.csv.
+		LogCommand(0, Msg, bLeftActive, LeftTracked);
 		if (GhostOverlay)
 			GhostOverlay->SetIntentPose(0, Msg.position, Msg.quaternion, Msg.gripper, LeftTracked->IsFullClutch());
 	}
@@ -1220,6 +1330,7 @@ void AOperatorPawn::SendArmCommands() {
 		Msg.gripper = RightTracked->IsGraspHeld() ? 1.0f : 0.0f;
 		if (bRightActive)
 			ComLink->SendArmCommand(Msg, 1);
+		LogCommand(1, Msg, bRightActive, RightTracked);
 		if (GhostOverlay)
 			GhostOverlay->SetIntentPose(1, Msg.position, Msg.quaternion, Msg.gripper, RightTracked->IsFullClutch());
 	}
@@ -1334,6 +1445,13 @@ void AOperatorPawn::SendGazeSample(){
 	msgpack::sbuffer Buf;
 	msgpack::pack(Buf, Msg);
 	ComLink->SendReliable("gaze_sample", Buf, false);
+}
+
+void AOperatorPawn::HandleArmFault(uint8 DeviceIndex, FaultCode Code) {
+	// Called on ComLink's receive thread. Do not touch UI, audio or the logger
+	// here -- all three assume the game thread. Record and let Tick consume it.
+	PendingArmFaultIndex_.Store(static_cast<int32>(DeviceIndex));
+	PendingArmFault_.Store(static_cast<int32>(Code));
 }
 
 void AOperatorPawn::HandleVoiceAnnotation(const FVoiceAnnotation& Ann) {

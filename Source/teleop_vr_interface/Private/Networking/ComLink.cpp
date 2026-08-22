@@ -15,6 +15,13 @@ void UComLink::BeginPlay() {
     for (int32 i = 0; i < 2; ++i) {
         ArmStreams_[i] = MakeUnique<ArmStream>();
         ArmStreams_[i]->Open(RemoteIP, ArmSendPorts[i], ArmRecvPorts[i]);
+        // Re-broadcast per-stream faults at ComLink level. Without this the
+        // stream's OnFaultDetected has no subscribers and a remote FAULT is
+        // visible only if the operator happens to look at the arm indicator.
+        const uint8 DeviceIndex = static_cast<uint8>(i);
+        ArmStreams_[i]->OnFaultDetected.AddLambda([this, DeviceIndex](FaultCode Code) {
+            OnArmFault.Broadcast(DeviceIndex, Code);
+        });
     }
 
     HeadStream_ = MakeUnique<HeadStream>();
@@ -218,6 +225,27 @@ float UComLink::GetArmStateLatencyMs(uint8 DeviceIndex) const {
     if (DeviceIndex < 2 && ArmStreams_[DeviceIndex])
         return ArmStreams_[DeviceIndex]->GetStateLatencyMs();
     return 0.f;
+}
+
+float UComLink::GetArmStateAgeMs(uint8 DeviceIndex) const {
+    if (DeviceIndex < 2 && ArmStreams_[DeviceIndex])
+        return ArmStreams_[DeviceIndex]->GetStateAgeMs();
+    return -1.f;
+}
+
+int32 UComLink::GetArmDroppedPackets(uint8 DeviceIndex) const {
+    if (DeviceIndex < 2 && ArmStreams_[DeviceIndex])
+        return static_cast<int32>(ArmStreams_[DeviceIndex]->DroppedPackets());
+    return 0;
+}
+
+bool UComLink::IsArmStateStale(uint8 DeviceIndex, float ThresholdMs) const {
+    const float AgeMs = GetArmStateAgeMs(DeviceIndex);
+    // Negative means the sender predates sample_time_ns. Reporting "stale" in
+    // that case would fire the alarm continuously against an older avatar
+    // build, which trains the operator to ignore it -- worse than no alarm.
+    if (AgeMs < 0.f) return false;
+    return AgeMs > ThresholdMs;
 }
 
 float UComLink::GetArmMsgRateHz(uint8 DeviceIndex) const {

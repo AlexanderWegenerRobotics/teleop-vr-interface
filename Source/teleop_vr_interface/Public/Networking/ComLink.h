@@ -105,7 +105,32 @@ public:
     float GetArmStateLatencyMs(uint8 DeviceIndex = 0) const;
     float GetArmMsgRateHz(uint8 DeviceIndex = 0) const;
 
+    // Freshness of the remote's data, as opposed to freshness of the packets.
+    // -1 = the sender does not report sample time (older build).
+    UFUNCTION(BlueprintCallable, Category = "ComLink")
+    float GetArmStateAgeMs(uint8 DeviceIndex = 0) const;
+
+    UFUNCTION(BlueprintCallable, Category = "ComLink")
+    int32 GetArmDroppedPackets(uint8 DeviceIndex = 0) const;
+
+    // True when packets are still arriving but the payload has stopped
+    // changing -- the failure mode that looked like a perfectly healthy link
+    // on 2026-08-09. Threshold defaults to 5x the 200 Hz publish period.
+    UFUNCTION(BlueprintCallable, Category = "ComLink")
+    bool IsArmStateStale(uint8 DeviceIndex = 0, float ThresholdMs = 25.f) const;
+
     UPROPERTY(BlueprintAssignable) FOnConnectionChanged OnAvatarConnectionChanged;
+
+    // Fires when an arm stream receives a packet whose header reports FAULT.
+    //
+    // TDeviceStream has broadcast OnFaultDetected since the fault path was
+    // written, but nothing ever bound to it, so a remote fault reached the
+    // operator only as a small colour swatch that had to be noticed. This
+    // re-exposes it at ComLink level where the pawn can actually subscribe.
+    // Fires from the receive thread -- handlers must be cheap and thread-safe,
+    // or marshal to the game thread.
+    DECLARE_MULTICAST_DELEGATE_TwoParams(FOnArmFault, uint8 /*DeviceIndex*/, FaultCode);
+    FOnArmFault OnArmFault;
 
 private:
     TUniquePtr<ArmStream>   ArmStreams_[2];

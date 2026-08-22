@@ -54,6 +54,21 @@ inline uint64_t timestamp_ns() {
 struct MsgHeader {
     uint32_t  sequence;
     uint64_t  timestamp_ns;
+    // Wall-clock instant at which the DATA in this message was sampled, as
+    // opposed to timestamp_ns, which is stamped at send time.
+    //
+    // MUST stay byte-identical to MsgHeader in the simulator repo's
+    // include/common.hpp -- this is a raw memcpy wire format with no
+    // versioning, so a mismatch is silent corruption, not a parse error.
+    //
+    // Rationale: on the avatar, arm state is published by the 200 Hz state
+    // thread but sampled by the 1 kHz control thread. A dead control thread
+    // still yields perfectly healthy transport metrics, because the state
+    // thread keeps resending the last pose with a fresh timestamp_ns. Compute
+    // staleness as (now - sample_time_ns), not from timestamp_ns.
+    //
+    // Zero means the sender predates this field: unknown, not stale.
+    uint64_t  sample_time_ns;
     SysState  state;
     FaultCode fault_code;
     DeviceId  device_id;
