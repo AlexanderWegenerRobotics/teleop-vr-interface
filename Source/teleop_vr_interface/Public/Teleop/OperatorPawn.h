@@ -181,6 +181,7 @@ private:
 	// AOperatorPawn::BeginPlay) so the viewmodeButton handler in
 	// UpdateStateMachine can use them without holding onto UTeleOpConfig.
 	bool    bHasTwinMainStream_ = false;
+	bool    bOverlayEnabled_    = true;
 	FString TwinMainStreamKey_;   // VideoFeedComponent registration key (== Config->Stream.TwinStream.Name)
 	FString TwinMainStreamLabel_; // viewmode_label text when twin is active ("TWIN", as configured)
 	FString TwinPiPEntryName_;    // PiP menu entry text (TwinMainStreamLabel_.ToLower(), e.g. "twin")

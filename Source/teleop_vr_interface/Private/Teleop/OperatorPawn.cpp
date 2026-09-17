@@ -257,6 +257,7 @@ void AOperatorPawn::BeginPlay() {
 	GhostOverlay->StaticCamLookAt          = Config->Overlay.StaticCamLookAt;
 	GhostOverlay->StaticCamUp              = Config->Overlay.StaticCamUp;
 	GhostOverlay->CaptureFOV               = Config->Overlay.CaptureFOV;
+	GhostOverlay->CaptureFPS               = Config->Overlay.CaptureFPS;
 	GhostOverlay->StereoCaptureFOV         = Config->Overlay.StereoCaptureFOV;
 	GhostOverlay->StereoEyeOffsetCm        = Config->Overlay.StereoEyeOffsetCm;
 	GhostOverlay->PlaneDistance            = Config->Overlay.PlaneDistance;
@@ -337,16 +338,20 @@ void AOperatorPawn::BeginPlay() {
 		TwinMainStreamLabel_ = Config->Stream.TwinStream.Name;
 	}
 	GhostOverlay->SetStereoMode(Config->Stream.bStereo);
+	bOverlayEnabled_ = Config->Overlay.bEnabled;
+	GhostOverlay->SetGhostEnabled(bOverlayEnabled_);
 
 	Super::BeginPlay();
 
-	GhostOverlay->SetGhostVisible(false);
+	GhostOverlay->SetGhostVisible(bOverlayEnabled_);
 
-	LeftGraspIndicator->Initialize(GhostOverlay, ComLink, 0);
-	RightGraspIndicator->Initialize(GhostOverlay, ComLink, 1);
+	if (bOverlayEnabled_) {
+		LeftGraspIndicator->Initialize(GhostOverlay, ComLink, 0);
+		RightGraspIndicator->Initialize(GhostOverlay, ComLink, 1);
 
-	LeftWorkspaceBoundary->Initialize(GhostOverlay, 0);
-	RightWorkspaceBoundary->Initialize(GhostOverlay, 1);
+		LeftWorkspaceBoundary->Initialize(GhostOverlay, 0);
+		RightWorkspaceBoundary->Initialize(GhostOverlay, 1);
+	}
 
 	if (Config->Stream.bStereo) {
 		VideoFeed->SetGhostTextures(GhostOverlay->GetRenderTargetLeft(), GhostOverlay->GetRenderTargetRight());
@@ -486,7 +491,7 @@ void AOperatorPawn::BeginPlay() {
 
 	float AspectRatio = 1280.f / 720.f;
 	FGazeProjection::ComputeQuadSize(VideoFeed->PlaneDistance, VideoFeed->FOVCoverage, AspectRatio, VideoQuadWidth_, VideoQuadHeight_, VideoFeed->HmdHFovDeg);
-	{
+	if (Config->Stream.bVideoLogEnabled) {
 		FActorSpawnParameters Params;
 		Params.Owner = this;
 		VideoLogger_ = GetWorld()->SpawnActor<AVideoLogger>(AVideoLogger::StaticClass(), FTransform::Identity, Params);
@@ -1101,7 +1106,7 @@ void AOperatorPawn::UpdateStateMachine() {
 		if (VideoFeed->SetActiveSource(TargetSourceKey)) {
 			UIBinder->SetText(FName("viewmode_label"), *TargetLabel);
 			UIBinder->SetButtonToggled(FName("viewmodeButton"), bCurrentlyAvatar);
-			GhostOverlay->SetGhostVisible(bCurrentlyAvatar);
+			GhostOverlay->SetGhostVisible(!bCurrentlyAvatar);
 		}
 	}
 

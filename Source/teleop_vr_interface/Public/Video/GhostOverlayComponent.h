@@ -34,7 +34,12 @@ public:
     void SetCamera(UCameraComponent* InCamera) { CameraRef = InCamera; }
     void SetComLink(UComLink* InComLink) { ComLinkRef = InComLink; }
     void SetStereoMode(bool bStereo) { bStereo_ = bStereo; }
+    void SetGhostEnabled(bool bEnabled) { bGhostEnabled_ = bEnabled; }
+    bool IsGhostEnabled() const { return bGhostEnabled_; }
+
     void SetGhostVisible(bool bVisible);
+    void UpdateCaptureTick(float DeltaTime);
+    void ClearCaptureTargets();
     bool IsGhostVisible() const { return bGhostVisible_; }
     UTextureRenderTarget2D* GetRenderTarget()      const { return CaptureRT; }
     UTextureRenderTarget2D* GetRenderTargetLeft()  const { return CaptureRTLeft; }
@@ -143,6 +148,9 @@ public:
     // image it annotates -- both are set from overlay.json's hmd_hfov_deg.
     UPROPERTY(EditAnywhere, Category = "Ghost|Overlay")
     float HmdHFovDeg = 110.f;
+
+    UPROPERTY(EditAnywhere, Category = "Ghost|Capture")
+    float CaptureFPS = 30.f;
 
     UPROPERTY(EditAnywhere, Category = "Ghost|Capture")
     float CaptureFOV = 75.2f;          // mono mode capture FOV
@@ -351,6 +359,9 @@ private:
     bool bPipelineReady = false;
     bool bStereo_       = false;
     bool bGhostVisible_ = false;
+    bool bGhostEnabled_ = true;
+    bool bForceCapture_ = false;
+    float CaptureAccum_ = 0.f;
 
     // Stereo eye captures and render targets (null in mono mode).
     UPROPERTY()

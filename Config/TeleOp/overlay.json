@@ -1,4 +1,6 @@
 {
+    "enabled":               false,
+
     "near_threshold_m":      0.03,
     "far_threshold_m":       0.15,
     "min_opacity":           0.15,
@@ -27,8 +29,9 @@
     "capture_fov":           75.2,
     "stereo_capture_fov":    75.2,
     "stereo_eye_offset_cm":  3.05,
-    "render_target_width":   1280,
-    "render_target_height":  960,
+    "render_target_width":   640,
+    "render_target_height":  480,
+    "capture_fps":           30.0,
 
     "_quad_comment": "Face-locked quad geometry, shared by the ghost overlay layer AND the video layer (and read by gaze projection). One source of truth on purpose: if these diverge the ghost slides off the image it annotates and gaze mistargets. hmd_hfov_deg is the headset's horizontal FOV -- ~110 for Vive Pro / Pro Eye.",
     "plane_distance":        700.0,

@@ -9,6 +9,7 @@
 #include "Input/TrackedControllerComponent.h"
 #include "Materials/MaterialInterface.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "Kismet/KismetRenderingLibrary.h"
 #include "Networking/ComLink.h"
 #include "Shared/AvatarTypes.h"
 #include "UObject/UnrealType.h"
@@ -21,6 +22,18 @@ UGhostOverlayComponent::UGhostOverlayComponent() {
 // Resolve references, build the capture/render-target/stereo-layer pipeline.
 void UGhostOverlayComponent::BeginPlay(){
     Super::BeginPlay();
+
+    if (!bGhostEnabled_) {
+        CreateRenderTarget();
+        bPipelineReady  = false;
+        bGhostVisible_  = false;
+        SetComponentTickEnabled(false);
+        UE_LOG(LogTemp, Warning,
+            TEXT("GhostOverlay: DISABLED via overlay.json \"enabled\": false — ")
+            TEXT("no meshes, no scene captures, no tick. Grasp indicators and ")
+            TEXT("workspace boundary are off with it."));
+        return;
+    }
 
     if (!CameraRef) {
         if (AActor* Owner = GetOwner()) {
@@ -79,6 +92,7 @@ void UGhostOverlayComponent::TickComponent(float DeltaTime, ELevelTick TickType,
     UpdateGhostOpacity();
     UpdateGhostPose();
     UpdateLeftArmPose();
+    UpdateCaptureTick(DeltaTime);
 }
 
 // Load mesh and material assets from /Game.
@@ -150,7 +164,7 @@ void UGhostOverlayComponent::CreateSceneCapture() {
     SceneCapture->CaptureSource              = ESceneCaptureSource::SCS_FinalColorLDR;
     SceneCapture->PrimitiveRenderMode        = ESceneCapturePrimitiveRenderMode::PRM_UseShowOnlyList;
     SceneCapture->FOVAngle                   = CaptureFOV;
-    SceneCapture->bCaptureEveryFrame         = true;
+    SceneCapture->bCaptureEveryFrame         = false;
     SceneCapture->bCaptureOnMovement         = false;
     SceneCapture->bAlwaysPersistRenderingState = true;
     SceneCapture->CompositeMode              = SCCM_Overwrite;
@@ -258,7 +272,7 @@ void UGhostOverlayComponent::CreateSceneCapture() {
             Cap->CaptureSource               = ESceneCaptureSource::SCS_FinalColorLDR;
             Cap->PrimitiveRenderMode         = ESceneCapturePrimitiveRenderMode::PRM_UseShowOnlyList;
             Cap->FOVAngle                    = StereoCaptureFOV;
-            Cap->bCaptureEveryFrame          = true;
+            Cap->bCaptureEveryFrame          = false;
             Cap->bCaptureOnMovement          = false;
             Cap->bAlwaysPersistRenderingState = true;
             Cap->CompositeMode               = SCCM_Overwrite;
@@ -307,13 +321,45 @@ void UGhostOverlayComponent::RegisterOverlayComponent(UPrimitiveComponent* Comp)
 }
 
 void UGhostOverlayComponent::SetGhostVisible(bool bVisible) {
+    if (!bGhostEnabled_) return;
+
     bGhostVisible_ = bVisible;
     if (StereoLayer) StereoLayer->SetVisibility(bVisible);
-    if (SceneCapture) SceneCapture->bCaptureEveryFrame = bVisible && !bStereo_;
-    if (bStereo_) {
-        if (SceneCaptureLeft)  SceneCaptureLeft->bCaptureEveryFrame  = bVisible;
-        if (SceneCaptureRight) SceneCaptureRight->bCaptureEveryFrame = bVisible;
+
+    if (bVisible) {
+        bForceCapture_ = true;
+        CaptureAccum_  = 0.f;
     }
+    else {
+        ClearCaptureTargets();
+    }
+}
+
+void UGhostOverlayComponent::UpdateCaptureTick(float DeltaTime) {
+    if (!bGhostVisible_) return;
+
+    if (CaptureFPS > 0.f && !bForceCapture_) {
+        const float Period = 1.f / CaptureFPS;
+        CaptureAccum_ += DeltaTime;
+        if (CaptureAccum_ < Period) return;
+        CaptureAccum_ = FMath::Fmod(CaptureAccum_, Period);
+    }
+    bForceCapture_ = false;
+
+    if (bStereo_) {
+        if (SceneCaptureLeft)  SceneCaptureLeft->CaptureScene();
+        if (SceneCaptureRight) SceneCaptureRight->CaptureScene();
+    }
+    else if (SceneCapture) {
+        SceneCapture->CaptureScene();
+    }
+}
+
+void UGhostOverlayComponent::ClearCaptureTargets() {
+    const FLinearColor Transparent(0.f, 0.f, 0.f, 0.f);
+    if (CaptureRT)      UKismetRenderingLibrary::ClearRenderTarget2D(this, CaptureRT,      Transparent);
+    if (CaptureRTLeft)  UKismetRenderingLibrary::ClearRenderTarget2D(this, CaptureRTLeft,  Transparent);
+    if (CaptureRTRight) UKismetRenderingLibrary::ClearRenderTarget2D(this, CaptureRTRight, Transparent);
 }
 
 void UGhostOverlayComponent::CreateStereoLayer(){

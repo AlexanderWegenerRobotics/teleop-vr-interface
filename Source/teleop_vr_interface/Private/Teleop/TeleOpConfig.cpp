@@ -100,6 +100,10 @@ bool UTeleOpConfig::LoadStream(const FString& Path) {
     Obj->TryGetNumberField(TEXT("right_port"),          Stream.RightPort);
     Obj->TryGetNumberField(TEXT("right_feedback_port"), Stream.RightFeedbackPort);
     Obj->TryGetNumberField(TEXT("right_status_port"),   Stream.RightStatusPort);
+    Obj->TryGetBoolField(TEXT("video_log_enabled"), Stream.bVideoLogEnabled);
+    UE_LOG(LogTemp, Log, TEXT("TeleOpConfig: video logging %s"),
+        Stream.bVideoLogEnabled ? TEXT("ENABLED") : TEXT("DISABLED (\"video_log_enabled\": false)"));
+
     Stream.PiPStreams.Empty();
     const TArray<TSharedPtr<FJsonValue>>* PiPArray = nullptr;
     if (Obj->TryGetArrayField(TEXT("pip_streams"), PiPArray) && PiPArray) {
@@ -227,6 +231,11 @@ bool UTeleOpConfig::LoadOverlay(const FString& Path) {
     }
 
     const FString Context = TEXT("ghost.json");
+
+    Obj->TryGetBoolField(TEXT("enabled"), Overlay.bEnabled);
+    UE_LOG(LogTemp, Log, TEXT("TeleOpConfig: overlay layer %s"),
+        Overlay.bEnabled ? TEXT("ENABLED") : TEXT("DISABLED (\"enabled\": false)"));
+
     if (!RequireFloat(Obj, TEXT("near_threshold_m"),   Overlay.NearThresholdM,   Context)) return false;
     if (!RequireFloat(Obj, TEXT("far_threshold_m"),    Overlay.FarThresholdM,    Context)) return false;
     if (!RequireFloat(Obj, TEXT("min_opacity"),        Overlay.MinOpacity,       Context)) return false;
@@ -248,6 +257,7 @@ bool UTeleOpConfig::LoadOverlay(const FString& Path) {
     // Optional -- absent keeps the default (110, Vive Pro). Sizes the face-locked
     // quads for both the ghost overlay and the video layer.
     Obj->TryGetNumberField(TEXT("hmd_hfov_deg"), Overlay.HmdHFovDeg);
+    Obj->TryGetNumberField(TEXT("capture_fps"),  Overlay.CaptureFPS);
 
     // Legacy flat keys. Still read first so pre-"viewpoint" overlay configs load
     // unchanged; the nested block below overrides them when present.

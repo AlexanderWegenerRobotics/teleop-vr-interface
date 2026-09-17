@@ -8,17 +8,37 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdarg.h>
+#include <io.h>
+
+static bool GstConsoleLogging = false;
+
+extern "C" void GStreamerSetConsoleLogging(bool enable)
+{
+    GstConsoleLogging = enable;
+}
+
+static void GstPrint(const char* fmt, ...)
+{
+    if (!GstConsoleLogging) return;
+    if (!stdout || _fileno(stdout) < 0) return;
+    va_list args;
+    va_start(args, fmt);
+    vfprintf(stdout, fmt, args);
+    va_end(args);
+}
+
 
 extern "C" void GStreamerInit()
 {
     gst_init(nullptr, nullptr);
-    printf("GStreamer initialized\n");
+    GstPrint("GStreamer initialized\n");
 }
 
 extern "C" void GStreamerDeinit()
 {
     gst_deinit();
-    printf("GStreamer deinitialized\n");
+    GstPrint("GStreamer deinitialized\n");
 }
 
 extern "C" void* GStreamerCreatePipeline(const char* description)
@@ -27,7 +47,7 @@ extern "C" void* GStreamerCreatePipeline(const char* description)
     GstElement* pipeline = gst_parse_launch(description, &error);
 
     if (error) {
-        printf("Pipeline error: %s\n", error->message);
+        GstPrint("Pipeline error: %s\n", error->message);
         g_error_free(error);
         return nullptr;
     }
@@ -257,13 +277,13 @@ extern "C" bool GStreamerAddRtpProbe(
 
     GstElement* element = gst_bin_get_by_name(GST_BIN(pipeline), element_name);
     if (!element) {
-        printf("[GStreamer] GStreamerAddRtpProbe: element '%s' not found\n", element_name);
+        GstPrint("[GStreamer] GStreamerAddRtpProbe: element '%s' not found\n", element_name);
         return false;
     }
 
     GstPad* pad = gst_element_get_static_pad(element, "sink");
     if (!pad) {
-        printf("[GStreamer] GStreamerAddRtpProbe: no sink pad on '%s'\n", element_name);
+        GstPrint("[GStreamer] GStreamerAddRtpProbe: no sink pad on '%s'\n", element_name);
         gst_object_unref(element);
         return false;
     }
@@ -281,7 +301,7 @@ extern "C" bool GStreamerAddRtpProbe(
     gst_object_unref(pad);
     gst_object_unref(element);
 
-    printf("[GStreamer] RTP probe attached to '%s' sink pad\n", element_name);
+    GstPrint("[GStreamer] RTP probe attached to '%s' sink pad\n", element_name);
     return true;
 }
 
@@ -337,13 +357,13 @@ extern "C" bool GStreamerAddFecProbe(
 
     GstElement* element = gst_bin_get_by_name(GST_BIN(pipeline), element_name);
     if (!element) {
-        printf("[GStreamer] GStreamerAddFecProbe: element '%s' not found\n", element_name);
+        GstPrint("[GStreamer] GStreamerAddFecProbe: element '%s' not found\n", element_name);
         return false;
     }
 
     GstPad* pad = gst_element_get_static_pad(element, "src");
     if (!pad) {
-        printf("[GStreamer] GStreamerAddFecProbe: no src pad on '%s'\n", element_name);
+        GstPrint("[GStreamer] GStreamerAddFecProbe: no src pad on '%s'\n", element_name);
         gst_object_unref(element);
         return false;
     }
@@ -361,7 +381,7 @@ extern "C" bool GStreamerAddFecProbe(
     gst_object_unref(pad);
     gst_object_unref(element);
 
-    printf("[GStreamer] FEC probe attached to '%s' src pad\n", element_name);
+    GstPrint("[GStreamer] FEC probe attached to '%s' src pad\n", element_name);
     return true;
 }
 

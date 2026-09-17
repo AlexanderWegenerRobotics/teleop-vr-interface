@@ -43,6 +43,7 @@ struct FStreamConfig
     GENERATED_BODY()
     FString RemoteIP = TEXT("127.0.0.1");
     bool    bStereo          = false;
+    bool    bVideoLogEnabled = true;
     int32   Port             = 5004;
     int32   FeedbackPort     = 5005;
     int32   TimestampPort    = 5006;
@@ -142,6 +143,7 @@ USTRUCT()
 struct FOverlayConfig
 {
     GENERATED_BODY()
+    bool  bEnabled       = true;
     float NearThresholdM = 0.03f;
     float FarThresholdM  = 0.15f;
     float MinOpacity     = 0.15f;
@@ -174,6 +176,7 @@ struct FOverlayConfig
     // Getting this wrong keeps the overlay aligned at the image centre while it
     // drifts progressively toward the edges -- reads like a calibration error.
     float CaptureFOV         = 75.2f;
+    float CaptureFPS         = 30.0f;
     float StereoCaptureFOV   = 75.2f;
     float StereoEyeOffsetCm  = 3.05f;
     int32 RenderTargetWidth  = 1280;
