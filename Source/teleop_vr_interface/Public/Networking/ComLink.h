@@ -121,7 +121,10 @@ public:
 
     UPROPERTY(BlueprintAssignable) FOnConnectionChanged OnAvatarConnectionChanged;
 
-    // Fires when an arm stream receives a packet whose header reports FAULT.
+    // Fires when an arm stream ENTERS FAULT, or reports a different fault code
+    // without having left FAULT -- not once per packet. A latched fault on the
+    // avatar holds SysState::FAULT in every header until an operator reset, so
+    // a per-packet delegate is a 200 Hz event stream, not an alarm.
     //
     // TDeviceStream has broadcast OnFaultDetected since the fault path was
     // written, but nothing ever bound to it, so a remote fault reached the

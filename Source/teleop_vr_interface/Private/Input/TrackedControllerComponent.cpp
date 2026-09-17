@@ -65,7 +65,7 @@ void UTrackedControllerComponent::TickComponent(float DeltaTime, ELevelTick Tick
     }
 
     UpdateClutch();
-    UpdateScaledTranslation();
+    UpdateScaledTranslation(DeltaTime);
 
     if (bDrawDebugRay && MotionController && TrackingState == EControllerTrackingState::Tracking) {
         FVector Pos = MotionController->GetComponentLocation();
@@ -196,12 +196,55 @@ float UTrackedControllerComponent::GetClutchFactor() const {
     return ComputeClutchScale(TriggerValue);
 }
 
-void UTrackedControllerComponent::UpdateScaledTranslation() {
+// One-euro filter (Casiez et al.). A fixed low-pass would trade jitter against
+// lag at a single operating point; this one raises its cutoff with speed, so a
+// stationary hand is smoothed hard and a moving one is barely delayed.
+//
+// The tracker is the dominant noise source in this system: in session 002 the
+// operator command carried 3.0 mm rms above 4 Hz on x, with 28% of its velocity
+// power above 6 Hz -- above anything a hand produces, and doubled on the way out
+// by ScaleFactor. See claude/arm-fault-root-cause-001.md.
+FVector UTrackedControllerComponent::FilterOneEuro(const FVector& Raw, float DeltaTime) {
+    if (FilterMinCutoff <= 0.f || DeltaTime <= KINDA_SMALL_NUMBER) return Raw;
+
+    if (!bFilterPrimed) {
+        FilteredLocation   = Raw;
+        FilteredDerivative = FVector::ZeroVector;
+        bFilterPrimed      = true;
+        return Raw;
+    }
+
+    auto Alpha = [DeltaTime](float CutoffHz) {
+        const float Tau = 1.f / (2.f * PI * FMath::Max(CutoffHz, KINDA_SMALL_NUMBER));
+        return 1.f / (1.f + Tau / DeltaTime);
+    };
+
+    const FVector RawDerivative = (Raw - FilteredLocation) / DeltaTime;
+    const float DAlpha = Alpha(FilterDerivCutoff);
+    FilteredDerivative = DAlpha * RawDerivative + (1.f - DAlpha) * FilteredDerivative;
+
+    const float Cutoff = FilterMinCutoff + FilterBeta * FilteredDerivative.Size();
+    const float A = Alpha(Cutoff);
+    FilteredLocation = A * Raw + (1.f - A) * FilteredLocation;
+    return FilteredLocation;
+}
+
+void UTrackedControllerComponent::ResetOneEuro() {
+    bFilterPrimed = false;
+}
+
+void UTrackedControllerComponent::UpdateScaledTranslation(float DeltaTime) {
+    // Any frame we do not integrate invalidates the reference: leaving
+    // PrevTrackedLocation standing across a dropout or a clutch makes the first
+    // frame afterwards integrate the whole gap in one step.
     if (!bOriginValid || !MotionController || TrackingState != EControllerTrackingState::Tracking || bFullClutch) {
+        bPrevLocationValid = false;
+        ResetOneEuro();
         return;
     }
 
-    FVector CurrentLocation = ControlPointLocation(MotionController->GetComponentTransform());
+    FVector CurrentLocation = FilterOneEuro(
+        ControlPointLocation(MotionController->GetComponentTransform()), DeltaTime);
 
     if (!bPrevLocationValid) {
         PrevTrackedLocation = CurrentLocation;
@@ -210,6 +253,32 @@ void UTrackedControllerComponent::UpdateScaledTranslation() {
     }
 
     FVector TickDelta = CurrentLocation - PrevTrackedLocation;
+
+    // A tracked step implying more than MaxTrackedSpeed is a tracker
+    // discontinuity, not an operator. Integrating it verbatim is how a
+    // single-frame glitch became a 143 mm command step and faulted the arm on
+    // 2026-09-16 -- see claude/arm-fault-root-cause-001.md. Re-seed and skip the
+    // frame: the operator loses this frame's motion, which is the cheaper error.
+    const float GuardDt = FMath::Min(DeltaTime, MaxGuardWindow);
+    if (GuardDt > KINDA_SMALL_NUMBER && MaxTrackedSpeed > 0.f) {
+        const float StepCm = TickDelta.Size();
+        const float MaxStepCm = MaxTrackedSpeed * GuardDt;
+        if (StepCm > MaxStepCm) {
+            ++RejectedTrackingJumps;
+            const double NowS = FPlatformTime::Seconds();
+            if (NowS - LastJumpLogTime > 1.0) {
+                LastJumpLogTime = NowS;
+                UE_LOG(LogTemp, Warning,
+                    TEXT("TrackedController[%s]: rejected tracking jump %.1f cm in %.1f ms (%.2f m/s, limit %.2f m/s), total %d"),
+                    MotionController ? *MotionController->GetName() : TEXT("?"),
+                    StepCm, DeltaTime * 1000.f, StepCm / GuardDt / 100.f,
+                    MaxTrackedSpeed / 100.f, RejectedTrackingJumps);
+            }
+            PrevTrackedLocation = CurrentLocation;
+            return;
+        }
+    }
+
     float ClutchScale = ComputeClutchScale(TriggerValue);
     ScaledTranslation += TickDelta * ClutchScale * ScaleFactor;
     PrevTrackedLocation = CurrentLocation;
@@ -308,7 +377,10 @@ void UTrackedControllerComponent::UpdateClutch() {
 
     if (bFullClutch && MotionController) {
         Origin = MotionController->GetComponentTransform();
-        PrevTrackedLocation = Origin.GetLocation();
+        // ControlPointLocation, not GetLocation: everywhere else seeds this from
+        // the control point, and mixing the two leaves a ControlPointOffset-sized
+        // step waiting to be integrated.
+        PrevTrackedLocation = ControlPointLocation(Origin);
     }
 
     bWasFullClutch = bFullClutch;
@@ -320,7 +392,39 @@ void UTrackedControllerComponent::UpdateTrackingState() {
         return;
     }
 
-    if (!MotionController->IsTracked()) {
+    // IsTracked() returns bTracked, which UMotionControllerComponent sets from
+    // whether GetControllerOrientationAndPosition() produced a pose at all --
+    // not from whether that pose is optically tracked. OpenXR reports position
+    // as VALID for an inferred pose and only clears _TRACKED_BIT, so a wand
+    // SteamVR is dead-reckoning off its IMU still answers IsTracked() == true.
+    // CurrentTrackingStatus, set from GetControllerTrackingStatus(), is the
+    // field that separates the two.
+    //
+    // This matters with one base station: the wand drops below the sensor count
+    // the solver needs without any visible occlusion, position then comes from a
+    // double-integrated accelerometer and drifts tens of mm in a fraction of a
+    // second, and the snap back when optical lock returns lands in one frame.
+    // Integrating that is indistinguishable from the operator moving their hand
+    // 70 mm in 39 ms -- which is what the command log showed while the operator
+    // was holding still. See claude/session-002-findings.md.
+    //
+    // Treat inertial-only as Stale: UpdateScaledTranslation stops integrating
+    // and drops its reference, so the recovery snap is discarded rather than
+    // accumulated, and SendArmCommands withholds the command for those frames.
+    const bool bOpticallyTracked = MotionController->IsTracked()
+        && MotionController->CurrentTrackingStatus == ETrackingStatus::Tracked;
+
+    if (!bOpticallyTracked) {
+        if (MotionController->CurrentTrackingStatus == ETrackingStatus::InertialOnly) {
+            ++InertialOnlyFrames;
+            const double NowS = FPlatformTime::Seconds();
+            if (NowS - LastInertialLogTime > 1.0) {
+                LastInertialLogTime = NowS;
+                UE_LOG(LogTemp, Warning,
+                    TEXT("TrackedController[%s]: inertial-only, no optical lock - not integrating (%d frames so far)"),
+                    *MotionController->GetName(), InertialOnlyFrames);
+            }
+        }
         double TimeSinceLast = FPlatformTime::Seconds() - LastTrackingTimestamp;
         TrackingState = (TimeSinceLast > StaleThreshold)
             ? EControllerTrackingState::Lost

@@ -1,6 +1,10 @@
 #include "Teleop/OperatorPawn.h"
 
 extern ENGINE_API uint32 GGPUFrameTime;
+// The same cycle counters stat unit reads. Logged rather than drawn: the stat
+// overlay does not composite under stereo rendering, so it is invisible in VR.
+extern RENDERCORE_API uint32 GGameThreadTime;
+extern RENDERCORE_API uint32 GRenderThreadTime;
 #include "Video/GStreamerSource.h"
 #include "Video/LocalPreviewSource.h"
 #include "Teleop/TeleOpConfig.h"
@@ -27,6 +31,11 @@ const FString kAvatarMainSourceName = TEXT("AvatarStream");
 // straight from stream.json's twin_stream.name instead (currently "TWIN"),
 // so this is the one hardcoded half of the pair.
 const FString kAvatarMainLabel = TEXT("AVATAR");
+
+// Linear-space equivalent of sRGB #FF800D. SetImageColor feeds
+// SetColorAndOpacity, which takes linear 0..1 -- 8-bit channel values there
+// clip to white.
+const FLinearColor kWarnAmber(1.f, 0.216f, 0.004f);
 
 struct FGazeSampleMsg {
     uint64_t frame_id     = 0;
@@ -102,6 +111,9 @@ bool SampleGpuNvml(float& utilPct, float& tempC) {
 
 AOperatorPawn::AOperatorPawn() {
 	PrimaryActorTick.bCanEverTick = true;
+
+	PendingArmFault_[0].Store(-1);
+	PendingArmFault_[1].Store(-1);
 
 	VROrigin = CreateDefaultSubobject<USceneComponent>(TEXT("VROrigin"));
 	SetRootComponent(VROrigin);
@@ -564,7 +576,7 @@ void AOperatorPawn::Tick(float DeltaTime) {
 
 	if (ComLink->GetAvatarState() == ESysState::Engaged) UIBinder->SetImageColor(FName("avatar_torso"), FLinearColor::Green);
 	else if (OperatorState_ == ESysState::Homing || OperatorState_ == ESysState::Awaiting)
-		UIBinder->SetImageColor(FName("avatar_torso"), FLinearColor(255, 128, 13));
+		UIBinder->SetImageColor(FName("avatar_torso"), kWarnAmber);
 	else UIBinder->SetImageColor(FName("avatar_torso"), FLinearColor::Red);
 
 	UIBinder->SetImageColor(FName("avatar_eye"), VideoFeed->IsReceiving() ? FLinearColor::Green : FLinearColor::Red);
@@ -590,8 +602,8 @@ void AOperatorPawn::Tick(float DeltaTime) {
 	{
 		const bool bStale = ComLink->IsArmStateStale(0, kArmStateStaleWarnMs);
 		UIBinder->SetVisibility(FName("armStaleInfo"), bStale);
-		if (bStale) {
-			UIBinder->SetImageColor(FName("avatar_left_arm"), FLinearColor(255, 128, 13));
+		if (bStale && ComLink->GetArmRemoteState(0) != SysState::FAULT) {
+			UIBinder->SetImageColor(FName("avatar_left_arm"), kWarnAmber);
 		}
 		// Edge-triggered: one warning per stale episode, not one per tick.
 		if (bStale && !bArmStateWasStale_) {
@@ -614,23 +626,74 @@ void AOperatorPawn::Tick(float DeltaTime) {
 	// loop that stopped without saying so, this catches one that explicitly
 	// reported FAULT. Either alone would have surfaced the 2026-08-09 failure.
 	{
-		const int32 FaultValue = PendingArmFault_.Exchange(-1);
-		if (FaultValue >= 0) {
-			const int32 Index = PendingArmFaultIndex_.Load();
-			SoundFeedback->Play(ESoundType::Warning);
-			UIBinder->SetVisibility(FName("armFaultInfo"), true);
-			if (Logger_) {
-				Logger_->LogEvent(FString::Printf(
-					TEXT("ARM_REMOTE_FAULT side=%s fault_code=%d remote_state=%d"),
-					Index == 0 ? TEXT("left") : TEXT("right"),
-					FaultValue,
-					static_cast<int32>(ComLink->GetArmRemoteState(static_cast<uint8>(Index)))));
+		bool bNewFault      = false;
+		bool bFaultLatched  = false;
+		for (int32 Index = 0; Index < 2; ++Index) {
+			const int32 FaultValue = PendingArmFault_[Index].Exchange(-1);
+			if (FaultValue >= 0) {
+				bNewFault = true;
+				if (Logger_) {
+					Logger_->LogEvent(FString::Printf(
+						TEXT("ARM_REMOTE_FAULT side=%s fault_code=%d remote_state=%d"),
+						Index == 0 ? TEXT("left") : TEXT("right"),
+						FaultValue,
+						static_cast<int32>(ComLink->GetArmRemoteState(static_cast<uint8>(Index)))));
+				}
+				UE_LOG(LogTemp, Error, TEXT("OperatorPawn: remote arm %d reported FAULT (code %d)"),
+					Index, FaultValue);
 			}
-			UE_LOG(LogTemp, Error, TEXT("OperatorPawn: remote arm %d reported FAULT (code %d)"),
-				Index, FaultValue);
-		} else if (ComLink->GetArmRemoteState(0) != SysState::FAULT) {
-			UIBinder->SetVisibility(FName("armFaultInfo"), false);
+			// Reset watchdog. LeftArmResetState_/RightArmResetState_ only ever
+			// returned to Idle on a "reset_complete" device_event, so a reset
+			// that failed left the arm stuck in Recovering for the rest of the
+			// session: the reset button stays locked via bResetting, stops
+			// showing hover, and SendArmCommands suppresses that arm entirely.
+			// That is what happened to arm_right in session 002 -- the recovery
+			// re-faulted 192 ms in, so reset_complete never arrived.
+			//
+			// The re-fault check is delayed: the avatar is still in FAULT for a
+			// moment after the request, before it transitions to RECOVERING, so
+			// without a grace period every reset would abort itself instantly.
+			EArmResetState& ResetState = (Index == 0) ? LeftArmResetState_ : RightArmResetState_;
+			if (ResetState != EArmResetState::Idle) {
+				const double NowS = FPlatformTime::Seconds();
+				if (ArmResetRequestTime_[Index] <= 0.0) {
+					ArmResetRequestTime_[Index] = NowS;
+				}
+				const double Elapsed = NowS - ArmResetRequestTime_[Index];
+				const bool bRefaulted = Elapsed > kArmResetGraceSec
+					&& ComLink->GetArmRemoteState(static_cast<uint8>(Index)) == SysState::FAULT;
+				const bool bTimedOut = Elapsed > kArmResetTimeoutSec;
+				if (bRefaulted || bTimedOut) {
+					ResetState = EArmResetState::Idle;
+					ArmResetRequestTime_[Index] = 0.0;
+					// The widgets only follow LeftArmResetState_/RightArmResetState_
+					// when something calls this. Clearing the state without it left
+					// the button logically armed but still drawn locked and reading
+					// "Resetting R..." -- which is how a reset that had already been
+					// aborted still looked dead.
+					UpdateButtonStates();
+					if (Logger_) {
+						Logger_->LogEvent(FString::Printf(
+							TEXT("ARM_RESET_ABORTED side=%s reason=%s elapsed_s=%.1f"),
+							Index == 0 ? TEXT("left") : TEXT("right"),
+							bRefaulted ? TEXT("refaulted") : TEXT("timeout"), Elapsed));
+					}
+					UE_LOG(LogTemp, Warning,
+						TEXT("OperatorPawn: reset of arm %d aborted after %.1f s (%s) - button re-armed"),
+						Index, Elapsed, bRefaulted ? TEXT("arm faulted again") : TEXT("no reset_complete"));
+				}
+			} else {
+				ArmResetRequestTime_[Index] = 0.0;
+			}
+
+			if (ComLink->GetArmRemoteState(static_cast<uint8>(Index)) == SysState::FAULT) {
+				bFaultLatched = true;
+			}
 		}
+		if (bNewFault) {
+			SoundFeedback->Play(ESoundType::Warning);
+		}
+		UIBinder->SetVisibility(FName("armFaultInfo"), bFaultLatched);
 	}
 
 	const bool bGazeFresh = Gaze->IsGazeFresh();
@@ -643,7 +706,7 @@ void AOperatorPawn::Tick(float DeltaTime) {
 	ESysState av_state = ComLink->GetAvatarState();
 	if (av_state == ESysState::Engaged) UIBinder->SetImageColor(FName("operator_torso"), FLinearColor::Green);
 	else if (av_state == ESysState::Homing || av_state == ESysState::Awaiting)
-		UIBinder->SetImageColor(FName("operator_torso"), FLinearColor(255, 128, 13));
+		UIBinder->SetImageColor(FName("operator_torso"), kWarnAmber);
 	else UIBinder->SetImageColor(FName("operator_torso"), FLinearColor::Red);
 
 	static const TArray<FString> HealthLabels = { TEXT("NO SIGNAL"), TEXT("NORMAL"), TEXT("DEGRADED"), TEXT("CRITICAL"), TEXT("STALE") };
@@ -798,6 +861,17 @@ void AOperatorPawn::Tick(float DeltaTime) {
 		// swaps between the remote avatar feed and the loopback twin feed, and
 		// the reported latency changes by ~6x across that switch.
 		Row.VideoSourceName = VideoFeed ? VideoFeed->GetActiveSourceName() : FString();
+
+		// FrameMs is the game-thread period and therefore the command period.
+		// The other three say which thread owns it: whichever is closest to
+		// FrameMs is the limiter.
+		Row.FrameMs        = static_cast<float>(FApp::GetDeltaTime()) * 1000.f;
+		Row.GameThreadMs   = FPlatformTime::ToMilliseconds(GGameThreadTime);
+		Row.RenderThreadMs = FPlatformTime::ToMilliseconds(GRenderThreadTime);
+		Row.GpuMs          = FPlatformTime::ToMilliseconds(GGPUFrameTime);
+
+		Row.LeftTrackState  = static_cast<uint8>(LeftTracked->GetTrackingState());
+		Row.RightTrackState = static_cast<uint8>(RightTracked->GetTrackingState());
 
 		Logger_->WriteStreamRow(Row);
 	}
@@ -1450,8 +1524,9 @@ void AOperatorPawn::SendGazeSample(){
 void AOperatorPawn::HandleArmFault(uint8 DeviceIndex, FaultCode Code) {
 	// Called on ComLink's receive thread. Do not touch UI, audio or the logger
 	// here -- all three assume the game thread. Record and let Tick consume it.
-	PendingArmFaultIndex_.Store(static_cast<int32>(DeviceIndex));
-	PendingArmFault_.Store(static_cast<int32>(Code));
+	if (DeviceIndex < 2) {
+		PendingArmFault_[DeviceIndex].Store(static_cast<int32>(Code));
+	}
 }
 
 void AOperatorPawn::HandleVoiceAnnotation(const FVoiceAnnotation& Ann) {

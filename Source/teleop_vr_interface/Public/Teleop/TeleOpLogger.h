@@ -98,6 +98,26 @@ struct FStreamRow
     // clocks disagree -- treat large constant offsets with suspicion.
     float  ArmStateAgeMs    = 0.f;
 
+    // ---- Operator-side frame budget ---------------------------------------
+    // SendArmCommands runs once per game-thread tick, so the command rate IS
+    // the frame rate: 25.6 Hz in session 002, i.e. 39 ms of quantisation on
+    // every command before it reaches the wire. Which thread is responsible
+    // decides whether that is a renderer-settings problem or a Tick problem,
+    // and a `stat unit` overlay does not composite under stereo rendering.
+    // Logging it also lets a command jump be lined up against the frame it
+    // happened in.
+    float  FrameMs        = 0.f;
+    float  GameThreadMs   = 0.f;
+    float  RenderThreadMs = 0.f;
+    float  GpuMs          = 0.f;
+
+    // EControllerTrackingState per side: 0 Tracking / 1 Lost / 2 Stale.
+    // Stale now includes inertial-only -- the runtime handed us a pose it
+    // dead-reckoned off the IMU rather than one it optically tracked. Logged so
+    // a command jump can be lined up against the frames the wand had no lock.
+    uint8  LeftTrackState  = 0;
+    uint8  RightTrackState = 0;
+
     // Which video source the main view is showing ("avatar", "TWIN", ...).
     // Without this the viewmode toggle silently changes what
     // VideoLatencyMs refers to -- in the desk test it dropped 91 ms -> 14 ms

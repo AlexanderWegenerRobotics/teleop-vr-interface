@@ -154,7 +154,9 @@ void FTeleOpLogger::WriteStreamRow(const FStreamRow& R)
         TEXT("%.2f;%.3f;%.3f;%d;")
         TEXT("%.2f;%.1f;")
         TEXT("%.4f;%d;%.4f;%d;")
-        TEXT("%d;%d;%u;%.2f;%s\n"),
+        TEXT("%d;%d;%u;%.2f;")
+        TEXT("%.2f;%.2f;%.2f;%.2f;")
+        TEXT("%d;%d;%s\n"),
         R.TimestampNs, R.OperatorState,
         R.LeftClutch,  R.LeftGear,  R.LeftGrasp,
         R.LeftPx,  R.LeftPy,  R.LeftPz,
@@ -167,6 +169,8 @@ void FTeleOpLogger::WriteStreamRow(const FStreamRow& R)
         R.DataLatencyMs, R.DataMsgRateHz,
         R.LeftGripperWidth, R.LeftGripperGraspState, R.RightGripperWidth, R.RightGripperGraspState,
         R.ArmRemoteState, R.ArmRemoteFault, R.ArmDroppedPackets, R.ArmStateAgeMs,
+        R.FrameMs, R.GameThreadMs, R.RenderThreadMs, R.GpuMs,
+        R.LeftTrackState, R.RightTrackState,
         R.VideoSourceName.IsEmpty() ? TEXT("-") : *R.VideoSourceName));
 }
 
@@ -206,5 +210,10 @@ FString FTeleOpLogger::StreamHeader()
         TEXT("left_gripper_width;left_grasp_state;right_gripper_width;right_grasp_state;")
         // Remote health + provenance. See FStreamRow for why these are separate
         // from the link metrics above.
-        TEXT("arm_remote_state;arm_remote_fault;arm_dropped_packets;arm_state_age_ms;video_source\n");
+        TEXT("arm_remote_state;arm_remote_fault;arm_dropped_packets;arm_state_age_ms;")
+        // Operator-side frame budget. The command rate equals the game-thread
+        // rate, so these explain the quantisation on every command.
+        TEXT("frame_ms;game_ms;render_ms;gpu_ms;")
+        // Per-side tracking state; Stale includes inertial-only (no optical lock).
+        TEXT("left_track_state;right_track_state;video_source\n");
 }

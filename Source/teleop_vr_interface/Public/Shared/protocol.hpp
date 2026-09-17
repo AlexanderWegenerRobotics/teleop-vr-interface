@@ -90,6 +90,13 @@ struct ArmStateMsg {
     uint8_t     recovering;
     float       gripper_width;
     GraspState  grasp_state;
+    // Sequence number of the ArmCommandMsg this arm actually consumed, echoed
+    // back so round-trip time can be measured against a single clock: compare
+    // it to the send time this side recorded for that sequence, rather than
+    // differencing two hosts' wall clocks.
+    //
+    // Zero means the sender predates this field: unknown, not "command 0".
+    uint32_t  applied_cmd_sequence;
 };
 
 struct HeadCommandMsg {
@@ -106,8 +113,17 @@ struct HeadStateMsg {
 
 #pragma pack(pop)
 
-static_assert(sizeof(MsgHeader)      == 15, "MsgHeader size mismatch");
-static_assert(sizeof(ArmCommandMsg)  == 47, "ArmCommandMsg size mismatch");
-static_assert(sizeof(ArmStateMsg)    == 105, "ArmStateMsg size mismatch");
-static_assert(sizeof(HeadCommandMsg) == 23, "HeadCommandMsg size mismatch");
-static_assert(sizeof(HeadStateMsg)   == 23, "HeadStateMsg size mismatch");
+// These numbers are the wire contract, not a description of the structs above.
+// They must equal the sizes in the simulator repo's include/common.hpp and the
+// formats in teleop_orchestrator/live/wire.py. Changing a struct here without
+// changing all three is the 2026-09-14 failure: packets are silently dropped on
+// size, the arm reads as absent rather than misconfigured, and everything else
+// (msgpack channels, state machine, logging) keeps looking healthy.
+//
+//   MsgHeader       15 ->  23   (+ sample_time_ns, 2026-08-09)
+//   ArmStateMsg    105 -> 117   (+ sample_time_ns, + applied_cmd_sequence)
+static_assert(sizeof(MsgHeader)      == 23,  "MsgHeader size mismatch");
+static_assert(sizeof(ArmCommandMsg)  == 55,  "ArmCommandMsg size mismatch");
+static_assert(sizeof(ArmStateMsg)    == 117, "ArmStateMsg size mismatch");
+static_assert(sizeof(HeadCommandMsg) == 31,  "HeadCommandMsg size mismatch");
+static_assert(sizeof(HeadStateMsg)   == 31,  "HeadStateMsg size mismatch");

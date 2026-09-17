@@ -129,8 +129,15 @@ private:
                 }
             }
 
-            if (Msg.header.state == SysState::FAULT && OnFaultDetected.IsBound()) {
-                OnFaultDetected.Broadcast(Msg.header.fault_code);
+            if (Msg.header.state != SysState::FAULT) {
+                bRemoteFaulted_ = false;
+                LastFaultCode_  = FaultCode::NONE;
+            } else if (!bRemoteFaulted_ || Msg.header.fault_code != LastFaultCode_) {
+                bRemoteFaulted_ = true;
+                LastFaultCode_  = Msg.header.fault_code;
+                if (OnFaultDetected.IsBound()) {
+                    OnFaultDetected.Broadcast(Msg.header.fault_code);
+                }
             }
         }
 
@@ -160,6 +167,9 @@ private:
 
     SysState  StickyState_ = SysState::OFFLINE;
     FaultCode StickyFault_ = FaultCode::NONE;
+
+    bool      bRemoteFaulted_ = false;
+    FaultCode LastFaultCode_  = FaultCode::NONE;
 };
 
 using ArmStream  = TDeviceStream<ArmStateMsg, ArmCommandMsg>;

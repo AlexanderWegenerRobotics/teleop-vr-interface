@@ -101,6 +101,42 @@ public:
     UPROPERTY(EditAnywhere, Category = "Controller|Tracking")
     float StaleThreshold = 0.5f;
 
+    // Largest tracked control-point speed (cm/s, before ScaleFactor) accepted as
+    // real operator motion. A frame implying more than this is a tracker
+    // discontinuity, not a hand, and is dropped rather than integrated.
+    UPROPERTY(EditAnywhere, Category = "Controller|Tracking")
+    float MaxTrackedSpeed = 150.0f;
+
+    // Upper bound on the frame interval used to size the guard, so a long hitch
+    // cannot buy a proportionally large allowance.
+    UPROPERTY(EditAnywhere, Category = "Controller|Tracking")
+    float MaxGuardWindow = 0.1f;
+
+    // One-euro filter on the tracked control point. The cutoff rises with speed,
+    // so standing jitter is smoothed hard while real motion passes with little
+    // added lag. MinCutoff sets the smoothing at rest, Beta how fast the cutoff
+    // opens up. 0 disables the filter.
+    //
+    // OFF by default, deliberately. Sampled here at the ~26 Hz game-thread rate,
+    // the tracker's jitter is already ALIASED into the signal band, and no
+    // causal filter can separate it from real motion afterwards. Measured on
+    // session 002: the most aggressive setting that is not absurd (0.8 Hz)
+    // removes 35% of the >4 Hz jitter on x, 3% on y, and costs 67-147 ms of lag.
+    // That is a worse trade than the jitter. Turn this on once pose sampling
+    // moves off the game thread and runs at 200+ Hz, where the noise is no
+    // longer aliased and ~1.5 Hz / 0.05 costs single-digit ms.
+    UPROPERTY(EditAnywhere, Category = "Controller|Tracking")
+    float FilterMinCutoff = 0.0f;
+
+    UPROPERTY(EditAnywhere, Category = "Controller|Tracking")
+    float FilterBeta = 0.05f;
+
+    UPROPERTY(EditAnywhere, Category = "Controller|Tracking")
+    float FilterDerivCutoff = 1.0f;
+
+    int32 GetRejectedTrackingJumps() const { return RejectedTrackingJumps; }
+    int32 GetInertialOnlyFrames() const { return InertialOnlyFrames; }
+
     UPROPERTY(EditAnywhere, Category = "Controller|Clutch")
     float ClutchDeadZoneLow = 0.05f;
 
@@ -150,7 +186,7 @@ private:
     void OnHandGripReleased(const FInputActionValue& Value);
 
     void UpdateClutch();
-    void UpdateScaledTranslation();
+    void UpdateScaledTranslation(float DeltaTime);
     void UpdateTrackingState();
     void RecordSample();
 
@@ -188,6 +224,16 @@ private:
     FVector BankedScaledTranslation = FVector::ZeroVector;
     FVector PrevTrackedLocation = FVector::ZeroVector;
     bool bPrevLocationValid = false;
+    int32 RejectedTrackingJumps = 0;
+    double LastJumpLogTime = 0.0;
+    int32 InertialOnlyFrames = 0;
+    double LastInertialLogTime = 0.0;
+
+    FVector FilterOneEuro(const FVector& Raw, float DeltaTime);
+    void ResetOneEuro();
+    FVector FilteredLocation = FVector::ZeroVector;
+    FVector FilteredDerivative = FVector::ZeroVector;
+    bool bFilterPrimed = false;
 
     FTransform LastTrackedTransform;
     double LastTrackingTimestamp = 0.0;

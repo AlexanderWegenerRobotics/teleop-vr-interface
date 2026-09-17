@@ -96,6 +96,10 @@ private:
 	enum class EArmResetState : uint8 { Idle, Recovering, AwaitingResume };
 	EArmResetState LeftArmResetState_ = EArmResetState::Idle;
 	EArmResetState RightArmResetState_ = EArmResetState::Idle;
+	// Watchdog on a reset that never completes -- see the reset block in Tick.
+	double ArmResetRequestTime_[2] = { 0.0, 0.0 };
+	static constexpr double kArmResetGraceSec   = 2.0;
+	static constexpr double kArmResetTimeoutSec = 15.0;
 
 	void UpdateStateMachine();
 	void TransitionTo(ESysState NewState);
@@ -113,9 +117,8 @@ private:
 	// receive thread, so it only records intent; the audible cue and HUD work
 	// happen on the game thread in Tick.
 	void HandleArmFault(uint8 DeviceIndex, FaultCode Code);
-	// Set by HandleArmFault, consumed and cleared in Tick.
-	TAtomic<int32> PendingArmFault_{-1};   // -1 = none, else FaultCode value
-	TAtomic<int32> PendingArmFaultIndex_{0};
+	// Set by HandleArmFault, consumed and cleared in Tick. One slot per arm.
+	TAtomic<int32> PendingArmFault_[2];    // -1 = none, else FaultCode value
 	FFrameBundle BuildFrameBundle() const;
 
 	// Tells the local operator-side RealSense recorder to start/stop, in step with the
