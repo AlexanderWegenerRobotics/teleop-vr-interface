@@ -218,7 +218,7 @@ private:
     bool bFullClutch = true;
     bool bWasFullClutch = false;
 
-    float ScaleFactor = 2.0f;
+    float ScaleFactor = 1.5f;
 
     FVector ScaledTranslation = FVector::ZeroVector;
     FVector BankedScaledTranslation = FVector::ZeroVector;
