@@ -124,6 +124,18 @@ struct FStreamRow
     // for six seconds because the operator switched to the loopback twin feed,
     // which is only recoverable by cross-referencing events.log.
     FString VideoSourceName;
+
+    // Command thread health, sampled at the HUD rate. CommandDuplicatePct is
+    // the field that decides whether decoupling the send from the tick achieved
+    // anything: the fraction of located poses bit-identical to the previous
+    // one, i.e. how often the runtime handed back a cached sample instead of a
+    // fresh prediction. Near zero means genuinely faster sampling; near
+    // (1 - frame_rate/command_rate) means the same pose sent repeatedly.
+    float  CommandRateHz       = 0.f;
+    float  CommandJitterMs     = 0.f;
+    float  CommandDuplicatePct = 0.f;
+    // Cumulative, both arms: tracker discontinuities the jump guard discarded.
+    int32  CommandRejectedJumps = 0;
 };
 
 // One row per arm command actually placed on the wire.

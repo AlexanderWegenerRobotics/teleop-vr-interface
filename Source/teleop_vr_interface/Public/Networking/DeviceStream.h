@@ -34,16 +34,17 @@ public:
     }
 
     void SetState(SysState State, FaultCode Fault = FaultCode::NONE) {
-        StickyState_ = State;
-        StickyFault_ = Fault;
+        StickyState_.Store(static_cast<uint8>(State));
+        StickyFault_.Store(static_cast<uint8>(Fault));
     }
 
     void Send(TSend& Msg) {
         if (!Socket_) return;
-        Msg.header.sequence     = ++SendSeq_;
+        // Send() runs on the command thread, SetState() on the game thread.
+        Msg.header.sequence     = SendSeq_.IncrementExchange() + 1;
         Msg.header.timestamp_ns = timestamp_ns();
-        Msg.header.state        = StickyState_;
-        Msg.header.fault_code   = StickyFault_;
+        Msg.header.state        = static_cast<SysState>(StickyState_.Load());
+        Msg.header.fault_code   = static_cast<FaultCode>(StickyFault_.Load());
         Socket_->Send(&Msg, sizeof(TSend));
     }
 
@@ -155,7 +156,7 @@ private:
     mutable FCriticalSection Mutex_;
 
     TRecv    LastRecv_{};
-    uint32   SendSeq_     = 0;
+    TAtomic<uint32> SendSeq_{0};
     uint32   LastRecvSeq_ = 0;
     uint32   DroppedCount_= 0;
     TAtomic<bool> bHasNew_{false};
@@ -165,8 +166,8 @@ private:
     uint32 RecvCountInWindow_= 0;
     double WindowStartTime_  = 0.0;
 
-    SysState  StickyState_ = SysState::OFFLINE;
-    FaultCode StickyFault_ = FaultCode::NONE;
+    TAtomic<uint8> StickyState_{static_cast<uint8>(SysState::OFFLINE)};
+    TAtomic<uint8> StickyFault_{static_cast<uint8>(FaultCode::NONE)};
 
     bool      bRemoteFaulted_ = false;
     FaultCode LastFaultCode_  = FaultCode::NONE;

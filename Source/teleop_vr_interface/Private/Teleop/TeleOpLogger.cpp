@@ -156,7 +156,8 @@ void FTeleOpLogger::WriteStreamRow(const FStreamRow& R)
         TEXT("%.4f;%d;%.4f;%d;")
         TEXT("%d;%d;%u;%.2f;")
         TEXT("%.2f;%.2f;%.2f;%.2f;")
-        TEXT("%d;%d;%s\n"),
+        TEXT("%d;%d;%s;")
+        TEXT("%.1f;%.2f;%.2f;%d\n"),
         R.TimestampNs, R.OperatorState,
         R.LeftClutch,  R.LeftGear,  R.LeftGrasp,
         R.LeftPx,  R.LeftPy,  R.LeftPz,
@@ -171,7 +172,8 @@ void FTeleOpLogger::WriteStreamRow(const FStreamRow& R)
         R.ArmRemoteState, R.ArmRemoteFault, R.ArmDroppedPackets, R.ArmStateAgeMs,
         R.FrameMs, R.GameThreadMs, R.RenderThreadMs, R.GpuMs,
         R.LeftTrackState, R.RightTrackState,
-        R.VideoSourceName.IsEmpty() ? TEXT("-") : *R.VideoSourceName));
+        R.VideoSourceName.IsEmpty() ? TEXT("-") : *R.VideoSourceName,
+        R.CommandRateHz, R.CommandJitterMs, R.CommandDuplicatePct, R.CommandRejectedJumps));
 }
 
 void FTeleOpLogger::LogEvent(const FString& Message)
@@ -215,5 +217,8 @@ FString FTeleOpLogger::StreamHeader()
         // rate, so these explain the quantisation on every command.
         TEXT("frame_ms;game_ms;render_ms;gpu_ms;")
         // Per-side tracking state; Stale includes inertial-only (no optical lock).
-        TEXT("left_track_state;right_track_state;video_source\n");
+        TEXT("left_track_state;right_track_state;video_source;")
+        // Command thread. command_dup_pct is the acceptance test for the
+        // decoupled send: see FStreamRow.
+        TEXT("command_rate_hz;command_jitter_ms;command_dup_pct;command_rejected_jumps\n");
 }

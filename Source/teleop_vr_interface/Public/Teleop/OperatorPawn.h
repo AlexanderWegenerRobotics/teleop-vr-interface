@@ -23,6 +23,7 @@
 #include "Video/GraspIndicatorComponent.h"
 #include "Video/WorkspaceBoundaryComponent.h"
 #include "Networking/UdpSocket.h"
+#include "Teleop/CommandThread.h"
 
 #include "OperatorPawn.generated.h"
 
@@ -182,6 +183,17 @@ private:
 	// UpdateStateMachine can use them without holding onto UTeleOpConfig.
 	bool    bHasTwinMainStream_ = false;
 	bool    bOverlayEnabled_    = true;
+
+	// Pose sampling and arm-command send run here, not on the game tick, so
+	// the command rate stops being whatever the renderer happens to manage.
+	TUniquePtr<FTeleopCommandThread> CommandThread_;
+
+	// 120 rather than 90: above the display rate, comfortably inside the
+	// tracker's demonstrated >=90 Hz update rate, and 12% of a core in the
+	// pacing spin. Higher buys under a millisecond against a 70 ms link.
+	UPROPERTY(EditAnywhere, Category = "Teleop")
+	float CommandThreadRateHz = 120.f;
+
 	FString TwinMainStreamKey_;   // VideoFeedComponent registration key (== Config->Stream.TwinStream.Name)
 	FString TwinMainStreamLabel_; // viewmode_label text when twin is active ("TWIN", as configured)
 	FString TwinPiPEntryName_;    // PiP menu entry text (TwinMainStreamLabel_.ToLower(), e.g. "twin")

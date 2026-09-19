@@ -12,6 +12,9 @@ extern RENDERCORE_API uint32 GRenderThreadTime;
 #include "Materials/MaterialInterface.h"
 #include "Misc/Paths.h"
 #include "Shared/annotation_msg.hpp"
+#include "Engine/Engine.h"
+#include "IXRTrackingSystem.h"
+#include "IOpenXRHMD.h"
 
 #if PLATFORM_WINDOWS
 #include "Windows/AllowWindowsPlatformTypes.h"
@@ -521,6 +524,9 @@ void AOperatorPawn::BeginPlay() {
 
 	Logger_ = MakeUnique<FTeleOpLogger>();
 	FString SessionDir = Logger_->Open(FPaths::ProjectDir() / LogBaseDirectory);
+
+	CommandThread_ = MakeUnique<FTeleopCommandThread>(ComLink, Logger_.Get(), CommandThreadRateHz);
+	CommandThread_->StartThread();
 	UE_LOG(LogTemp, Log, TEXT("OperatorPawn: logging to %s"), *SessionDir);
 
 	if (VideoLogger_) {
@@ -535,6 +541,7 @@ void AOperatorPawn::EndPlay(const EEndPlayReason::Type EndPlayReason) {
 	FlushRenderingCommands();
 	for (auto& Src : PiPSources_) if (Src) Src->Stop();
 	if (VideoLogger_) VideoLogger_->StopLogging(TEXT("EndPlay"));
+	if (CommandThread_) CommandThread_->StopThread();
 	if (Logger_) Logger_->Close();
 	if (bRecordingActive_) SendRecordingSignal(false);
 	if (RecordingSocket_) RecordingSocket_->Close();
@@ -822,15 +829,24 @@ void AOperatorPawn::Tick(float DeltaTime) {
 		Row.RightGear   = RightGear;
 		Row.RightGrasp  = bRightGrasping ? 1.f : 0.f;
 
-		// Controller delta poses in protocol coordinates (always, regardless of clutch)
-		{
-			FControllerDeltaPose L = LeftTracked->GetDeltaPose();
-			CoordConvert::UnrealToProtocolFloat(L.Translation, Row.LeftPx, Row.LeftPy, Row.LeftPz);
-			CoordConvert::UnrealToProtocolQuatFloat(L.Rotation, Row.LeftQw, Row.LeftQx, Row.LeftQy, Row.LeftQz);
+		// The most recent command the command thread actually put on the wire,
+		// already in protocol coordinates and already yaw-corrected. Sampled at
+		// frame rate, so this row is a decimated view of a faster stream; the
+		// command log is the full-rate record.
+		if (CommandThread_) {
+			const FCommandThreadOutput Cmd = CommandThread_->ReadOutput();
+			Row.LeftPx = Cmd.Position[0][0];   Row.LeftPy = Cmd.Position[0][1];   Row.LeftPz = Cmd.Position[0][2];
+			Row.LeftQw = Cmd.Quaternion[0][0]; Row.LeftQx = Cmd.Quaternion[0][1];
+			Row.LeftQy = Cmd.Quaternion[0][2]; Row.LeftQz = Cmd.Quaternion[0][3];
 
-			FControllerDeltaPose R = RightTracked->GetDeltaPose();
-			CoordConvert::UnrealToProtocolFloat(R.Translation, Row.RightPx, Row.RightPy, Row.RightPz);
-			CoordConvert::UnrealToProtocolQuatFloat(R.Rotation, Row.RightQw, Row.RightQx, Row.RightQy, Row.RightQz);
+			Row.RightPx = Cmd.Position[1][0];   Row.RightPy = Cmd.Position[1][1];   Row.RightPz = Cmd.Position[1][2];
+			Row.RightQw = Cmd.Quaternion[1][0]; Row.RightQx = Cmd.Quaternion[1][1];
+			Row.RightQy = Cmd.Quaternion[1][2]; Row.RightQz = Cmd.Quaternion[1][3];
+
+			Row.CommandRateHz       = Cmd.SendRateHz;
+			Row.CommandJitterMs     = Cmd.LoopJitterMs;
+			Row.CommandDuplicatePct = Cmd.DuplicatePct;
+			Row.CommandRejectedJumps = Cmd.RejectedJumps[0] + Cmd.RejectedJumps[1];
 		}
 
 		Row.HeadPan  = LastHeadPan_;
@@ -1321,6 +1337,7 @@ bool AOperatorPawn::CheckEmergencyStop() {
 void AOperatorPawn::CaptureControllerOrigins() {
 	LeftTracked->CaptureOrigin();
 	RightTracked->CaptureOrigin();
+	if (CommandThread_) CommandThread_->RequestCaptureOrigin();
 
 	if (VRCamera) {
 		HMDOrigin_ = VRCamera->GetComponentTransform();
@@ -1344,74 +1361,59 @@ void AOperatorPawn::CaptureControllerOrigins() {
 }
 
 void AOperatorPawn::SendArmCommands() {
-	bool bLeftActive = LeftArmResetState_ == EArmResetState::Idle && ComLink->GetArmRemoteState(0) == SysState::ENGAGED;
-	bool bRightActive = RightArmResetState_ == EArmResetState::Idle && ComLink->GetArmRemoteState(1) == SysState::ENGAGED;
+	if (!CommandThread_) return;
 
-	// Log the command at the send site, not on the HUD tick. See FCommandRow:
-	// stream.csv samples the operator's hand at ~26 Hz, which is below Nyquist
-	// for the delays we are trying to measure, and it is why the
-	// hand-to-command lag was unrecoverable from the 2026-08-09 logs.
-	//
-	// Call AFTER SendArmCommand: TDeviceStream::Send takes the message by
-	// non-const reference and stamps header.sequence there, so reading it
-	// beforehand yields 0. When a twin stream is configured the same message
-	// goes to both peers and each stamps its own counter, so the value
-	// recorded is whichever wrote last -- fine as a join key against the
-	// avatar log only because both peers receive the identical command in the
-	// same tick.
-	auto LogCommand = [this](uint8 Index, const ArmCommandMsg& Msg, bool bSent,
-	                         UTrackedControllerComponent* Tracked) {
-		if (!Logger_) return;
-		FCommandRow Row;
-		Row.TimestampNs   = FTeleOpLogger::NowNs();
-		Row.DeviceIndex   = Index;
-		Row.Sequence      = Msg.header.sequence;
-		Row.bSent         = bSent;
-		Row.Px = Msg.position[0];   Row.Py = Msg.position[1];   Row.Pz = Msg.position[2];
-		Row.Qw = Msg.quaternion[0]; Row.Qx = Msg.quaternion[1];
-		Row.Qy = Msg.quaternion[2]; Row.Qz = Msg.quaternion[3];
-		Row.Gripper       = Msg.gripper;
-		Row.ClutchFactor  = Tracked ? Tracked->GetClutchFactor() : 0.f;
-		Row.bFullClutch   = Tracked ? Tracked->IsFullClutch()    : false;
-		Logger_->WriteCommandRow(Row);
-	};
-
-	FQuat HMDYawQuat = FQuat::Identity;
+	// The game thread owns everything Enhanced Input produces; the command
+	// thread owns the pose integration and the send. Publish, do not send.
+	FOperatorInputSnapshot In;
+	In.bArmActive[0] = LeftArmResetState_  == EArmResetState::Idle && ComLink->GetArmRemoteState(0) == SysState::ENGAGED;
+	In.bArmActive[1] = RightArmResetState_ == EArmResetState::Idle && ComLink->GetArmRemoteState(1) == SysState::ENGAGED;
+	In.bFullClutch[0] = LeftTracked->IsFullClutch();
+	In.bFullClutch[1] = RightTracked->IsFullClutch();
+	In.bGraspHeld[0]  = LeftTracked->IsGraspHeld();
+	In.bGraspHeld[1]  = RightTracked->IsGraspHeld();
+	In.ScaleFactor[0] = LeftTracked->GetScaleFactor();
+	In.ScaleFactor[1] = RightTracked->GetScaleFactor();
+	In.ControlPointOffset[0] = LeftTracked->ControlPointOffset;
+	In.ControlPointOffset[1] = RightTracked->ControlPointOffset;
 	if (bHMDOriginValid_) {
-		float CaptureYaw = HMDOrigin_.GetRotation().Rotator().Yaw;
-		HMDYawQuat = FQuat(FRotator(0.f, CaptureYaw, 0.f));
+		const float CaptureYaw = HMDOrigin_.GetRotation().Rotator().Yaw;
+		In.HMDYawQuat = FQuat(FRotator(0.f, CaptureYaw, 0.f));
+		In.bHMDOriginValid = true;
 	}
 
-	if (LeftTracked->IsTracking()) {
-		ArmCommandMsg Msg{};
-		FControllerDeltaPose Delta = LeftTracked->GetDeltaPose();
-		FVector LocalTranslation = HMDYawQuat.UnrotateVector(Delta.Translation);
-		CoordConvert::UnrealToProtocolFloat(LocalTranslation, Msg.position[0], Msg.position[1], Msg.position[2]);
-		CoordConvert::UnrealToProtocolQuatFloat(Delta.Rotation, Msg.quaternion[0], Msg.quaternion[1], Msg.quaternion[2], Msg.quaternion[3]);
-		Msg.gripper = LeftTracked->IsGraspHeld() ? 1.0f : 0.0f;
-		if (bLeftActive)
-			ComLink->SendArmCommand(Msg, 0);
-		// Logged whether or not it was sent: a suppressed command still tells
-		// you what the operator was doing, and the sent flag distinguishes
-		// "operator idle" from "command withheld because the arm was not
-		// ENGAGED" -- indistinguishable in stream.csv.
-		LogCommand(0, Msg, bLeftActive, LeftTracked);
-		if (GhostOverlay)
-			GhostOverlay->SetIntentPose(0, Msg.position, Msg.quaternion, Msg.gripper, LeftTracked->IsFullClutch());
+	UTrackedControllerComponent* Tracked[2] = { LeftTracked, RightTracked };
+	for (int32 i = 0; i < 2; ++i) {
+		In.FilterMinCutoff[i]   = Tracked[i]->FilterMinCutoff;
+		In.FilterBeta[i]        = Tracked[i]->FilterBeta;
+		In.FilterDerivCutoff[i] = Tracked[i]->FilterDerivCutoff;
+		In.MaxTrackedSpeed[i]   = Tracked[i]->MaxTrackedSpeed;
+		In.MaxGuardWindow[i]    = Tracked[i]->MaxGuardWindow;
 	}
 
-	if (RightTracked->IsTracking()) {
-		ArmCommandMsg Msg{};
-		FControllerDeltaPose Delta = RightTracked->GetDeltaPose();
-		FVector LocalTranslation = HMDYawQuat.UnrotateVector(Delta.Translation);
-		CoordConvert::UnrealToProtocolFloat(LocalTranslation, Msg.position[0], Msg.position[1], Msg.position[2]);
-		CoordConvert::UnrealToProtocolQuatFloat(Delta.Rotation, Msg.quaternion[0], Msg.quaternion[1], Msg.quaternion[2], Msg.quaternion[3]);
-		Msg.gripper = RightTracked->IsGraspHeld() ? 1.0f : 0.0f;
-		if (bRightActive)
-			ComLink->SendArmCommand(Msg, 1);
-		LogCommand(1, Msg, bRightActive, RightTracked);
-		if (GhostOverlay)
-			GhostOverlay->SetIntentPose(1, Msg.position, Msg.quaternion, Msg.gripper, RightTracked->IsFullClutch());
+	In.bHandValid[0] = LeftTracked->IsTracking();
+	In.bHandValid[1] = RightTracked->IsTracking();
+	In.HandPose[0]   = LeftTracked->GetTrackedTransform();
+	In.HandPose[1]   = RightTracked->GetTrackedTransform();
+
+	// GetTrackingSpace() and GetDisplayTime() read pipelined frame state and
+	// assert off the game thread, so they are sampled here and ferried across.
+	if (GEngine && GEngine->XRSystem.IsValid()) {
+		In.TrackingToWorld = GEngine->XRSystem->GetTrackingToWorldTransform();
+		if (IOpenXRHMD* Xr = GEngine->XRSystem->GetIOpenXRHMD()) {
+			In.XrTrackingSpace = reinterpret_cast<uint64>(Xr->GetTrackingSpace());
+			In.XrDisplayTimeNs = static_cast<int64>(Xr->GetDisplayTime());
+		}
+	}
+
+	CommandThread_->PublishInput(In);
+
+	// The ghost follows the command that was actually sent, so it stays true
+	// to the wire even though it only repaints at frame rate.
+	const FCommandThreadOutput Out = CommandThread_->ReadOutput();
+	if (GhostOverlay) {
+		GhostOverlay->SetIntentPose(0, Out.Position[0], Out.Quaternion[0], Out.Gripper[0], Out.bFullClutch[0]);
+		GhostOverlay->SetIntentPose(1, Out.Position[1], Out.Quaternion[1], Out.Gripper[1], Out.bFullClutch[1]);
 	}
 }
 

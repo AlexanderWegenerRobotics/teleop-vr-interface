@@ -182,18 +182,8 @@ EControllerHand UTrackedControllerComponent::GetHand() const {
         : EControllerHand::Left;
 }
 
-float UTrackedControllerComponent::ComputeClutchScale(float TriggerRaw) const {
-    if (TriggerRaw >= ClutchActiveRangeMax) return 1.0f;
-    if (TriggerRaw <= ClutchDeadZoneLow) return 0.0f;
-
-    float t = (TriggerRaw - ClutchDeadZoneLow) / (ClutchActiveRangeMax - ClutchDeadZoneLow);
-    float Scale = t * t;
-    return FMath::Clamp(Scale, 0.0f, 1.0f);
-}
-
 float UTrackedControllerComponent::GetClutchFactor() const {
-    if (bFullClutch) return 0.0f;
-    return ComputeClutchScale(TriggerValue);
+    return bFullClutch ? 0.0f : 1.0f;
 }
 
 // One-euro filter (Casiez et al.). A fixed low-pass would trade jitter against
@@ -279,8 +269,9 @@ void UTrackedControllerComponent::UpdateScaledTranslation(float DeltaTime) {
         }
     }
 
-    float ClutchScale = ComputeClutchScale(TriggerValue);
-    ScaledTranslation += TickDelta * ClutchScale * ScaleFactor;
+    // Constant gain, so this sum telescopes to ScaleFactor * (Current - Origin):
+    // the command is a function of where the hand IS, not how it got there.
+    ScaledTranslation += TickDelta * ScaleFactor;
     PrevTrackedLocation = CurrentLocation;
 }
 

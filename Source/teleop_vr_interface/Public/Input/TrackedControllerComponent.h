@@ -37,6 +37,10 @@ public:
     bool IsTracking() const;
     EControllerTrackingState GetTrackingState() const;
 
+    // Filtered, jump-rejected controller pose as of the last game tick. Used by
+    // the command thread only when it cannot sample OpenXR directly.
+    FTransform GetTrackedTransform() const { return LastTrackedTransform; }
+
     bool IsGraspHeld() const { return bGripHeld; }
     bool IsMenuPressed() const { return bMenuPressed; }
     float GetClutchFactor() const;
@@ -117,37 +121,59 @@ public:
     // added lag. MinCutoff sets the smoothing at rest, Beta how fast the cutoff
     // opens up. 0 disables the filter.
     //
-    // OFF by default, deliberately. Sampled here at the ~26 Hz game-thread rate,
-    // the tracker's jitter is already ALIASED into the signal band, and no
-    // causal filter can separate it from real motion afterwards. Measured on
-    // session 002: the most aggressive setting that is not absurd (0.8 Hz)
-    // removes 35% of the >4 Hz jitter on x, 3% on y, and costs 67-147 ms of lag.
-    // That is a worse trade than the jitter. Turn this on once pose sampling
-    // moves off the game thread and runs at 200+ Hz, where the noise is no
-    // longer aliased and ~1.5 Hz / 0.05 costs single-digit ms.
+    // These values are read by the command thread as well (mirrored into
+    // FOperatorInputSnapshot each tick), so this is the one place to tune them.
+    //
+    // History: off until 2026-09-19. At the ~26 Hz game-thread rate the
+    // tracker's jitter was already ALIASED into the signal band and no causal
+    // filter could separate it from real motion; the best non-absurd setting
+    // (0.8 Hz) removed 35% of the >4 Hz jitter on x and 3% on y. Sampling now
+    // runs at 90 Hz on its own thread, so the noise is no longer aliased and
+    // the filter can do its job.
+    //
+    // Correcting a claim the old note made: raising the sample rate does NOT
+    // reduce the filter's lag. A first-order low-pass has group delay
+    // tau = 1/(2*pi*fc) whatever the sample rate -- 1.5 Hz is 106 ms. What the
+    // rate buys is that the noise is real rather than aliased. The lag is
+    // managed by Beta instead, which opens the cutoff with hand speed
+    // (cm/s here): fc = MinCutoff + Beta * speed.
+    //
+    //     speed      fc (1.5 + 0.4*v)    tau
+    //     at rest        1.5 Hz         106 ms   (nothing is moving)
+    //      10 cm/s       5.5 Hz          29 ms
+    //      30 cm/s      13.5 Hz          12 ms
+    //     100 cm/s      41.5 Hz           4 ms
+    //
+    // Beta 0.4 rather than the paper's small values because the measured noise
+    // floor above 15 Hz is only 0.06-0.18 mm rms per axis (session 2026-09-19),
+    // so there is little to smooth and lag is the expensive side of the trade.
+    // DerivCutoff 5 Hz rather than 1 Hz for the same reason: at 1 Hz the speed
+    // estimate itself lags 160 ms, so the cutoff stays shut through the first
+    // part of every movement and smears its onset.
+    //
+    // Set MinCutoff to 0 to disable. Do that when measuring the runtime's true
+    // pose update rate -- the filter erases exactly the kinks that measurement
+    // looks for.
     UPROPERTY(EditAnywhere, Category = "Controller|Tracking")
-    float FilterMinCutoff = 0.0f;
+    float FilterMinCutoff = 1.5f;
 
     UPROPERTY(EditAnywhere, Category = "Controller|Tracking")
-    float FilterBeta = 0.05f;
+    float FilterBeta = 0.4f;
 
     UPROPERTY(EditAnywhere, Category = "Controller|Tracking")
-    float FilterDerivCutoff = 1.0f;
+    float FilterDerivCutoff = 5.0f;
 
     int32 GetRejectedTrackingJumps() const { return RejectedTrackingJumps; }
     int32 GetInertialOnlyFrames() const { return InertialOnlyFrames; }
 
+    // Binary clutch with hysteresis. Engage above the first, release at or
+    // below the second. Raised from 0.08/0.04: those were only safe because
+    // the old quadratic gain made a light touch worth ~0.1% of full scale.
     UPROPERTY(EditAnywhere, Category = "Controller|Clutch")
-    float ClutchDeadZoneLow = 0.05f;
+    float ClutchEngageThreshold = 0.55f;
 
     UPROPERTY(EditAnywhere, Category = "Controller|Clutch")
-    float ClutchEngageThreshold = 0.08f;
-
-    UPROPERTY(EditAnywhere, Category = "Controller|Clutch")
-    float ClutchDisengageThreshold = 0.04f;
-
-    UPROPERTY(EditAnywhere, Category = "Controller|Clutch")
-    float ClutchActiveRangeMax = 0.9f;
+    float ClutchDisengageThreshold = 0.35f;
 
     UPROPERTY(EditAnywhere, Category = "Controller|Scale")
     float MinScale = 0.5f;
@@ -201,7 +227,6 @@ private:
     TArray<FTransform> CalibSamples;
     FQuat LastCalibQuat = FQuat::Identity;
 
-    float ComputeClutchScale(float TriggerRaw) const;
     void PlayClutchHaptic(float Intensity, float Duration);
     EControllerHand GetHand() const;
     bool bWasGraspHeld = false;
