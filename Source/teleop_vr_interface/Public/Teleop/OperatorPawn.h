@@ -169,6 +169,11 @@ private:
 	bool  bPrevRightClutch_ = false;
 	bool  bStatsVisible_       = false;
 	bool  bSettingsVisible_    = false;
+	// Operator-chosen global mute. USoundFeedback is the only thing in this
+	// interface that plays audio, so this silences everything the operator
+	// hears. Controller haptics are deliberately NOT affected -- they are the
+	// only feedback channel left once audio is off.
+	bool  bSoundMuted_         = false;
 	int32 PerfSampleCounter_ = 0;
 
 	TArray<TUniquePtr<IVideoSource>> PiPSources_;

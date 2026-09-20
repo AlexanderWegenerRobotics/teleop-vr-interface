@@ -382,6 +382,11 @@ void AOperatorPawn::BeginPlay() {
 	UIBinder->SetVisibility(FName("resetMenu"), false);
 	UIBinder->SetVisibility(FName("episodeAnnotationCanvas"), false);
 	UIBinder->SetVisibility(FName("settings_canvas"), false);
+	// Start from a known visual state. Without this the button rests on
+	// whatever its UMG Normal brush happens to be, which is only the unmuted
+	// icon by convention rather than by anything enforcing it.
+	UIBinder->SetButtonToggled(FName("muteButton"), bSoundMuted_);
+	SoundFeedback->SetMuted(bSoundMuted_);
 
 	// Main-view avatar/twin label -- debug-simple text readout for now (see
 	// the viewmodeButton handler below for the toggle itself). Requires a
@@ -843,10 +848,9 @@ void AOperatorPawn::Tick(float DeltaTime) {
 			Row.RightQw = Cmd.Quaternion[1][0]; Row.RightQx = Cmd.Quaternion[1][1];
 			Row.RightQy = Cmd.Quaternion[1][2]; Row.RightQz = Cmd.Quaternion[1][3];
 
-			Row.CommandRateHz       = Cmd.SendRateHz;
-			Row.CommandJitterMs     = Cmd.LoopJitterMs;
+			Row.CommandRateHz  = Cmd.SendRateHz;
+			Row.CommandJitterMs = Cmd.LoopJitterMs;
 			Row.CommandDuplicatePct = Cmd.DuplicatePct;
-			Row.CommandRejectedJumps = Cmd.RejectedJumps[0] + Cmd.RejectedJumps[1];
 		}
 
 		Row.HeadPan  = LastHeadPan_;
@@ -1092,6 +1096,25 @@ void AOperatorPawn::UpdateStateMachine() {
 	if (ButtonPressed == FName("settingButton")) {
 		bSettingsVisible_ = !bSettingsVisible_;
 		UIBinder->SetVisibility(FName("settings_canvas"), bSettingsVisible_);
+	}
+
+	// Global mute. USoundFeedback::SetMuted has existed since that class was
+	// written and nothing ever called it; this is the caller.
+	//
+	// The acknowledgement has to be played on whichever side of the toggle can
+	// still be heard -- before the mute goes on, after it comes off -- or the
+	// press that enables mute gives no feedback at all. PlaySound2D has already
+	// spawned the sound by the time SetMuted lands, so the first one survives.
+	if (ButtonPressed == FName("muteButton")) {
+		bSoundMuted_ = !bSoundMuted_;
+		if (bSoundMuted_) SoundFeedback->Play(ESoundType::Click);
+		SoundFeedback->SetMuted(bSoundMuted_);
+		if (!bSoundMuted_) SoundFeedback->Play(ESoundType::Confirm);
+
+		UIBinder->SetButtonToggled(FName("muteButton"), bSoundMuted_);
+		UIBinder->PushMessage(bSoundMuted_ ? TEXT("SOUND MUTED") : TEXT("SOUND ON"), 2.0f);
+		if (Logger_) Logger_->LogEvent(FString::Printf(TEXT("MUTE state=%s"),
+			bSoundMuted_ ? TEXT("on") : TEXT("off")));
 	}
 
 	if (ButtonPressed == FName("viewpointButton")) {
@@ -1380,15 +1403,6 @@ void AOperatorPawn::SendArmCommands() {
 		const float CaptureYaw = HMDOrigin_.GetRotation().Rotator().Yaw;
 		In.HMDYawQuat = FQuat(FRotator(0.f, CaptureYaw, 0.f));
 		In.bHMDOriginValid = true;
-	}
-
-	UTrackedControllerComponent* Tracked[2] = { LeftTracked, RightTracked };
-	for (int32 i = 0; i < 2; ++i) {
-		In.FilterMinCutoff[i]   = Tracked[i]->FilterMinCutoff;
-		In.FilterBeta[i]        = Tracked[i]->FilterBeta;
-		In.FilterDerivCutoff[i] = Tracked[i]->FilterDerivCutoff;
-		In.MaxTrackedSpeed[i]   = Tracked[i]->MaxTrackedSpeed;
-		In.MaxGuardWindow[i]    = Tracked[i]->MaxGuardWindow;
 	}
 
 	In.bHandValid[0] = LeftTracked->IsTracking();
