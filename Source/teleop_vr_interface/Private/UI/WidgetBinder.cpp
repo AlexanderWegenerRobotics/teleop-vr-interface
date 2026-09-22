@@ -6,10 +6,12 @@
 #include "Components/VerticalBox.h"
 #include "Components/VerticalBoxSlot.h"
 #include "Components/CanvasPanelSlot.h"
+#include "Components/PanelWidget.h"   // UWidget::GetParent() returns UPanelWidget*
 #include "Camera/CameraComponent.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "Blueprint/UserWidget.h"
 #include "Components/Image.h"
+#include "Components/Border.h"
 #include "Slate/WidgetRenderer.h"
 
 
@@ -120,8 +122,10 @@ void UWidgetBinder::DiscoverWidgets() {
 	CachedTextBlocks_.Empty();
 	CachedPlots_.Empty();
 	CachedImages_.Empty();
+	CachedBorders_.Empty();
 	OriginalStyles_.Empty();
-	MessageLog_ = nullptr;
+	MessageLog_  = nullptr;
+	MessageText_ = nullptr;
 
 	Widget_->WidgetTree->ForEachWidget([this](UWidget* W) {
 		CachedWidgets_.Add(W->GetFName(), W);
@@ -136,7 +140,7 @@ void UWidgetBinder::DiscoverWidgets() {
 		else if (UVerticalBox* VBox = Cast<UVerticalBox>(W)) {
 			if      (W->GetFName() == FName("cameraMenuList")) CameraMenuList_ = VBox;
 			else if (W->GetFName() == FName("resetMenuList"))  ResetMenuList_  = VBox;
-			else if (!MessageLog_) MessageLog_ = VBox;
+			else if (W->GetFName() == FName("messageLog"))     MessageLog_     = VBox;
 		}
 		else if (UTimeSeriesWidget* Plot = Cast<UTimeSeriesWidget>(W)) {
 			CachedPlots_.Add(W->GetFName(), Plot);
@@ -144,7 +148,40 @@ void UWidgetBinder::DiscoverWidgets() {
 		else if (UImage* Img = Cast<UImage>(W)) {
 			CachedImages_.Add(W->GetFName(), Img);
 		}
+		else if (UBorder* Bdr = Cast<UBorder>(W)) {
+			CachedBorders_.Add(W->GetFName(), Bdr);
+		}
 	});
+
+	if (!MessageLog_) {
+		if (auto* Found = CachedTextBlocks_.Find(FName("messageText"))) {
+			MessageText_ = *Found;
+		}
+	}
+
+	if (!MessageLog_ && !MessageText_ && !bMessageSinkWarned_) {
+		bMessageSinkWarned_ = true;
+		UE_LOG(LogTemp, Warning,
+			TEXT("WidgetBinder(%s): no message sink -- PushMessage output will be dropped. ")
+			TEXT("Add a VerticalBox named \"messageLog\" or a TextBlock named \"messageText\"."),
+			Widget_ ? *Widget_->GetClass()->GetName() : TEXT("?"));
+	}
+}
+
+// True only when the widget AND every ancestor up to the root is drawn.
+// UWidget::IsVisible() reports the widget's own flag, so a button inside a
+// collapsed panel still answers "visible" -- which is how a hidden panel's
+// buttons stayed in ButtonRects_ and remained gaze-hoverable over dead space.
+// Walking the parent chain is deliberate rather than reading cached geometry:
+// geometry is only valid after Slate has ticked, and rects are recomputed on
+// the same frame a panel is shown.
+static bool IsEffectivelyVisible(const UWidget* W) {
+	for (const UWidget* Cur = W; Cur; Cur = Cur->GetParent()) {
+		const ESlateVisibility Vis = Cur->GetVisibility();
+		if (Vis == ESlateVisibility::Collapsed || Vis == ESlateVisibility::Hidden)
+			return false;
+	}
+	return true;
 }
 
 void UWidgetBinder::CacheWidgetRects() {
@@ -155,6 +192,12 @@ void UWidgetBinder::CacheWidgetRects() {
 
 	Widget_->WidgetTree->ForEachWidget([this](UWidget* W) {
 		FName Name = W->GetFName();
+
+		// A collapsed subtree contributes no hit-test rects. Without this the
+		// only thing keeping hidden buttons out of ButtonRects_ is the
+		// zero-geometry check in the nested-button branch below, which does not
+		// apply to a button parented directly to a canvas panel.
+		if (!IsEffectivelyVisible(W)) return;
 
 		if (UCanvasPanelSlot* Slot = Cast<UCanvasPanelSlot>(W->Slot)) {
 			// Direct canvas child — compute rect from slot properties.
@@ -610,8 +653,8 @@ void UWidgetBinder::HideMenu() {
 }
 
 void UWidgetBinder::UpdateMessages(float DeltaTime) {
-	if (!MessageLog_) return;
-
+	// Expiry runs whether or not a sink exists -- gating this on MessageLog_
+	// would leave the queue growing forever in a widget with no message panel.
 	for (int32 i = MessageQueue_.Num() - 1; i >= 0; --i) {
 		MessageQueue_[i].Remaining -= DeltaTime;
 		if (MessageQueue_[i].Remaining <= 0.0f) {
@@ -622,14 +665,28 @@ void UWidgetBinder::UpdateMessages(float DeltaTime) {
 }
 
 void UWidgetBinder::RebuildMessageLog() {
-	if (!MessageLog_) return;
+	if (MessageLog_) {
+		MessageLog_->ClearChildren();
+		for (const FPendingMessage& Msg : MessageQueue_) {
+			UTextBlock* Entry = NewObject<UTextBlock>(Widget_->WidgetTree);
+			Entry->SetText(FText::FromString(Msg.Text));
+			Entry->SetColorAndOpacity(FLinearColor::White);
+			MessageLog_->AddChildToVerticalBox(Entry);
+		}
+		bStaticRectsDirty_ = true;
+		return;
+	}
 
-	MessageLog_->ClearChildren();
-	for (const FPendingMessage& Msg : MessageQueue_) {
-		UTextBlock* Entry = NewObject<UTextBlock>(Widget_->WidgetTree);
-		Entry->SetText(FText::FromString(Msg.Text));
-		Entry->SetColorAndOpacity(FLinearColor::White);
-		MessageLog_->AddChildToVerticalBox(Entry);
+	if (MessageText_) {
+		FString Joined;
+		for (const FPendingMessage& Msg : MessageQueue_) {
+			if (!Joined.IsEmpty()) Joined += TEXT("\n");
+			Joined += Msg.Text;
+		}
+		MessageText_->SetText(FText::FromString(Joined));
+		MessageText_->SetVisibility(Joined.IsEmpty()
+			? ESlateVisibility::Collapsed
+			: ESlateVisibility::HitTestInvisible);
 	}
 }
 
@@ -678,7 +735,12 @@ void UWidgetBinder::SetVisibility(FName WidgetName, bool bVisible)
 			const ESlateVisibility NewVis = bVisible ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed;
 			if ((*Found)->GetVisibility() != NewVis) {
 				(*Found)->SetVisibility(NewVis);
-				if (bVisible) bStaticRectsDirty_ = true;
+				// Dirty on hide as well as on show. Hiding used to leave the
+				// panel's buttons in ButtonRects_ with their last-known rects,
+				// so gaze kept hovering controls that were no longer drawn. The
+				// recache drops them, FindButtonAtUV then returns None, and the
+				// existing hover-change path clears the stale highlight.
+				bStaticRectsDirty_ = true;
 			}
 		}
 	}
@@ -687,6 +749,15 @@ void UWidgetBinder::SetVisibility(FName WidgetName, bool bVisible)
 void UWidgetBinder::SetImageColor(FName WidgetName, const FLinearColor& Color) {
 	if (auto* Found = CachedImages_.Find(WidgetName)) {
 		if (*Found) (*Found)->SetColorAndOpacity(Color);
+	}
+}
+
+void UWidgetBinder::SetBorderColor(FName WidgetName, const FLinearColor& Color) {
+	// SetBrushColor tints the background only. SetContentColorAndOpacity would
+	// multiply into every child, which would drag the label's colour along with
+	// the fill -- the label is driven separately via SetTextColor.
+	if (auto* Found = CachedBorders_.Find(WidgetName)) {
+		if (*Found) (*Found)->SetBrushColor(Color);
 	}
 }
 

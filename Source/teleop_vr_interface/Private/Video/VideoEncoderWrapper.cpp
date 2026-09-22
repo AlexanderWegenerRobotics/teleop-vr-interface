@@ -6,6 +6,11 @@
 #include "Windows/AllowWindowsPlatformTypes.h"
 #include <Windows.h>
 #include "Windows/HideWindowsPlatformTypes.h"
+// Hide...Types.h restores types but leaves the A/W function macros defined, and
+// under unity builds they leak into every .cpp compiled after this one. See the
+// header for the failure this produces. All Windows calls below use the
+// explicit ...W forms, so nothing here depends on the macros.
+#include "Shared/WindowsMacroCleanup.h"
 
 struct FEncoderHandle
 {

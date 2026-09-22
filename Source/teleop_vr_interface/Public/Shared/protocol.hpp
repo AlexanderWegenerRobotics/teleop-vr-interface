@@ -79,6 +79,20 @@ struct ArmCommandMsg {
     float     position[3];
     float     quaternion[4];
     float     gripper;
+    // Operator clutch, 1 = CLUTCHED. While clutched the operator's hand is
+    // decoupled from the setpoint: the retarget origin follows the hand, the
+    // commanded pose stops advancing, and the operator is repositioning their
+    // arm rather than demonstrating anything. Commands are still sent, so the
+    // sequence numbering stays continuous through a clutch.
+    //
+    // On the wire purely so the avatar can log it. Reconstructing it later
+    // means joining the avatar's per-episode files against one continuous
+    // operator-side stream recorded on another continent's clock, which is
+    // not a join worth trusting for training data.
+    //
+    // Senders that are never clutched (orchestrator playback, the autonomous
+    // policy path) send 0.
+    uint8_t   clutch;
 };
 
 struct ArmStateMsg {
@@ -122,8 +136,9 @@ struct HeadStateMsg {
 //
 //   MsgHeader       15 ->  23   (+ sample_time_ns, 2026-08-09)
 //   ArmStateMsg    105 -> 117   (+ sample_time_ns, + applied_cmd_sequence)
+//   ArmCommandMsg   47 ->  55 ->  56   (+ sample_time_ns, + clutch)
 static_assert(sizeof(MsgHeader)      == 23,  "MsgHeader size mismatch");
-static_assert(sizeof(ArmCommandMsg)  == 55,  "ArmCommandMsg size mismatch");
+static_assert(sizeof(ArmCommandMsg)  == 56,  "ArmCommandMsg size mismatch");
 static_assert(sizeof(ArmStateMsg)    == 117, "ArmStateMsg size mismatch");
 static_assert(sizeof(HeadCommandMsg) == 31,  "HeadCommandMsg size mismatch");
 static_assert(sizeof(HeadStateMsg)   == 31,  "HeadStateMsg size mismatch");

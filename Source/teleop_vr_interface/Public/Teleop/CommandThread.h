@@ -127,7 +127,11 @@ public:
 
     // Posted by the game thread, applied by the loop at a tick boundary so a
     // re-anchor can never land mid-integration.
-    void RequestCaptureOrigin();
+    //
+    // ArmIndex -1 re-anchors both arms (engage); 0 or 1 re-anchors that arm
+    // alone. Per-arm matters after a single-arm reset: zeroing the other arm
+    // there would make IT jump instead.
+    void RequestCaptureOrigin(int32 ArmIndex = -1);
 
     virtual uint32 Run() override;
     virtual void   Stop() override;
@@ -143,7 +147,9 @@ private:
 
     FRunnableThread* Thread_ = nullptr;
     TAtomic<bool>    bStop_{false};
-    TAtomic<bool>    bCaptureOriginPending_{false};
+    // Bit 0 = left, bit 1 = right. A bitmask rather than a bool so two
+    // requests landing in the same tick cannot cancel each other.
+    TAtomic<uint8>   CaptureOriginPending_{0};
 
     mutable FCriticalSection InputMutex_;
     FOperatorInputSnapshot   Input_;

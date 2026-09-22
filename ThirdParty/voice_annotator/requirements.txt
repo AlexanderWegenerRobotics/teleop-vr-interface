@@ -1,0 +1,42 @@
+# Voice annotator sidecar -- direct imports of voice_annotator.py only.
+# Full setup, including the CUDA notes, is in README.md next to this file.
+#
+# Two things about this list are not obvious:
+#
+#   torch is used ONLY by silero-vad, to run a tiny VAD over 512-sample chunks.
+#   Whisper does NOT go through torch -- faster-whisper runs it on CTranslate2,
+#   which ships its own CUDA support. So a CPU-only torch build is enough here
+#   even with --device cuda, and it saves a ~2.5 GB download.
+#
+#   torchaudio is pulled in by silero-vad rather than by this script. Listed
+#   explicitly so an install that drops it fails here rather than at load time.
+
+numpy
+pyaudio
+torch
+torchaudio
+silero-vad>=5.1
+faster-whisper>=1.0
+
+# ── GPU Whisper on Windows ───────────────────────────────────────────────────
+# device="cuda" with compute_type="int8_float16" needs the CUDA cuBLAS and cuDNN
+# DLLs findable at import time. CTranslate2 does not bundle them. If
+# WhisperModel(...) raises "Library cublas64_*.dll is not found" or
+# "cudnn_ops_infer64_*.dll", uncomment these -- pip drops the DLLs into
+# site-packages/nvidia/ where recent CTranslate2 finds them.
+#
+# nvidia-cublas-cu12
+# nvidia-cudnn-cu12
+#
+# Or run CPU-only: python voice_annotator.py --device cpu
+# small.en on CPU is a few hundred ms per short utterance, which is usable for
+# annotation even if it is not what the 3090 is for.
+
+# ── Freezing ─────────────────────────────────────────────────────────────────
+# Nothing above is pinned, because the working combination depends on the CUDA
+# runtime on the machine and I would only be guessing. Once the env runs:
+#
+#     pip freeze > requirements.lock.txt
+#
+# and commit that. For the frozen collection campaign the lock file is what
+# matters; this file is the recipe for building a new env from scratch.

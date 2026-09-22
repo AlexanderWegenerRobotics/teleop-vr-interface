@@ -3,6 +3,7 @@
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "HAL/PlatformProcess.h"
+#include "Misc/Paths.h"
 
 UVoiceAnnotatorComponent::UVoiceAnnotatorComponent() {
     PrimaryComponentTick.bCanEverTick = true;
@@ -23,20 +24,41 @@ void UVoiceAnnotatorComponent::BeginPlay() {
     }
 
     if (bAutoLaunch && !VoiceScriptPath.IsEmpty()) {
-        FString Args = FString::Printf(TEXT("\"%s\" --host 127.0.0.1 --port %d"), *VoiceScriptPath, VoicePort);
-        if (!AudioDevice.IsEmpty())
-            Args += FString::Printf(TEXT(" --device-index %s"), *AudioDevice);
+        FString ScriptPath = VoiceScriptPath;
+        if (FPaths::IsRelative(ScriptPath))
+            ScriptPath = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir() / ScriptPath);
 
-        uint32 ProcId = 0;
-        ProcHandle_ = FPlatformProcess::CreateProc(
-            *PythonExe, *Args,
-            /*bLaunchDetached=*/false, /*bLaunchHidden=*/false, /*bLaunchReallyHidden=*/false,
-            &ProcId, 0, nullptr, nullptr);
+        // Check both halves before launching. CreateProc fails identically for
+        // a missing interpreter and a missing script, and the difference is the
+        // whole diagnosis -- a deleted conda env looks exactly like a moved
+        // script in the old log line.
+        if (!FPaths::FileExists(ScriptPath)) {
+            UE_LOG(LogTemp, Warning,
+                TEXT("VoiceAnnotator: script not found at %s - voice commands disabled"),
+                *ScriptPath);
+        }
+        else if (!FPaths::FileExists(PythonExe)) {
+            UE_LOG(LogTemp, Warning,
+                TEXT("VoiceAnnotator: interpreter not found at %s - voice commands disabled. ")
+                TEXT("See ThirdParty/voice_annotator/README.md to recreate the env."),
+                *PythonExe);
+        }
+        else {
+            FString Args = FString::Printf(TEXT("\"%s\" --host 127.0.0.1 --port %d"), *ScriptPath, VoicePort);
+            if (!AudioDevice.IsEmpty())
+                Args += FString::Printf(TEXT(" --device-index %s"), *AudioDevice);
 
-        if (ProcHandle_.IsValid()) {
-            UE_LOG(LogTemp, Log, TEXT("VoiceAnnotator: launched sidecar pid=%u"), ProcId);
-        } else {
-            UE_LOG(LogTemp, Warning, TEXT("VoiceAnnotator: failed to launch %s %s"), *PythonExe, *VoiceScriptPath);
+            uint32 ProcId = 0;
+            ProcHandle_ = FPlatformProcess::CreateProc(
+                *PythonExe, *Args,
+                /*bLaunchDetached=*/false, /*bLaunchHidden=*/false, /*bLaunchReallyHidden=*/false,
+                &ProcId, 0, nullptr, nullptr);
+
+            if (ProcHandle_.IsValid()) {
+                UE_LOG(LogTemp, Log, TEXT("VoiceAnnotator: launched sidecar pid=%u  %s"), ProcId, *ScriptPath);
+            } else {
+                UE_LOG(LogTemp, Warning, TEXT("VoiceAnnotator: failed to launch %s %s"), *PythonExe, *ScriptPath);
+            }
         }
     }
 }

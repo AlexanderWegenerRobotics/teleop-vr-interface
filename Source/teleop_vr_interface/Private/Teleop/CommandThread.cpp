@@ -193,7 +193,12 @@ FCommandThreadOutput FTeleopCommandThread::ReadOutput() const
     return Output_;
 }
 
-void FTeleopCommandThread::RequestCaptureOrigin() { bCaptureOriginPending_ = true; }
+void FTeleopCommandThread::RequestCaptureOrigin(int32 ArmIndex)
+{
+    const uint8 Mask = (ArmIndex < 0) ? 0x3 : static_cast<uint8>(1u << (ArmIndex & 1));
+    uint8 Prev = CaptureOriginPending_.Load();
+    while (!CaptureOriginPending_.CompareExchange(Prev, static_cast<uint8>(Prev | Mask))) {}
+}
 
 // ---------------------------------------------------------------------------
 // OpenXR
@@ -311,6 +316,9 @@ void FTeleopCommandThread::SendArm(uint8 Index, const FOperatorInputSnapshot& In
     CoordConvert::UnrealToProtocolQuatFloat(Rotation, Msg.quaternion[0], Msg.quaternion[1],
                                             Msg.quaternion[2], Msg.quaternion[3]);
     Msg.gripper = In.bGraspHeld[Index] ? 1.0f : 0.0f;
+    // Sent on every command, clutched or not, so the avatar can mark the
+    // windows where the operator was repositioning rather than demonstrating.
+    Msg.clutch  = In.bFullClutch[Index] ? 1 : 0;
 
     const bool bSend = In.bArmActive[Index];
     if (bSend && ComLink_) ComLink_->SendArmCommand(Msg, Index);
@@ -368,10 +376,10 @@ uint32 FTeleopCommandThread::Run()
             In = Input_;
         }
 
-        if (bCaptureOriginPending_.Exchange(false))
+        if (const uint8 Mask = CaptureOriginPending_.Exchange(0))
         {
-            Retarget_[0].Reset();
-            Retarget_[1].Reset();
+            if (Mask & 0x1) Retarget_[0].Reset();
+            if (Mask & 0x2) Retarget_[1].Reset();
         }
 
         FTransform Pose[2];

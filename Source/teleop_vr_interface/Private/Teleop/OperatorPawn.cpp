@@ -20,9 +20,32 @@ extern RENDERCORE_API uint32 GRenderThreadTime;
 #include "Windows/AllowWindowsPlatformTypes.h"
 #include <Windows.h>
 #include "Windows/HideWindowsPlatformTypes.h"
+// Same reason as VideoEncoderWrapper.cpp: the A/W function macros outlive
+// Hide...Types.h and leak down the unity blob. GetSystemTimes, the only Windows
+// call in this file, is not one of them.
+#include "Shared/WindowsMacroCleanup.h"
 #endif
 
 namespace {
+// Operator-facing spelling of a FaultCode. FaultToString is the wire/log form
+// and stays as it is -- log parsers depend on it; this is the short phrasing
+// that reads at a glance inside the HUD banner.
+FString FaultDisplayText(int32 Code) {
+	switch (static_cast<FaultCode>(Code)) {
+	case FaultCode::JOINT_LIMIT:         return TEXT("JOINT LIMIT");
+	case FaultCode::JOINT_LOCKED:        return TEXT("JOINT LOCKED");
+	case FaultCode::HIGH_EXTERNAL_FORCE: return TEXT("EXTERNAL FORCE");
+	case FaultCode::VELOCITY_LIMIT:      return TEXT("VELOCITY LIMIT");
+	case FaultCode::IMPLAUSIBLE_COMMAND: return TEXT("BAD COMMAND");
+	case FaultCode::COMM_LOSS:           return TEXT("COMM LOSS");
+	case FaultCode::INTERNAL_ERROR:      return TEXT("INTERNAL ERROR");
+	case FaultCode::HMD_NOT_WORN:        return TEXT("HMD NOT WORN");
+	case FaultCode::COLLISION_RISK:      return TEXT("COLLISION RISK");
+	case FaultCode::WORKSPACE_LIMIT:     return TEXT("WORKSPACE LIMIT");
+	default:                             return TEXT("FAULT");
+	}
+}
+
 // Internal VideoFeedComponent registration key for the avatar main-view
 // source. The twin main-view source (when configured) is registered under
 // Config->Stream.TwinStream.Name instead -- see AOperatorPawn::BeginPlay and
@@ -382,6 +405,12 @@ void AOperatorPawn::BeginPlay() {
 	UIBinder->SetVisibility(FName("resetMenu"), false);
 	UIBinder->SetVisibility(FName("episodeAnnotationCanvas"), false);
 	UIBinder->SetVisibility(FName("settings_canvas"), false);
+	// Intervention UI. Hidden until the operator asks for it; see the
+	// interventionButton handler for the toggle. Both widgets are driven from
+	// the single bInterventionVisible_ flag so they can never disagree about
+	// whether the feature is on screen.
+	UIBinder->SetVisibility(FName("interventionPanel"),     bInterventionVisible_);
+	UIBinder->SetVisibility(FName("authority_pill_canvas"), bInterventionVisible_);
 	// Start from a known visual state. Without this the button rests on
 	// whatever its UMG Normal brush happens to be, which is only the unmuted
 	// icon by convention rather than by anything enforcing it.
@@ -466,6 +495,13 @@ void AOperatorPawn::BeginPlay() {
 			if (Logger_) Logger_->LogEvent(FString::Printf(TEXT("ARM_RESET_COMPLETE device=%s"), UTF8_TO_TCHAR(Device.c_str())));
 			if (Device == "arm_left") {
 				LeftTracked->CaptureOrigin();
+				// The command thread owns the retarget now, so the component's own
+				// CaptureOrigin() no longer touches what is actually sent. Without
+				// this the thread keeps its pre-fault banked translation, the avatar
+				// re-latches its origin to the recovered pose, and the arm drives
+				// straight back to where it faulted. Per-arm: re-anchoring both
+				// would make the other arm jump instead.
+				if (CommandThread_) CommandThread_->RequestCaptureOrigin(0);
 				SendArmResume("arm_left");
 				LeftArmResetState_ = EArmResetState::Idle;
 				if (GhostOverlay) {
@@ -479,6 +515,13 @@ void AOperatorPawn::BeginPlay() {
 			}
 			if (Device == "arm_right") {
 				RightTracked->CaptureOrigin();
+				// The command thread owns the retarget now, so the component's own
+				// CaptureOrigin() no longer touches what is actually sent. Without
+				// this the thread keeps its pre-fault banked translation, the avatar
+				// re-latches its origin to the recovered pose, and the arm drives
+				// straight back to where it faulted. Per-arm: re-anchoring both
+				// would make the other arm jump instead.
+				if (CommandThread_) CommandThread_->RequestCaptureOrigin(1);
 				SendArmResume("arm_right");
 				RightArmResetState_ = EArmResetState::Idle;
 				if (GhostOverlay) {
@@ -649,15 +692,18 @@ void AOperatorPawn::Tick(float DeltaTime) {
 			const int32 FaultValue = PendingArmFault_[Index].Exchange(-1);
 			if (FaultValue >= 0) {
 				bNewFault = true;
+				LastArmFault_[Index]     = FaultValue;
+				LastArmFaultTime_[Index] = FPlatformTime::Seconds();
 				if (Logger_) {
 					Logger_->LogEvent(FString::Printf(
-						TEXT("ARM_REMOTE_FAULT side=%s fault_code=%d remote_state=%d"),
+						TEXT("ARM_REMOTE_FAULT side=%s fault_code=%d fault=%s remote_state=%d"),
 						Index == 0 ? TEXT("left") : TEXT("right"),
 						FaultValue,
+						*FaultToString(static_cast<FaultCode>(FaultValue)),
 						static_cast<int32>(ComLink->GetArmRemoteState(static_cast<uint8>(Index)))));
 				}
-				UE_LOG(LogTemp, Error, TEXT("OperatorPawn: remote arm %d reported FAULT (code %d)"),
-					Index, FaultValue);
+				UE_LOG(LogTemp, Error, TEXT("OperatorPawn: remote arm %d reported FAULT (%s, code %d)"),
+					Index, *FaultToString(static_cast<FaultCode>(FaultValue)), FaultValue);
 			}
 			// Reset watchdog. LeftArmResetState_/RightArmResetState_ only ever
 			// returned to Idle on a "reset_complete" device_event, so a reset
@@ -710,7 +756,33 @@ void AOperatorPawn::Tick(float DeltaTime) {
 		if (bNewFault) {
 			SoundFeedback->Play(ESoundType::Warning);
 		}
-		UIBinder->SetVisibility(FName("armFaultInfo"), bFaultLatched);
+
+		// Banner names the cause. "fault_status_canvas" carries the background
+		// and rim, "fault_status_text" the line itself -- same construction as
+		// gazeOfflineInfo. The earlier code drove a name ("armFaultInfo") that
+		// was never built in the widget, so SetVisibility matched nothing and
+		// the fault had no visual channel at all.
+		const double NowFault = FPlatformTime::Seconds();
+		FString FaultText;
+		for (int32 Index = 0; Index < 2; ++Index) {
+			if (LastArmFault_[Index] <= 0) continue;
+			const bool bHold = (NowFault - LastArmFaultTime_[Index]) < kFaultBannerHoldSec
+				|| ComLink->GetArmRemoteState(static_cast<uint8>(Index)) == SysState::FAULT;
+			if (!bHold) {
+				LastArmFault_[Index] = 0;
+				continue;
+			}
+			if (!FaultText.IsEmpty()) FaultText += TEXT("    ");
+			FaultText += FString::Printf(TEXT("%s ARM: %s"),
+				Index == 0 ? TEXT("LEFT") : TEXT("RIGHT"),
+				*FaultDisplayText(LastArmFault_[Index]));
+		}
+
+		if (!FaultText.IsEmpty()) {
+			UIBinder->SetText(FName("fault_status_text"), FaultText);
+		}
+		UIBinder->SetVisibility(FName("fault_status_canvas"),
+			bFaultLatched || !FaultText.IsEmpty());
 	}
 
 	const bool bGazeFresh = Gaze->IsGazeFresh();
@@ -1098,6 +1170,17 @@ void AOperatorPawn::UpdateStateMachine() {
 		UIBinder->SetVisibility(FName("settings_canvas"), bSettingsVisible_);
 	}
 
+	// Intervention (DAgger) UI. Visibility only -- nothing behind it is wired
+	// yet, so this shows and hides the readouts without claiming any authority
+	// over the arms. The toggled state is mirrored onto the tray button so the
+	// icon reads as latched, matching statisticsButton/settingButton.
+	if (ButtonPressed == FName("interventionButton")) {
+		bInterventionVisible_ = !bInterventionVisible_;
+		UIBinder->SetVisibility(FName("interventionPanel"),     bInterventionVisible_);
+		UIBinder->SetVisibility(FName("authority_pill_canvas"), bInterventionVisible_);
+		UIBinder->SetButtonToggled(FName("interventionButton"), bInterventionVisible_);
+	}
+
 	// Global mute. USoundFeedback::SetMuted has existed since that class was
 	// written and nothing ever called it; this is the caller.
 	//
@@ -1112,7 +1195,6 @@ void AOperatorPawn::UpdateStateMachine() {
 		if (!bSoundMuted_) SoundFeedback->Play(ESoundType::Confirm);
 
 		UIBinder->SetButtonToggled(FName("muteButton"), bSoundMuted_);
-		UIBinder->PushMessage(bSoundMuted_ ? TEXT("SOUND MUTED") : TEXT("SOUND ON"), 2.0f);
 		if (Logger_) Logger_->LogEvent(FString::Printf(TEXT("MUTE state=%s"),
 			bSoundMuted_ ? TEXT("on") : TEXT("off")));
 	}

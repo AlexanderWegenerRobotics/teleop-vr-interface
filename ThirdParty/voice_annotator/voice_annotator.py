@@ -7,6 +7,7 @@ Usage:
 
 import argparse
 import json
+import os
 import queue
 import socket
 import sys
@@ -15,12 +16,43 @@ import time
 from collections import deque
 from dataclasses import dataclass
 from enum import IntEnum
+from pathlib import Path
 
-import numpy as np
-import pyaudio
-import torch
-from faster_whisper import WhisperModel
-from silero_vad import load_silero_vad
+
+def _register_cuda_dll_dirs() -> None:
+    """Make the pip-installed CUDA DLLs loadable before CTranslate2 wants them.
+
+    nvidia-cublas-cu12 / nvidia-cudnn-cu12 drop their DLLs under
+    site-packages/nvidia/*/bin, which is not on PATH. CTranslate2 loads them by
+    name at the first encode rather than at import, so a missing one surfaces as
+    "Library cublas64_12.dll is not found" inside the ASR thread, minutes into a
+    session, instead of at startup.
+
+    Relying on PATH is doubly unsafe here because UVoiceAnnotatorComponent
+    launches this script with CreateProc, so the environment is whatever Unreal
+    had, not whatever the conda prompt had.
+    """
+    if not hasattr(os, "add_dll_directory"):
+        return                                  # not Windows
+    try:
+        import nvidia                           # noqa: F401
+    except ImportError:
+        return                                  # CPU install, or DLLs come from a CUDA toolkit
+    for d in sorted(Path(nvidia.__file__).parent.glob("*/bin")):
+        try:
+            os.add_dll_directory(str(d))
+        except OSError:
+            pass
+
+
+# Must run before faster_whisper pulls in ctranslate2, hence the import order.
+_register_cuda_dll_dirs()
+
+import numpy as np                              # noqa: E402
+import pyaudio                                  # noqa: E402
+import torch                                    # noqa: E402
+from faster_whisper import WhisperModel         # noqa: E402
+from silero_vad import load_silero_vad          # noqa: E402
 
 # ── Audio / VAD constants ────────────────────────────────────────────────────
 
@@ -356,10 +388,38 @@ class Transcriber(threading.Thread):
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+def _load_whisper(device: str) -> WhisperModel:
+    """Load the model and prove the compute path works before accepting audio.
+
+    WhisperModel() constructs happily without touching CUDA -- the libraries are
+    only loaded on the first encode. Left alone, a broken CUDA install therefore
+    kills the ASR thread partway through a session and takes voice commands with
+    it silently, because the capture thread keeps running and the process stays
+    alive. One throwaway encode here turns that into a startup-time decision.
+    """
+    compute_type = "int8_float16" if device == "cuda" else "int8"
+    model = WhisperModel(WHISPER_MODEL, device=device, compute_type=compute_type)
+    list(model.transcribe(np.zeros(SAMPLE_RATE, dtype=np.float32),
+                          language=WHISPER_LANGUAGE, beam_size=1)[0])
+    return model
+
+
 def run(host: str, port: int, device: str, device_index: int | None) -> None:
     print(f"Loading Whisper ({WHISPER_MODEL}) on {device}...")
-    compute_type = "int8_float16" if device == "cuda" else "int8"
-    whisper = WhisperModel(WHISPER_MODEL, device=device, compute_type=compute_type)
+    try:
+        whisper = _load_whisper(device)
+    except Exception as e:
+        if device != "cuda":
+            raise
+        print(f"\n[WARN] Whisper could not run on CUDA: {e}")
+        print("[WARN] Falling back to CPU. Voice commands will work, with more")
+        print("[WARN] latency per utterance. To fix CUDA:")
+        print("[WARN]   pip install nvidia-cublas-cu12 nvidia-cudnn-cu12")
+        print("[WARN] matching your ctranslate2 major version -- cuDNN 9 for")
+        print("[WARN] ctranslate2 >= 4.5, cuDNN 8 below that.\n")
+        device  = "cpu"
+        whisper = _load_whisper("cpu")
+    print(f"Whisper ready on {device}.")
 
     print("Loading VAD and opening mic...")
     if device_index is None:

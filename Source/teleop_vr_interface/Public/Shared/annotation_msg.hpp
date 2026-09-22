@@ -3,6 +3,9 @@
 #include <cstdint>
 #include <string>
 #include <msgpack.hpp>
+// See CommandLink.h: msgpack drags in <windows.h> via <winsock2.h> on MSVC and
+// leaves its A/W function macros behind for the whole translation unit.
+#include "Shared/WindowsMacroCleanup.h"
 
 struct AnnotationMsg {
     double      timestamp  = 0.0;

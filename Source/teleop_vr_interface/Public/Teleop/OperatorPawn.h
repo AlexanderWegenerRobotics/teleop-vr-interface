@@ -120,6 +120,16 @@ private:
 	void HandleArmFault(uint8 DeviceIndex, FaultCode Code);
 	// Set by HandleArmFault, consumed and cleared in Tick. One slot per arm.
 	TAtomic<int32> PendingArmFault_[2];    // -1 = none, else FaultCode value
+
+	// Last fault code per arm, kept so the HUD can name the cause rather than
+	// just showing that something failed. Held for kFaultBannerHoldSec after
+	// arrival even once the avatar has moved on to RECOVERING -- the reflex
+	// dwell means a recovery can complete in well under a second, and tying
+	// the banner to the remote FAULT state alone would hide the cause on
+	// exactly the faults that recover cleanly.
+	int32  LastArmFault_[2]     = { 0, 0 };
+	double LastArmFaultTime_[2] = { 0.0, 0.0 };
+	static constexpr double kFaultBannerHoldSec = 5.0;
 	FFrameBundle BuildFrameBundle() const;
 
 	// Tells the local operator-side RealSense recorder to start/stop, in step with the
@@ -169,6 +179,10 @@ private:
 	bool  bPrevRightClutch_ = false;
 	bool  bStatsVisible_       = false;
 	bool  bSettingsVisible_    = false;
+	// Intervention (DAgger) readouts. One flag drives interventionPanel and
+	// authority_pill_canvas together so the two can never disagree about
+	// whether the feature is on screen.
+	bool  bInterventionVisible_ = false;
 	// Operator-chosen global mute. USoundFeedback is the only thing in this
 	// interface that plays audio, so this silences everything the operator
 	// hears. Controller haptics are deliberately NOT affected -- they are the

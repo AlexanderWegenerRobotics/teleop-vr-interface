@@ -9,6 +9,11 @@
 #include <vector>
 #include <functional>
 #include <msgpack.hpp>
+// msgpack pulls <winsock2.h> -> <windows.h> on MSVC, which leaves the A/W
+// function macros (UpdateResource -> UpdateResourceW, ...) defined for the rest
+// of the translation unit -- i.e. for every .cpp concatenated after this one in
+// a unity blob. Cap it here, at the include that causes it.
+#include "Shared/WindowsMacroCleanup.h"
 
 struct FReliableEnvelope {
     uint32_t    sequence      = 0;

@@ -16,6 +16,7 @@ class UVerticalBox;
 class UTextureRenderTarget2D;
 class FWidgetRenderer;
 class UImage;
+class UBorder;
 
 USTRUCT()
 struct FPendingMessage {
@@ -62,6 +63,7 @@ public:
 	void SetVisibility(FName WidgetName, bool bVisible);
 	UTextureRenderTarget2D* GetRenderTarget() const { return RenderTarget_; }
 	void SetImageColor(FName WidgetName, const FLinearColor& Color);
+	void SetBorderColor(FName WidgetName, const FLinearColor& Color);
 	void SetImageTexture(FName WidgetName, UTexture2D* Texture);
 
 	// Returns the canvas slot position (widget center when alignment is 0.5,0.5).
@@ -135,7 +137,17 @@ private:
 	UPROPERTY() TMap<FName, FWidgetRect> WidgetRects_;
 	UPROPERTY() TMap<FName, FWidgetRect> ButtonRects_;
 	UPROPERTY() TMap<FName, UImage*> CachedImages_;
+	UPROPERTY() TMap<FName, UBorder*> CachedBorders_;
+
+	// Message sink. Bound by explicit widget name only -- an earlier version
+	// claimed the first unnamed VerticalBox in tree order, which silently
+	// captured whatever panel happened to come first (the START/ENGAGE stack)
+	// and then destroyed its children on the first RebuildMessageLog.
+	// MessageText_ is the fallback for widgets that carry a single TextBlock
+	// instead of a list. Both null is legal: messages then expire unseen.
 	UVerticalBox* MessageLog_      = nullptr;
+	UTextBlock*   MessageText_     = nullptr;
+	bool          bMessageSinkWarned_ = false;
 	UVerticalBox* CameraMenuList_  = nullptr;
 	UVerticalBox* ResetMenuList_   = nullptr;
 
