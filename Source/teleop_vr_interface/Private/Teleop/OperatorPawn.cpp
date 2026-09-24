@@ -27,25 +27,6 @@ extern RENDERCORE_API uint32 GRenderThreadTime;
 #endif
 
 namespace {
-// Operator-facing spelling of a FaultCode. FaultToString is the wire/log form
-// and stays as it is -- log parsers depend on it; this is the short phrasing
-// that reads at a glance inside the HUD banner.
-FString FaultDisplayText(int32 Code) {
-	switch (static_cast<FaultCode>(Code)) {
-	case FaultCode::JOINT_LIMIT:         return TEXT("JOINT LIMIT");
-	case FaultCode::JOINT_LOCKED:        return TEXT("JOINT LOCKED");
-	case FaultCode::HIGH_EXTERNAL_FORCE: return TEXT("EXTERNAL FORCE");
-	case FaultCode::VELOCITY_LIMIT:      return TEXT("VELOCITY LIMIT");
-	case FaultCode::IMPLAUSIBLE_COMMAND: return TEXT("BAD COMMAND");
-	case FaultCode::COMM_LOSS:           return TEXT("COMM LOSS");
-	case FaultCode::INTERNAL_ERROR:      return TEXT("INTERNAL ERROR");
-	case FaultCode::HMD_NOT_WORN:        return TEXT("HMD NOT WORN");
-	case FaultCode::COLLISION_RISK:      return TEXT("COLLISION RISK");
-	case FaultCode::WORKSPACE_LIMIT:     return TEXT("WORKSPACE LIMIT");
-	default:                             return TEXT("FAULT");
-	}
-}
-
 // Internal VideoFeedComponent registration key for the avatar main-view
 // source. The twin main-view source (when configured) is registered under
 // Config->Stream.TwinStream.Name instead -- see AOperatorPawn::BeginPlay and
@@ -62,6 +43,32 @@ const FString kAvatarMainLabel = TEXT("AVATAR");
 // SetColorAndOpacity, which takes linear 0..1 -- 8-bit channel values there
 // clip to white.
 const FLinearColor kWarnAmber(1.f, 0.216f, 0.004f);
+
+// Authority accent colours, linear-space equivalents of the sRGB values the
+// intervention panel was designed against: POLICY #35C6E4, HUMAN #3FD47A,
+// HOLD #E8B21F. Same conversion note as kWarnAmber above.
+const FLinearColor kAuthorityPolicy(0.0356f, 0.5647f, 0.7758f);
+const FLinearColor kAuthorityHuman (0.0497f, 0.6584f, 0.1946f);
+const FLinearColor kAuthorityHold  (0.8070f, 0.4452f, 0.0137f);
+// Shown when the two arms are in different states, and when authority has not
+// been claimed at all. Deliberately not one of the three: a split is not a
+// state, it is the absence of a single answer, and colouring it like one of the
+// arms would make the HUD claim something about the other.
+const FLinearColor kAuthorityMixed (0.55f, 0.55f, 0.55f);
+// AGREE pips: lit in the POLICY accent, unlit near-black.
+const FLinearColor kPipOff(0.15f, 0.15f, 0.15f);
+constexpr int32  kAgreePips            = 5;
+// policy_status arrives at ~5 Hz; older than this and INF/AGREE show nothing.
+constexpr double kPolicyStatusStaleSec = 1.0;
+
+FLinearColor AuthorityColor(EControlAuthority A) {
+    switch (A) {
+    case EControlAuthority::Policy: return kAuthorityPolicy;
+    case EControlAuthority::Human:  return kAuthorityHuman;
+    case EControlAuthority::Hold:   return kAuthorityHold;
+    default:                        return kAuthorityMixed;
+    }
+}
 
 struct FGazeSampleMsg {
     uint64_t frame_id     = 0;
@@ -405,12 +412,21 @@ void AOperatorPawn::BeginPlay() {
 	UIBinder->SetVisibility(FName("resetMenu"), false);
 	UIBinder->SetVisibility(FName("episodeAnnotationCanvas"), false);
 	UIBinder->SetVisibility(FName("settings_canvas"), false);
-	// Intervention UI. Hidden until the operator asks for it; see the
-	// interventionButton handler for the toggle. Both widgets are driven from
-	// the single bInterventionVisible_ flag so they can never disagree about
-	// whether the feature is on screen.
-	UIBinder->SetVisibility(FName("interventionPanel"),     bInterventionVisible_);
-	UIBinder->SetVisibility(FName("authority_pill_canvas"), bInterventionVisible_);
+	// Warning banners. These are laid out visible in UMG so they can be
+	// positioned, and nothing hid them at startup -- fault_status_canvas in
+	// particular sat on screen showing its placeholder text for a whole session
+	// with no fault anywhere. The Tick handlers below set them correctly from
+	// the first frame, but only once the relevant feed has been heard from; this
+	// makes the starting state false rather than "whatever the artist left".
+	UIBinder->SetVisibility(FName("fault_status_canvas"), false);
+	UIBinder->SetVisibility(FName("armStaleInfo"), false);
+	UIBinder->SetVisibility(FName("videoLostInfo"), false);
+	// Intervention UI. Hidden until the operator arms the session; see the
+	// interventionButton handler. Both widgets are driven from the single
+	// bInterventionArmed_ flag so they can never disagree about whether the
+	// feature is on screen -- or, now, about whether it is live.
+	UIBinder->SetVisibility(FName("interventionPanel"),     bInterventionArmed_);
+	UIBinder->SetVisibility(FName("authority_pill_canvas"), bInterventionArmed_);
 	// Start from a known visual state. Without this the button rests on
 	// whatever its UMG Normal brush happens to be, which is only the unmuted
 	// icon by convention rather than by anything enforcing it.
@@ -481,6 +497,47 @@ void AOperatorPawn::BeginPlay() {
 	UIBinder->BindPlot(FName("dataGpuTempPlot"), GpuTempHistory.GetSamplesPtr(), nullptr, GpuTempHistory.Capacity(), GpuTempHistory.GetHeadPtr(), 0.0f, 100.0f);
 	UIBinder->SetPlotThreshold(FName("dataGpuTempPlot"), 83.0f);  // GPU temp °C — throttle onset
 
+	// The avatar's authority echo. It publishes authority to the orchestrator
+	// inside SceneObjectsMsg every tick, but that is a different socket and a
+	// different consumer, and re-asserting on the reliable command channel at
+	// 100 Hz would be a hundred acks a second. So the interface gets edges.
+	//
+	// Edges specifically, not just replies to our own requests: ArmControl
+	// changes authority on its own when the staleness watchdog fires, and an
+	// echo driven from the request handler would never report that.
+	//
+	// Runs on the command-link receive thread, so it only touches atomics.
+	ComLink->RegisterHandler("authority_state", [this](const FReliableEnvelope& Env) {
+		std::map<std::string, msgpack::object> Fields;
+		Env.payload.convert(Fields);
+		auto DevIt  = Fields.find("device");
+		auto AuthIt = Fields.find("authority");
+		if (DevIt == Fields.end() || AuthIt == Fields.end()) return;
+
+		const std::string Device = DevIt->second.as<std::string>();
+		const uint8 Raw = AuthIt->second.as<uint8_t>();
+		if (Device == "arm_left")       LeftAuthority_.Store(Raw);
+		else if (Device == "arm_right") RightAuthority_.Store(Raw);
+
+		// Anything other than UNSET means SOMEONE is gating this arm, so an
+		// intervention session is already running whether or not this interface
+		// has been told about it. See MaybeAutoArmIntervention.
+		if (Raw != static_cast<uint8>(EControlAuthority::Unset))
+			bAuthorityLiveSeen_.store(true, std::memory_order_relaxed);
+	});
+
+	// The orchestrator's policy readouts, relayed by the avatar. Receive thread,
+	// atomics only.
+	ComLink->RegisterHandler("policy_status", [this](const FReliableEnvelope& Env) {
+		std::map<std::string, msgpack::object> Fields;
+		Env.payload.convert(Fields);
+		auto InfIt   = Fields.find("inference_ms");
+		auto AgreeIt = Fields.find("agree");
+		if (InfIt != Fields.end())   PolicyInferenceMs_.store(InfIt->second.as<float>());
+		if (AgreeIt != Fields.end()) PolicyAgree_.store(AgreeIt->second.as<float>());
+		PolicyStatusTime_.store(FPlatformTime::Seconds());
+	});
+
 	ComLink->RegisterHandler("device_event", [this](const FReliableEnvelope& Env) {
 		std::map<std::string, msgpack::object> Fields;
 		Env.payload.convert(Fields);
@@ -495,13 +552,6 @@ void AOperatorPawn::BeginPlay() {
 			if (Logger_) Logger_->LogEvent(FString::Printf(TEXT("ARM_RESET_COMPLETE device=%s"), UTF8_TO_TCHAR(Device.c_str())));
 			if (Device == "arm_left") {
 				LeftTracked->CaptureOrigin();
-				// The command thread owns the retarget now, so the component's own
-				// CaptureOrigin() no longer touches what is actually sent. Without
-				// this the thread keeps its pre-fault banked translation, the avatar
-				// re-latches its origin to the recovered pose, and the arm drives
-				// straight back to where it faulted. Per-arm: re-anchoring both
-				// would make the other arm jump instead.
-				if (CommandThread_) CommandThread_->RequestCaptureOrigin(0);
 				SendArmResume("arm_left");
 				LeftArmResetState_ = EArmResetState::Idle;
 				if (GhostOverlay) {
@@ -515,13 +565,6 @@ void AOperatorPawn::BeginPlay() {
 			}
 			if (Device == "arm_right") {
 				RightTracked->CaptureOrigin();
-				// The command thread owns the retarget now, so the component's own
-				// CaptureOrigin() no longer touches what is actually sent. Without
-				// this the thread keeps its pre-fault banked translation, the avatar
-				// re-latches its origin to the recovered pose, and the arm drives
-				// straight back to where it faulted. Per-arm: re-anchoring both
-				// would make the other arm jump instead.
-				if (CommandThread_) CommandThread_->RequestCaptureOrigin(1);
 				SendArmResume("arm_right");
 				RightArmResetState_ = EArmResetState::Idle;
 				if (GhostOverlay) {
@@ -692,18 +735,15 @@ void AOperatorPawn::Tick(float DeltaTime) {
 			const int32 FaultValue = PendingArmFault_[Index].Exchange(-1);
 			if (FaultValue >= 0) {
 				bNewFault = true;
-				LastArmFault_[Index]     = FaultValue;
-				LastArmFaultTime_[Index] = FPlatformTime::Seconds();
 				if (Logger_) {
 					Logger_->LogEvent(FString::Printf(
-						TEXT("ARM_REMOTE_FAULT side=%s fault_code=%d fault=%s remote_state=%d"),
+						TEXT("ARM_REMOTE_FAULT side=%s fault_code=%d remote_state=%d"),
 						Index == 0 ? TEXT("left") : TEXT("right"),
 						FaultValue,
-						*FaultToString(static_cast<FaultCode>(FaultValue)),
 						static_cast<int32>(ComLink->GetArmRemoteState(static_cast<uint8>(Index)))));
 				}
-				UE_LOG(LogTemp, Error, TEXT("OperatorPawn: remote arm %d reported FAULT (%s, code %d)"),
-					Index, *FaultToString(static_cast<FaultCode>(FaultValue)), FaultValue);
+				UE_LOG(LogTemp, Error, TEXT("OperatorPawn: remote arm %d reported FAULT (code %d)"),
+					Index, FaultValue);
 			}
 			// Reset watchdog. LeftArmResetState_/RightArmResetState_ only ever
 			// returned to Idle on a "reset_complete" device_event, so a reset
@@ -756,33 +796,26 @@ void AOperatorPawn::Tick(float DeltaTime) {
 		if (bNewFault) {
 			SoundFeedback->Play(ESoundType::Warning);
 		}
-
-		// Banner names the cause. "fault_status_canvas" carries the background
-		// and rim, "fault_status_text" the line itself -- same construction as
-		// gazeOfflineInfo. The earlier code drove a name ("armFaultInfo") that
-		// was never built in the widget, so SetVisibility matched nothing and
-		// the fault had no visual channel at all.
-		const double NowFault = FPlatformTime::Seconds();
-		FString FaultText;
-		for (int32 Index = 0; Index < 2; ++Index) {
-			if (LastArmFault_[Index] <= 0) continue;
-			const bool bHold = (NowFault - LastArmFaultTime_[Index]) < kFaultBannerHoldSec
-				|| ComLink->GetArmRemoteState(static_cast<uint8>(Index)) == SysState::FAULT;
-			if (!bHold) {
-				LastArmFault_[Index] = 0;
-				continue;
-			}
-			if (!FaultText.IsEmpty()) FaultText += TEXT("    ");
-			FaultText += FString::Printf(TEXT("%s ARM: %s"),
-				Index == 0 ? TEXT("LEFT") : TEXT("RIGHT"),
-				*FaultDisplayText(LastArmFault_[Index]));
+		// The widget in WBP_DebugPanel is called fault_status_canvas, not
+		// armFaultInfo. UWidgetBinder::SetVisibility no-ops on a name it does not
+		// hold, so this call had been doing nothing since it was written, and the
+		// banner sat on screen showing its design-time placeholder text
+		// ("RIGHT ARM EXTERNAL FORCE") for the whole session regardless of
+		// whether anything had faulted.
+		//
+		// Both names are driven. The real one does the work; armFaultInfo stays
+		// in case the asset ever grows a widget by that name, and costs one
+		// failed TMap lookup.
+		UIBinder->SetVisibility(FName("fault_status_canvas"), bFaultLatched);
+		UIBinder->SetVisibility(FName("armFaultInfo"), bFaultLatched);
+		if (bFaultLatched) {
+			const bool bLeft  = ComLink->GetArmRemoteState(0) == SysState::FAULT;
+			const bool bRight = ComLink->GetArmRemoteState(1) == SysState::FAULT;
+			UIBinder->SetText(FName("fault_status_text"),
+				(bLeft && bRight) ? TEXT("BOTH ARMS FAULTED")
+				: bLeft           ? TEXT("LEFT ARM FAULTED")
+				                  : TEXT("RIGHT ARM FAULTED"));
 		}
-
-		if (!FaultText.IsEmpty()) {
-			UIBinder->SetText(FName("fault_status_text"), FaultText);
-		}
-		UIBinder->SetVisibility(FName("fault_status_canvas"),
-			bFaultLatched || !FaultText.IsEmpty());
 	}
 
 	const bool bGazeFresh = Gaze->IsGazeFresh();
@@ -806,6 +839,23 @@ void AOperatorPawn::Tick(float DeltaTime) {
 		UIBinder->SetText(FName("stream_health_value"), *HealthLabels[HealthIdx]);
 		UIBinder->SetTextColor(FName("stream_health_value"), HealthColors[HealthIdx]);
 	}
+
+	// Before UpdateInfoBar, so the pill renders this frame's authority rather
+	// than last frame's. Every tick, not on the periodic stream-row cadence:
+	// the gap between a trigger pull and the takeover is latency the operator
+	// feels directly.
+	// Before UpdateAuthority: arming is what lets UpdateAuthority do anything
+	// at all, so the tick that discovers the session must not also throw away
+	// that tick's clutch edge.
+	MaybeAutoArmIntervention();
+	UpdateAuthority();
+	UpdatePolicyStats(DeltaTime);
+	// After UpdateAuthority, so that a release and a chord landing in the same
+	// frame are processed in the order they physically happened: the release
+	// sends HOLD, then the chord sends POLICY. The reverse order would put a
+	// HOLD after the resume and freeze the robot the operator just handed
+	// back -- with nothing on screen to say why.
+	PollResumeButton();
 
 	UpdateInfoBar();
 
@@ -1170,15 +1220,80 @@ void AOperatorPawn::UpdateStateMachine() {
 		UIBinder->SetVisibility(FName("settings_canvas"), bSettingsVisible_);
 	}
 
-	// Intervention (DAgger) UI. Visibility only -- nothing behind it is wired
-	// yet, so this shows and hides the readouts without claiming any authority
-	// over the arms. The toggled state is mirrored onto the tray button so the
-	// icon reads as latched, matching statisticsButton/settingButton.
+	// Arms or disarms the intervention session. This is the switch that makes
+	// authority live at all, so both edges move the robot's ownership and both
+	// are deliberate:
+	//
+	//   arming  -> HOLD on every arm. Latches enforcement on at the avatar and
+	//              closes both gates, so nothing moves until the operator pulls
+	//              a trigger (HUMAN) or presses RESUME (POLICY). Claiming
+	//              POLICY here would start the policy driving on a button press
+	//              that only meant "show me the panel".
+	//   disarming -> HUMAN on every arm. There is no way back to UNSET by
+	//              design, so the honest way to switch the feature off is to
+	//              hand the arms to the operator, which is where they were
+	//              before any of this.
 	if (ButtonPressed == FName("interventionButton")) {
-		bInterventionVisible_ = !bInterventionVisible_;
-		UIBinder->SetVisibility(FName("interventionPanel"),     bInterventionVisible_);
-		UIBinder->SetVisibility(FName("authority_pill_canvas"), bInterventionVisible_);
-		UIBinder->SetButtonToggled(FName("interventionButton"), bInterventionVisible_);
+		bInterventionArmed_ = !bInterventionArmed_;
+		UIBinder->SetVisibility(FName("interventionPanel"),     bInterventionArmed_);
+		UIBinder->SetVisibility(FName("authority_pill_canvas"), bInterventionArmed_);
+		UIBinder->SetButtonToggled(FName("interventionButton"), bInterventionArmed_);
+
+		const EControlAuthority Target = bInterventionArmed_ ? EControlAuthority::Hold
+		                                                      : EControlAuthority::Human;
+		// Straight to ComLink, not RequestArmAuthority: that one re-anchors the
+		// retarget on a takeover, and arming is not a takeover.
+		//
+		// Whole-body sends ONE request with the device key omitted. Two would
+		// also work -- the avatar fans each out over every arm -- but one
+		// message is the invariant this mode rests on: there is no instant,
+		// however brief, at which the two arms sit on different sides of the
+		// switch.
+		if (bWholeBodyAuthority) {
+			ComLink->SendAuthorityRequest(0, Target, /*bAllDevices=*/true);
+		}
+		else {
+			for (uint8 Arm = 0; Arm < 2; ++Arm) ComLink->SendAuthorityRequest(Arm, Target);
+		}
+		// Both triggers are almost certainly released right now; seed the edge
+		// detector with reality so arming does not synthesise a takeover.
+		if (LeftTracked)  bPrevAuthClutch_[0] = LeftTracked->IsFullClutch();
+		if (RightTracked) bPrevAuthClutch_[1] = RightTracked->IsFullClutch();
+
+		if (Logger_)
+			Logger_->LogEvent(FString::Printf(TEXT("INTERVENTION_%s"),
+				bInterventionArmed_ ? TEXT("ARMED") : TEXT("DISARMED")));
+	}
+
+	// Hands arms back to the policy. Only reachable while armed, because the
+	// panel it lives on is hidden otherwise -- and hidden widgets no longer
+	// answer the gaze ray (see UWidgetBinder::CacheWidgetRects).
+	//
+	// Every arm the operator is NOT holding. An arm actively clutched into reads
+	// HUMAN and is left alone -- one button that could take it out from under a
+	// hand would defeat the point of per-arm authority, since holding one arm
+	// while the other runs is the whole feature. An arm already in POLICY is a
+	// no-op anyway (setAuthority early-returns on an unchanged value).
+	//
+	// Tests "not HUMAN" rather than "is HOLD", and the difference matters more
+	// than it looks. What is tested here is the avatar's ECHO, so if that echo
+	// has not arrived -- older avatar build, arming request lost, or the
+	// reliable channel answering a different client -- every arm reads UNSET.
+	// Keyed on HOLD, RESUME then silently did nothing, forever, with not even a
+	// log line to say why. That is exactly what the first run showed: three
+	// presses, zero AUTHORITY_REQUEST entries in the event log. Re-asserting
+	// from UNSET is harmless and is the only way out of that hole.
+	//
+	// It is also why one button is enough rather than one per arm: "give back
+	// everything I am no longer holding" is unambiguous, and the operator's hand
+	// already says which arms those are.
+	//
+	// Whole-body collapses that to the same sentence about one robot: hand it
+	// back unless a hand is still on it. The head follows without being named
+	// -- IsOperatorHoldingHead reads the same authority, so the neck returns to
+	// the policy on this press too.
+	if (ButtonPressed == FName("resumePolicyButton") && bInterventionArmed_) {
+		ResumePolicy(TEXT("button"));
 	}
 
 	// Global mute. USoundFeedback::SetMuted has existed since that class was
@@ -1195,6 +1310,7 @@ void AOperatorPawn::UpdateStateMachine() {
 		if (!bSoundMuted_) SoundFeedback->Play(ESoundType::Confirm);
 
 		UIBinder->SetButtonToggled(FName("muteButton"), bSoundMuted_);
+		UIBinder->PushMessage(bSoundMuted_ ? TEXT("SOUND MUTED") : TEXT("SOUND ON"), 2.0f);
 		if (Logger_) Logger_->LogEvent(FString::Printf(TEXT("MUTE state=%s"),
 			bSoundMuted_ ? TEXT("on") : TEXT("off")));
 	}
@@ -1302,7 +1418,10 @@ void AOperatorPawn::UpdateInfoBar() {
 	int32 Seconds    = ElapsedSec % 60;
 	UIBinder->SetText(FName("session_time_value"), FString::Printf(TEXT("%d:%02d:%02d"), Hours, Minutes, Seconds));
 
-	float LatencyMs = ComLink->GetArmStateLatencyMs(1);
+	float RttMs = ComLink->GetArmRttMs(1);
+	if (RttMs <= 0.f) RttMs = ComLink->GetArmRttMs(0);
+	float LatencyMs = RttMs * 0.5f;
+	if (LatencyMs <= 0.f) LatencyMs = ComLink->GetArmStateLatencyMs(1);
 	if (LatencyMs <= 0.f) LatencyMs = ComLink->GetArmStateLatencyMs(0);
 	if (LatencyMs > 0.f)
 		UIBinder->SetText(FName("latency_value"), FString::Printf(TEXT("%.1f ms"), LatencyMs));
@@ -1315,6 +1434,434 @@ void AOperatorPawn::UpdateInfoBar() {
 	else if (LatencyMs < 80.f) DotColor = FLinearColor::Yellow;
 	else                       DotColor = FLinearColor::Red;
 	UIBinder->SetTextColor(FName("latency_dot"), DotColor);
+
+	if (!bInterventionArmed_) return;
+
+	// Whole-body handover has no left and no right to show.
+	//
+	// That is the point of the mode rather than an omission from it: the arms
+	// change hands in one message and can only ever be in the same state, so a
+	// HUD that still offered a per-arm readout would be inviting the operator
+	// to look for a distinction the system no longer makes. One word, one
+	// colour, one thing to check.
+	//
+	// The split form below is not deleted, only unreachable while the flag is
+	// set -- flipping bWholeBodyAuthority back brings the whole per-limb
+	// presentation with it, which is the deal: per-limb is parked, not removed.
+	FLinearColor Accent;
+	FString AuthorityLabel;
+
+	if (bWholeBodyAuthority) {
+		const EControlAuthority A = GetEffectiveAuthority();
+		Accent         = AuthorityColor(A);
+		AuthorityLabel = AuthorityToString(A);
+	}
+	else {
+		const EControlAuthority L = GetArmAuthority(0);
+		const EControlAuthority R = GetArmAuthority(1);
+		const bool bAgree = (L == R);
+		Accent = bAgree ? AuthorityColor(L) : kAuthorityMixed;
+
+		// One string, used by both readouts, and NEVER wider than the widest word it
+		// already had to fit.
+		//
+		// Agreeing, it is the word: POLICY / HUMAN / HOLD, 5-6 characters, which is
+		// what the panel and the pill were laid out for. Disagreeing, it is a
+		// five-character positional code -- "L= RH" is left HOLD, right HUMAN --
+		// where P is policy, H is human, = is hold and ? is unclaimed.
+		//
+		// The first attempt spelled the split out as "L HOLD  R HUMAN", which is
+		// fourteen characters in a box built for five: it burst the panel and pushed
+		// the layout outside its own background. Width is not negotiable in a HUD
+		// that sits over the video, so the split form is budgeted against the agree
+		// form rather than written out.
+		//
+		// Nothing is lost by the abbreviation. Position carries which arm, the
+		// letter carries its state, and the colour going grey -- none of the three
+		// state colours -- says "these two differ, read the letters". A single word
+		// standing in for two arms is the one thing this must never do: the pill
+		// reading POLICY while a hand is driving the left arm is the most dangerous
+		// sentence this HUD could write.
+		AuthorityLabel = bAgree
+			? AuthorityToString(L)
+			: FString::Printf(TEXT("L%s R%s"), *AuthorityToInitial(L), *AuthorityToInitial(R));
+	}
+
+	UIBinder->SetText(FName("authority_pill_state"), AuthorityLabel);
+	UIBinder->SetTextColor(FName("authority_pill_state"), Accent);
+	// Dot and fill get all three setters on purpose.
+	//
+	// UWidgetBinder caches by widget TYPE, and each setter silently no-ops when
+	// the name is not in its map -- so calling SetTextColor on a widget that is
+	// actually a UImage does nothing at all, and the widget keeps whatever
+	// colour it was given in UMG at design time. That is precisely what the
+	// first run showed: the pill dot stayed amber and the panel fill stayed
+	// green while both were supposed to be reading the same state, so the two
+	// halves of the HUD disagreed with each other and with reality.
+	//
+	// Guessing the type from the outside is how that happens again the next time
+	// the asset is edited. Three calls, at most one of which does anything, is
+	// cheaper than a HUD that lies.
+	SetWidgetAccent(FName("authority_pill_dot"), Accent);
+
+	// Same string as the pill, deliberately. Two readouts of one fact that could
+	// word it differently are two chances to disagree with each other, which is
+	// how the first version ended up with an amber dot next to a green panel.
+	UIBinder->SetText(FName("intervention_authority_text"), AuthorityLabel);
+	SetWidgetAccent(FName("intervention_authority_fill"), Accent);
+
+	UIBinder->SetText(FName("interv_value"), FString::Printf(TEXT("%d"), InterventionCount_));
+	SetWidgetAccent(FName("intervention_rec_dot"),
+		bRecordingActive_ ? FLinearColor(0.8f, 0.05f, 0.05f) : FLinearColor(0.15f, 0.15f, 0.15f));
+}
+
+void AOperatorPawn::UpdatePolicyStats(float DeltaTime) {
+	// Keyed on EpisodeCount_ rather than hooked into each place that bumps it,
+	// so every route to a new episode (buttons, voice) resets the same way.
+	if (EpisodeCount_ != StatsEpisode_) {
+		StatsEpisode_      = EpisodeCount_;
+		InterventionCount_ = 0;
+		AutonPolicySec_    = 0.0;
+		AutonEngagedSec_   = 0.0;
+	}
+
+	// AUTON: share of engaged arm-time the policy held. Averaged over both arms
+	// so a per-arm intervention counts half.
+	if (ComLink && ComLink->GetAvatarState() == ESysState::Engaged) {
+		const int32 NPolicy = (GetArmAuthority(0) == EControlAuthority::Policy ? 1 : 0)
+		                    + (GetArmAuthority(1) == EControlAuthority::Policy ? 1 : 0);
+		AutonEngagedSec_ += DeltaTime;
+		AutonPolicySec_  += DeltaTime * 0.5 * NPolicy;
+	}
+	const int32 AutonPct = AutonEngagedSec_ > 0.0
+		? FMath::RoundToInt(100.0 * AutonPolicySec_ / AutonEngagedSec_) : 0;
+	UIBinder->SetText(FName("auton_value"), FString::Printf(TEXT("%d%%"), AutonPct));
+
+	const bool  bFresh = FPlatformTime::Seconds() - PolicyStatusTime_.load() < kPolicyStatusStaleSec;
+	const float InfMs  = PolicyInferenceMs_.load();
+	UIBinder->SetText(FName("inference_value"),
+		bFresh && InfMs >= 0.f ? FString::Printf(TEXT("%.0fms"), InfMs) : FString(TEXT("--")));
+
+	const float Agree = PolicyAgree_.load();
+	const int32 Lit   = bFresh && Agree >= 0.f
+		? FMath::Clamp(FMath::RoundToInt(Agree * kAgreePips), 0, kAgreePips) : 0;
+	for (int32 i = 0; i < kAgreePips; ++i)
+		SetWidgetAccent(FName(*FString::Printf(TEXT("agree_pip_%d"), i)), i < Lit ? kAuthorityPolicy : kPipOff);
+}
+
+void AOperatorPawn::SetWidgetAccent(FName WidgetName, const FLinearColor& Color) const {
+	// One colour, every surface that could be carrying it. UWidgetBinder's
+	// setters are keyed by widget type and no-op on a miss, so this is
+	// type-agnostic by construction rather than by us guessing right.
+	UIBinder->SetTextColor(WidgetName, Color);
+	UIBinder->SetImageColor(WidgetName, Color);
+	UIBinder->SetBorderColor(WidgetName, Color);
+}
+
+EControlAuthority AOperatorPawn::GetArmAuthority(uint8 ArmIndex) const {
+	const uint8 Raw = (ArmIndex == 0) ? LeftAuthority_.Load() : RightAuthority_.Load();
+	switch (Raw) {
+	case 0:  return EControlAuthority::Policy;
+	case 1:  return EControlAuthority::Human;
+	case 2:  return EControlAuthority::Hold;
+	default: return EControlAuthority::Unset;
+	}
+}
+
+void AOperatorPawn::RequestArmAuthority(uint8 ArmIndex, EControlAuthority Requested) {
+	if (ArmIndex > 1 || !ComLink) return;
+
+	const EControlAuthority Current = bWholeBodyAuthority
+		? GetEffectiveAuthority()
+		: GetArmAuthority(ArmIndex);
+	// Whole-body: one request covers every arm. The avatar reads an omitted
+	// "device" key as "all arms", so the two modes differ by a single flag on
+	// the wire rather than by two code paths that can drift apart -- and,
+	// more importantly, the arms change hands in the SAME message, so there is
+	// no window in which one arm is human and the other is still policy.
+	ComLink->SendAuthorityRequest(ArmIndex, Requested, bWholeBodyAuthority);
+
+	// Re-anchor this arm's retarget, but ONLY when taking over from something
+	// that was actually holding the arm.
+	//
+	// The commanded pose is T_origin_ (avatar) composed with the banked delta
+	// (command thread). On a takeover the avatar re-origins onto where the
+	// POLICY left the arm, while the command thread still holds the delta from
+	// the operator's last segment -- reset one and not the other and the arm
+	// steps by exactly the distance the policy moved it. Reset both at the same
+	// instant and it does not move at all.
+	//
+	// The order works out on its own: the VR gate is still closed while the
+	// avatar processes this request, so any command the thread emits in between
+	// is discarded, and the gate only opens after reOrigin() has run.
+	//
+	// The Policy/Hold test is load-bearing. From Unset nothing is being gated,
+	// which is ordinary teleoperation -- zeroing the banked delta there would
+	// snap the arm back to the operator's engage origin, a jump this code is
+	// supposed to prevent.
+	if (Requested == EControlAuthority::Human && CommandThread_
+		&& (Current == EControlAuthority::Policy || Current == EControlAuthority::Hold)) {
+		// -1 re-anchors BOTH retargets, which is what a whole-body takeover
+		// needs: the avatar re-origins every arm it just handed over, so every
+		// arm's banked delta has to be zeroed in the same breath or the arm
+		// that was not re-anchored steps by however far the policy moved it.
+		CommandThread_->RequestCaptureOrigin(bWholeBodyAuthority ? -1 : static_cast<int32>(ArmIndex));
+		SyncGraspToMeasured(bWholeBodyAuthority ? -1 : static_cast<int32>(ArmIndex));
+		++InterventionCount_;
+	}
+
+	if (Logger_)
+		Logger_->LogEvent(FString::Printf(TEXT("AUTHORITY_REQUEST arm=%s from=%s requested=%s"),
+			bWholeBodyAuthority ? TEXT("all") : (ArmIndex == 0 ? TEXT("left") : TEXT("right")),
+			*AuthorityToString(Current), *AuthorityToString(Requested)));
+}
+
+void AOperatorPawn::SyncGraspToMeasured(int32 ArmIndex) {
+	// Re-seed the grasp toggle from the gripper the operator is ACTUALLY
+	// inheriting. ArmIndex -1 does both arms.
+	//
+	// bGripHeld is a latch: the trackpad button flips it, and nothing else
+	// ever did. It is sent to the avatar on every command-thread tick, so it
+	// survives an entire policy phase unchanged while the policy opens and
+	// closes the real gripper underneath it.
+	//
+	// The result is that a takeover applied a grasp state minutes old. In
+	// practice the operator almost always ends an intervention having grasped
+	// something, so the latch sits true, and the very first frame after every
+	// subsequent takeover slammed the gripper shut -- on whatever the policy
+	// happened to be reaching for. It never appeared in the event log either,
+	// because GRASP is logged on CHANGE and the latch had not changed.
+	//
+	// Threshold matches run.py's _GRIPPER_CLOSE_THRESHOLD_M: gripper_cmd is a
+	// binary flag on the wire and the sim logs 0.0 or 0.08, so 0.04 is the
+	// midpoint and the same number decides "closed" on both sides.
+	static constexpr float kGripperClosedBelowM = 0.04f;
+	for (uint8 Arm = 0; Arm < 2; ++Arm) {
+		if (ArmIndex >= 0 && Arm != static_cast<uint8>(ArmIndex)) continue;
+		UTrackedControllerComponent* Tracked = (Arm == 0) ? LeftTracked : RightTracked;
+		if (!Tracked || !ComLink->IsArmAlive(Arm)) continue;
+
+		const ArmStateMsg S = ComLink->PeekArmState(Arm);
+		const bool bClosed = S.gripper_width < kGripperClosedBelowM;
+		if (bClosed != Tracked->IsGraspHeld()) {
+			Tracked->SetGraspHeld(bClosed);
+			if (Logger_)
+				Logger_->LogEvent(FString::Printf(TEXT("GRASP_RESYNC side=%s measured_m=%.4f state=%s"),
+					Arm == 0 ? TEXT("left") : TEXT("right"), S.gripper_width,
+					bClosed ? TEXT("held") : TEXT("released")));
+		}
+	}
+}
+
+EControlAuthority AOperatorPawn::GetEffectiveAuthority() const {
+	if (!bWholeBodyAuthority) return EControlAuthority::Unset;
+
+	const EControlAuthority L = GetArmAuthority(0);
+	const EControlAuthority R = GetArmAuthority(1);
+	if (L == R) return L;
+
+	// They should never disagree in this mode -- one request covers both arms
+	// and the avatar applies it atomically. If they do, something refused a
+	// claim or a state echo was lost, and the honest answer is the one that
+	// keeps the operator's hands engaged: Human if either arm is human, and
+	// Hold otherwise. Reporting Policy here is the one outcome that could put
+	// a hand on a moving arm the operator believes is not theirs.
+	if (L == EControlAuthority::Human || R == EControlAuthority::Human)
+		return EControlAuthority::Human;
+	return EControlAuthority::Hold;
+}
+
+void AOperatorPawn::MaybeAutoArmIntervention() {
+	// Arms the session when the AVATAR says authority is already in use.
+	//
+	// In intervention mode the orchestrator parks both arms in HOLD at startup
+	// (SystemArbitrator::claim_hold) -- before the operator has even engaged,
+	// and deliberately, so the policy cannot start driving with nobody
+	// watching. But UpdateAuthority returns immediately while unarmed, so until
+	// the DAGGER button is pressed this interface never requests HUMAN either,
+	// and HOLD refuses the operator exactly as it refuses the policy.
+	//
+	// The result was a silent lockout: engage, pull the trigger, nothing moves.
+	// The 2026-09-23 log shows ten seconds of it -- four clutch cycles on two
+	// hands, no motion -- ending only when the panel was armed. Nothing on
+	// screen said the arms were held, or by whom.
+	//
+	// Arming on the avatar's own report fixes it at the source: if authority is
+	// live, this IS an intervention session, and the interface should notice
+	// rather than wait to be told. No authority request is sent from here --
+	// the avatar already has one, and re-asserting would fight the orchestrator
+	// over who decides the opening state.
+	if (bInterventionArmed_ || !bAuthorityLiveSeen_.load(std::memory_order_relaxed))
+		return;
+
+	bInterventionArmed_ = true;
+	UIBinder->SetVisibility(FName("interventionPanel"),     true);
+	UIBinder->SetVisibility(FName("authority_pill_canvas"), true);
+	UIBinder->SetButtonToggled(FName("interventionButton"), true);
+	// Seed the clutch edge detector from reality, exactly as the button does,
+	// so arming cannot synthesise a takeover from a trigger already held.
+	if (LeftTracked)  bPrevAuthClutch_[0] = LeftTracked->IsFullClutch();
+	if (RightTracked) bPrevAuthClutch_[1] = RightTracked->IsFullClutch();
+
+	UIBinder->PushMessage(TEXT("INTERVENTION ARMED - POLICY CONNECTED"), 3.0f);
+	if (Logger_) Logger_->LogEvent(TEXT("INTERVENTION_ARMED source=avatar_authority"));
+}
+
+void AOperatorPawn::UpdateAuthority() {
+	if (!LeftTracked || !RightTracked) return;
+
+	UTrackedControllerComponent* Tracked[2] = { LeftTracked, RightTracked };
+
+	// Unarmed, or not ENGAGED: track the clutch level without acting on it, so
+	// that arming (or engaging) never inherits a stale edge and synthesises a
+	// takeover from a trigger the operator pulled minutes ago in the lobby.
+	if (!bInterventionArmed_ || OperatorState_ != ESysState::Engaged) {
+		for (uint8 i = 0; i < 2; ++i) bPrevAuthClutch_[i] = Tracked[i]->IsFullClutch();
+		return;
+	}
+
+	// Note the polarity throughout: bFullClutch TRUE means DECOUPLED. Pulling
+	// the trigger past 0.55 sets it false, which is the hand taking the arm.
+	if (bWholeBodyAuthority) {
+		// One robot, one decision, so the two triggers have to be reduced to a
+		// single signal -- and the reduction is not symmetric.
+		//
+		// Taking: the FIRST trigger down takes everything. An operator who
+		// reaches in with one hand to nudge a grasp has taken the robot; making
+		// them pull both triggers to do it would mean the moment they most need
+		// control is the moment they have to think about a second trigger.
+		//
+		// Giving back: only when BOTH are released. This is the half that
+		// matters. Dropping authority on the first release would hand the robot
+		// to the policy while the other hand is still driving it -- the policy
+		// would start acting from a pose it did not create, against an arm a
+		// human is holding. AND across the decoupled flags gives exactly this:
+		// decoupled only when nobody is pulling.
+		const bool bDecoupled = Tracked[0]->IsFullClutch() && Tracked[1]->IsFullClutch();
+		const bool bPrevDecoupled = bPrevAuthClutch_[0] && bPrevAuthClutch_[1];
+		for (uint8 i = 0; i < 2; ++i) bPrevAuthClutch_[i] = Tracked[i]->IsFullClutch();
+		if (bDecoupled == bPrevDecoupled) return;
+
+		// Arm index 0 is a formality: RequestArmAuthority sends bAllDevices in
+		// this mode, so the avatar applies it to every arm in one message and
+		// no arm is ever briefly on the other side of the handover.
+		RequestArmAuthority(0, bDecoupled ? EControlAuthority::Hold : EControlAuthority::Human);
+		return;
+	}
+
+	for (uint8 i = 0; i < 2; ++i) {
+		const bool bDecoupled = Tracked[i]->IsFullClutch();
+		if (bDecoupled == bPrevAuthClutch_[i]) continue;
+		bPrevAuthClutch_[i] = bDecoupled;
+
+		// Released -> HOLD, never straight back to POLICY. The operator
+		// un-clutches constantly to reposition their arms, and losing the robot
+		// to the policy mid-correction is the first thing that would make this
+		// mode unusable. Handing it back is an explicit press of RESUME.
+		RequestArmAuthority(i, bDecoupled ? EControlAuthority::Hold : EControlAuthority::Human);
+	}
+}
+
+void AOperatorPawn::ResumePolicy(const TCHAR* Source) {
+	if (!bInterventionArmed_) return;
+
+	// "Give back everything I am no longer holding." An arm with a hand still
+	// on it is left alone -- a resume that could take an arm out from under a
+	// hand would be worse than no shortcut at all, and that matters more now
+	// that this is reachable from the controller, where it can be hit by
+	// accident.
+	//
+	// The test is the CLUTCH, not the avatar's authority echo, and the
+	// difference is the whole reason the chord is usable.
+	//
+	// The echo is a round trip away -- ~70 ms on this link, two or three frames
+	// -- so for those frames after a release the avatar still reports HUMAN.
+	// Release both triggers, chord immediately, and an echo-based test would
+	// answer "you are still holding it" about a trigger already let go. Which
+	// is exactly the moment the operator uses this.
+	//
+	// The trigger is local and instant, and it is also the literal question
+	// being asked: is a hand on this arm right now. It has no UNSET hole
+	// either, which is what made the echo test fail silently the first time.
+	// Polarity: IsFullClutch() TRUE means DECOUPLED, i.e. no hand on it.
+	UTrackedControllerComponent* Tracked[2] = { LeftTracked, RightTracked };
+	auto HandOff = [&](uint8 Arm) {
+		return !Tracked[Arm] || Tracked[Arm]->IsFullClutch();
+	};
+
+	bool bAnyRequested = false;
+	if (bWholeBodyAuthority) {
+		// One robot: a hand on either arm keeps all of it.
+		if (HandOff(0) && HandOff(1)) {
+			RequestArmAuthority(0, EControlAuthority::Policy);
+			bAnyRequested = true;
+		}
+	}
+	else {
+		for (uint8 Arm = 0; Arm < 2; ++Arm) {
+			if (HandOff(Arm)) {
+				RequestArmAuthority(Arm, EControlAuthority::Policy);
+				bAnyRequested = true;
+			}
+		}
+	}
+
+	// The chord has no button to light up, so it needs its own acknowledgement
+	// or a press that did nothing is indistinguishable from one that worked.
+	// Both outcomes are reported, because "nothing happened" is the answer the
+	// operator most needs when they are still holding a trigger.
+	if (bAnyRequested) {
+		SoundFeedback->Play(ESoundType::Confirm);
+		UIBinder->PushMessage(TEXT("POLICY RESUMED"), 2.0f);
+	}
+	else {
+		SoundFeedback->Play(ESoundType::Reject);
+		UIBinder->PushMessage(TEXT("STILL HELD - RELEASE TO RESUME"), 2.0f);
+	}
+
+	if (Logger_)
+		Logger_->LogEvent(FString::Printf(TEXT("RESUME_POLICY source=%s applied=%s"),
+			Source, bAnyRequested ? TEXT("yes") : TEXT("no")));
+}
+
+void AOperatorPawn::PollResumeButton() {
+	// A hand-grip TAP on either controller -- pressed and released without
+	// touching the pad. See UTrackedControllerComponent::OnHandGripReleased.
+	//
+	// Either hand, deliberately: in whole-body handover the two hands are not
+	// doing different jobs, so making the operator recall which one carries the
+	// shortcut is a rule with nothing behind it. The grip also sits under the
+	// hand at rest, which the menu button at the top of the controller does
+	// not -- and a shortcut that needs the hand repositioned is one the
+	// operator puts off, which moves every hand-back later than it should be
+	// and biases the intervention boundaries in the dataset.
+	//
+	// Consumed unconditionally, even unarmed: a latch cleared only while armed
+	// would bank a tap made minutes earlier and spend it the instant the
+	// operator arms intervention.
+	bool bTap = false;
+	if (LeftTracked && LeftTracked->IsResumeRequested()) {
+		LeftTracked->ConsumeResumePress();
+		bTap = true;
+	}
+	if (RightTracked && RightTracked->IsResumeRequested()) {
+		RightTracked->ConsumeResumePress();
+		bTap = true;
+	}
+	if (bTap && bInterventionArmed_) ResumePolicy(TEXT("handgrip_tap"));
+}
+
+bool AOperatorPawn::IsOperatorHoldingHead() const {
+	// Unarmed, the head is the operator's and always was -- no intervention
+	// session means no authority anywhere, and ordinary teleoperation must
+	// behave exactly as it did before any of this existed.
+	if (!bInterventionArmed_) return true;
+	if (bWholeBodyAuthority) return GetEffectiveAuthority() == EControlAuthority::Human;
+	// Per-limb has no single answer for a single neck. Either hand driving is
+	// enough to give the operator the view: a correction they cannot look at
+	// is not a correction.
+	return GetArmAuthority(0) == EControlAuthority::Human
+		|| GetArmAuthority(1) == EControlAuthority::Human;
 }
 
 void AOperatorPawn::TransitionTo(ESysState NewState) {
@@ -1429,6 +1976,10 @@ bool AOperatorPawn::CheckEmergencyStop() {
 	if (OperatorState_ == ESysState::Offline || OperatorState_ == ESysState::Idle) {
 		return false;
 	}
+	// BOTH menu buttons, either hand. Briefly this was right-only, with the
+	// left carrying resume -- which made the operator remember which hand was
+	// which, and still meant reaching the top of the controller. Resume moved
+	// to the hand grip, so the stop gets both hands back.
 	bool bStop = LeftTracked->IsMenuPressed() || RightTracked->IsMenuPressed();
 	if (bStop) {
 		if (Logger_) Logger_->LogEvent(TEXT("EMERGENCY_STOP"));
@@ -1447,6 +1998,18 @@ void AOperatorPawn::CaptureControllerOrigins() {
 	if (VRCamera) {
 		HMDOrigin_ = VRCamera->GetComponentTransform();
 		bHMDOriginValid_ = true;
+		// Re-anchor the head base on the neck's CURRENT pose, exactly as a
+		// takeover does. NOT zero.
+		//
+		// What goes on the wire is an absolute joint angle -- this base plus
+		// the HMD delta since HMDOrigin_ -- so a zero base is not "no offset",
+		// it is a command to point the neck at joint zero. Zero was right only
+		// while the head channel added q0 for us; it no longer does, and
+		// nothing on this side should know what q0 is. Reading the measured
+		// pose gets the same answer without duplicating the constant.
+		const HeadStateMsg S = ComLink->PeekHeadState();
+		HeadBasePan_  = S.pan;
+		HeadBaseTilt_ = S.tilt;
 	}
 
 	if (GhostOverlay) {
@@ -1516,13 +2079,59 @@ void AOperatorPawn::SendArmCommands() {
 void AOperatorPawn::SendHeadCommand() {
 	if (!bHMDOriginValid_ || !VRCamera) return;
 
+	// ── Head handover ───────────────────────────────────────────────────────
+	// The neck is part of the robot, so it changes hands with the rest of it.
+	// This is not tidiness: the policy is conditioned on the images its own
+	// camera returns, and a head that kept following the operator's HMD while
+	// the policy drove the arms would be feeding it observations from a
+	// viewpoint it never chose. The policy would be acting on one scene and
+	// looking at another.
+	const bool bHeld = IsOperatorHoldingHead();
+	if (bHeld != bHeadHeld_) {
+		bHeadHeld_ = bHeld;
+		if (bHeld) {
+			// Re-anchor, exactly as the arms do on a takeover, and for exactly
+			// the same reason.
+			//
+			// pan/tilt are absolute angles derived from how far the HMD has
+			// turned since HMDOrigin_. Take the head back without re-anchoring
+			// and the first command sends the neck to wherever the operator's
+			// head happened to be pointing relative to an origin captured at
+			// engage -- which, after the policy has been looking around for a
+			// minute, is a hard snap to somewhere else entirely.
+			//
+			// Zeroing the operator's delta and adding the neck's CURRENT angles
+			// as the base makes the first commanded pose identical to the pose
+			// the policy left behind: the head does not move at all until the
+			// operator moves their own.
+			HMDOrigin_ = VRCamera->GetComponentTransform();
+			const HeadStateMsg S = ComLink->PeekHeadState();
+			HeadBasePan_  = S.pan;
+			HeadBaseTilt_ = S.tilt;
+		}
+		if (Logger_)
+			Logger_->LogEvent(FString::Printf(TEXT("HEAD_AUTHORITY held=%s base_pan=%.3f base_tilt=%.3f"),
+				bHeld ? TEXT("human") : TEXT("policy"), HeadBasePan_, HeadBaseTilt_));
+	}
+
+	if (!bHeld) {
+		// Keep the logged head angles tracking the real neck rather than
+		// freezing at the operator's last command -- otherwise every log row
+		// recorded during an autonomous stretch reports a head pose that
+		// nothing is holding.
+		const HeadStateMsg S = ComLink->PeekHeadState();
+		LastHeadPan_  = S.pan;
+		LastHeadTilt_ = S.tilt;
+		return;
+	}
+
 	FTransform CurrentHMD = VRCamera->GetComponentTransform();
 	FQuat DeltaQuat = HMDOrigin_.GetRotation().Inverse() * CurrentHMD.GetRotation();
 	FRotator DeltaRot = DeltaQuat.Rotator();
 
 	HeadCommandMsg Msg{};
-	Msg.pan  = static_cast<float>(FMath::DegreesToRadians(-DeltaRot.Yaw));
-	Msg.tilt = static_cast<float>(FMath::DegreesToRadians(DeltaRot.Pitch));
+	Msg.pan  = HeadBasePan_  + static_cast<float>(FMath::DegreesToRadians(-DeltaRot.Yaw));
+	Msg.tilt = HeadBaseTilt_ + static_cast<float>(FMath::DegreesToRadians(DeltaRot.Pitch));
 	LastHeadPan_  = Msg.pan;
 	LastHeadTilt_ = Msg.tilt;
 	ComLink->SendHeadCommand(Msg);

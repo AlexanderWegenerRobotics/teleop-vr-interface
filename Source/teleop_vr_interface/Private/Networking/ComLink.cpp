@@ -14,6 +14,12 @@ void UComLink::BeginPlay() {
 
     for (int32 i = 0; i < 2; ++i) {
         ArmStreams_[i] = MakeUnique<ArmStream>();
+        {
+            const uint8 Idx = static_cast<uint8>(i);
+            ArmStreams_[i]->OnReceived = [this, Idx](const ArmStateMsg& Msg, uint64 RecvNs) {
+                OnArmStateReceived(Idx, Msg, RecvNs);
+            };
+        }
         ArmStreams_[i]->Open(RemoteIP, ArmSendPorts[i], ArmRecvPorts[i]);
         // Re-broadcast per-stream faults at ComLink level. Without this the
         // stream's OnFaultDetected has no subscribers and a remote FAULT is
@@ -106,8 +112,53 @@ void UComLink::SendArmCommand(ArmCommandMsg& Msg, uint8 DeviceIndex) {
     // twin's zero-latency lead over the avatar (d_f) only holds if it's
     // driven by the same stream, tee'd here rather than relayed through the
     // avatar (docs/twin_concept.md section 5, "local tee from the interface").
-    if (ArmStreams_[DeviceIndex])     ArmStreams_[DeviceIndex]->Send(Msg);
-    if (TwinArmStreams_[DeviceIndex]) TwinArmStreams_[DeviceIndex]->Send(Msg);
+    if (ArmStreams_[DeviceIndex]) {
+        ArmStreams_[DeviceIndex]->Send(Msg);
+        FArmRtt& R = ArmRtt_[DeviceIndex];
+        FScopeLock Lock(&R.Mutex);
+        const uint32 Slot = Msg.header.sequence % kRttRing;
+        R.SentSeq[Slot] = Msg.header.sequence;
+        R.SentNs[Slot]  = Msg.header.timestamp_ns;
+    }
+    if (TwinArmStreams_[DeviceIndex]) {
+        ArmCommandMsg TwinMsg = Msg;
+        TwinArmStreams_[DeviceIndex]->Send(TwinMsg);
+    }
+}
+
+void UComLink::OnArmStateReceived(uint8 DeviceIndex, const ArmStateMsg& Msg, uint64 RecvNs) {
+    const uint32 Echo = Msg.applied_cmd_sequence;
+    if (Echo == 0) return;
+    FArmRtt& R = ArmRtt_[DeviceIndex];
+    FScopeLock Lock(&R.Mutex);
+    if (Echo == R.LastEcho) return;
+    R.LastEcho = Echo;
+    const uint32 Slot = Echo % kRttRing;
+    if (R.SentSeq[Slot] != Echo || R.SentNs[Slot] == 0 || RecvNs <= R.SentNs[Slot]) return;
+    const float Rtt = static_cast<float>((RecvNs - R.SentNs[Slot]) / 1000000.0);
+    if (Rtt > 5000.f) return;
+    R.LastRttMs = Rtt;
+    R.RttMs = (R.RttMs <= 0.f) ? Rtt : 0.1f * Rtt + 0.9f * R.RttMs;
+}
+
+float UComLink::GetArmRttMs(uint8 DeviceIndex) const {
+    if (DeviceIndex >= 2) return 0.f;
+    FArmRtt& R = const_cast<FArmRtt&>(ArmRtt_[DeviceIndex]);
+    FScopeLock Lock(&R.Mutex);
+    return R.RttMs;
+}
+
+float UComLink::GetArmLastRttMs(uint8 DeviceIndex) const {
+    if (DeviceIndex >= 2) return 0.f;
+    FArmRtt& R = const_cast<FArmRtt&>(ArmRtt_[DeviceIndex]);
+    FScopeLock Lock(&R.Mutex);
+    return R.LastRttMs;
+}
+
+ArmStateMsg UComLink::PeekArmStateWithRecvTime(uint8 DeviceIndex, uint64& OutRecvNs) const {
+    OutRecvNs = 0;
+    if (DeviceIndex < 2 && ArmStreams_[DeviceIndex]) return ArmStreams_[DeviceIndex]->Peek(OutRecvNs);
+    return ArmStateMsg{};
 }
 
 void UComLink::SendHeadCommand(HeadCommandMsg& Msg) {
@@ -143,6 +194,11 @@ HeadStateMsg UComLink::ReadHeadState() {
     return HeadStateMsg{};
 }
 
+HeadStateMsg UComLink::PeekHeadState() const {
+    if (HeadStream_) return HeadStream_->Peek();
+    return HeadStateMsg{};
+}
+
 void UComLink::SendStateRequest(SysState RequestedState) {
     msgpack::sbuffer Buf;
     msgpack::pack(Buf, std::map<std::string, uint8_t>{
@@ -153,6 +209,32 @@ void UComLink::SendStateRequest(SysState RequestedState) {
     // mirror the twin never leaves IDLE and its arms never move.
     if (CmdLink_)     CmdLink_->Send("state_change", Buf, true);
     if (TwinCmdLink_) TwinCmdLink_->Send("state_change", Buf, true);
+}
+
+void UComLink::SendAuthorityRequest(uint8 DeviceIndex, EControlAuthority Requested, bool bAllDevices) {
+    if (!CmdLink_) return;
+
+    // The avatar keys on "device": present names ONE arm, absent means EVERY
+    // arm. Which one is sent is the whole difference between the two authority
+    // models, and it lives here rather than being spread through the caller.
+    //
+    // "source" is what Avatar::applyAuthorityRequest arbitrates on: an operator
+    // claim outranks an orchestrator one.
+    //
+    // Packed field by field rather than through a std::map because the values
+    // are not all the same type -- a map<string, uint8_t> cannot carry the
+    // strings, and msgpack has no heterogeneous map helper.
+    msgpack::sbuffer Buf;
+    msgpack::packer<msgpack::sbuffer> Packer(&Buf);
+    Packer.pack_map(bAllDevices ? 2 : 3);
+    Packer.pack(std::string("authority")); Packer.pack(static_cast<uint8_t>(Requested));
+    Packer.pack(std::string("source"));    Packer.pack(std::string("operator"));
+    if (!bAllDevices) {
+        Packer.pack(std::string("device"));
+        Packer.pack(std::string(DeviceIndex == 0 ? "arm_left" : "arm_right"));
+    }
+
+    CmdLink_->Send("authority_request", Buf, true);
 }
 
 void UComLink::SendReliable(const std::string& MsgType,

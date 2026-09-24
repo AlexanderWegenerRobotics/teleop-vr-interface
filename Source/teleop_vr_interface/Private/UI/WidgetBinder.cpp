@@ -352,6 +352,7 @@ void UWidgetBinder::TickComponent(float DeltaTime, ELevelTick TickType, FActorCo
 			SetButtonToHovered(NewHovered);
 		}
 		HoveredButton_ = NewHovered;
+		bRenderDirty_ = true;   // hover feedback must not wait for the next slot
 	}
 
 	if (bPressed && HoveredButton_ != FName()) {
@@ -363,15 +364,43 @@ void UWidgetBinder::TickComponent(float DeltaTime, ELevelTick TickType, FActorCo
 			// Toggle persistent pressed state; visual follows immediately.
 			SetButtonToggled(HoveredButton_, !ToggledButtons_.Contains(HoveredButton_));
 		}
+		bRenderDirty_ = true;   // the click must feel instant, not up to a slot late
 	}
 	UpdateMessages(DeltaTime);
 
 	if (bMessagesDirty_) {
 		RebuildMessageLog();
 		bMessagesDirty_ = false;
+		bRenderDirty_   = true;   // a new operator message should not be late
 	}
 
-	RenderWidget();
+	// ── HUD raster rate ──────────────────────────────────────────────────────
+	// RenderWidget rasterises the ENTIRE UMG tree into a render target through
+	// FWidgetRenderer, on the game thread. It ran every tick, once per binder,
+	// and there are two of them -- so at 26 FPS that is 52 full Slate layout +
+	// paint passes a second for a panel whose fastest-moving content is a
+	// latency number.
+	//
+	// The interface's own metrics say this is the right place to look: game_ms
+	// median 38.0 against render_ms 0.35. The GPU render thread is idle; the
+	// cost is CPU-side Slate work, which is exactly what this call is.
+	//
+	// Dropping to RenderRateHz does not make the HUD feel slower, because the
+	// two things that must feel instant -- hover highlight and click -- set
+	// bRenderDirty_ and are drawn on the same tick they happen. Only the
+	// numbers and plots move to the slower clock, and nobody reads a latency
+	// readout at 26 Hz.
+	//
+	// Gaze hit-testing is unaffected: FindButtonAtUV above still runs every
+	// tick, so dwell detection keeps full temporal resolution. This throttles
+	// what is DRAWN, never what is SENSED.
+	RenderAccum_ += DeltaTime;
+	const float RenderPeriod = (RenderRateHz > 0.f) ? (1.f / RenderRateHz) : 0.f;
+	if (bRenderDirty_ || RenderAccum_ >= RenderPeriod) {
+		RenderWidget();
+		RenderAccum_  = 0.f;
+		bRenderDirty_ = false;
+	}
 
 	if (bStaticRectsDirty_) { CacheWidgetRects(); bStaticRectsDirty_ = false; }
 
@@ -419,6 +448,11 @@ bool UWidgetBinder::ProjectGazeToUV(FVector2D& OutUV) const {
 
 FName UWidgetBinder::FindButtonAtUV(const FVector2D& UV) const {
 	FVector2D PixelPos = UV * RenderSize_;
+
+	// Pass 1: pixel-exact. A gaze that is genuinely inside a button always
+	// resolves to that button, whatever the margin would have pulled in -- so
+	// widening the hit rects can never steal a hit from the control the
+	// operator is actually looking at.
 	for (const auto& Pair : ButtonRects_) {
 		const FWidgetRect& R = Pair.Value;
 		if (PixelPos.X >= R.Position.X && PixelPos.X <= R.Position.X + R.Size.X &&
@@ -426,7 +460,52 @@ FName UWidgetBinder::FindButtonAtUV(const FVector2D& UV) const {
 			return Pair.Key;
 		}
 	}
-	return FName();
+
+	if (GazeHitMarginPx <= 0.f) return FName();
+
+	// Pass 2: near-miss. Every rect grows by GazeHitMarginPx and the CLOSEST
+	// one wins, measured to the rect's edge rather than its centre so a small
+	// button beside a large one is not perpetually outvoted.
+	//
+	// Nearest, not first: expanded rects overlap, and TMap iteration is hash
+	// order, so "first match" would make which button a near-miss lands on
+	// depend on the widget names in the asset -- a rule that works for months
+	// and then changes because someone renamed something.
+	FName Best     = FName();
+	float BestDist = TNumericLimits<float>::Max();
+	// Written out rather than through FMath::Max3, and deliberately so.
+	//
+	// FVector2D is FVector2d in UE5, so its components are doubles. Mixing a
+	// 0.f literal into Max3 left its single template parameter ambiguous
+	// between float and double -- it cannot widen one argument to match the
+	// others, it has to deduce one T for all three. Plain comparisons have no
+	// T to deduce, so this compiles the same whatever precision FVector2D
+	// carries now or later.
+	const double PX = PixelPos.X;
+	const double PY = PixelPos.Y;
+	for (const auto& Pair : ButtonRects_) {
+		const FWidgetRect& R = Pair.Value;
+		const double X0 = R.Position.X, X1 = X0 + R.Size.X;
+		const double Y0 = R.Position.Y, Y1 = Y0 + R.Size.Y;
+
+		// Distance to the rect's EDGE. Zero on whichever axis the point is
+		// already between the bounds, so a gaze sitting level with a button
+		// measures straight across to it rather than diagonally to a corner.
+		double DX = 0.0;
+		if      (PX < X0) DX = X0 - PX;
+		else if (PX > X1) DX = PX - X1;
+
+		double DY = 0.0;
+		if      (PY < Y0) DY = Y0 - PY;
+		else if (PY > Y1) DY = PY - Y1;
+
+		const float Dist = static_cast<float>(FMath::Sqrt(DX * DX + DY * DY));
+		if (Dist <= GazeHitMarginPx && Dist < BestDist) {
+			BestDist = Dist;
+			Best     = Pair.Key;
+		}
+	}
+	return Best;
 }
 
 void UWidgetBinder::SetButtonToNormal(FName Name) {
@@ -741,6 +820,10 @@ void UWidgetBinder::SetVisibility(FName WidgetName, bool bVisible)
 				// recache drops them, FindButtonAtUV then returns None, and the
 				// existing hover-change path clears the stale highlight.
 				bStaticRectsDirty_ = true;
+				// A panel appearing or disappearing is an interaction result,
+				// not a readout -- draw it on this tick rather than up to a
+				// render slot later.
+				bRenderDirty_ = true;
 			}
 		}
 	}

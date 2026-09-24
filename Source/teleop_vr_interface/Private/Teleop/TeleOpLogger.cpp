@@ -128,10 +128,16 @@ void FTeleOpLogger::WriteCommandRow(const FCommandRow& R)
     CommandWriter_->WriteRow(FString::Printf(
         TEXT("%llu;%d;%u;%d;")
         TEXT("%.6f;%.6f;%.6f;%.6f;%.6f;%.6f;%.6f;")
-        TEXT("%.3f;%.4f;%d\n"),
+        TEXT("%.3f;%.4f;%d;")
+        TEXT("%d;%llu;%.3f;%.3f;%.3f;%.6f;%.6f;%.6f;%.6f;%llu;")
+        TEXT("%llu;%llu;%llu;%u;%u;%.5f;%.5f;%.5f;%.6f;%.6f;%.6f;%.6f;%.3f\n"),
         R.TimestampNs, R.DeviceIndex, R.Sequence, R.bSent ? 1 : 0,
         R.Px, R.Py, R.Pz, R.Qw, R.Qx, R.Qy, R.Qz,
-        R.Gripper, R.ClutchFactor, R.bFullClutch ? 1 : 0));
+        R.Gripper, R.ClutchFactor, R.bFullClutch ? 1 : 0,
+        R.PoseSource, R.PoseSampleNs, R.HandPx, R.HandPy, R.HandPz,
+        R.HandQw, R.HandQx, R.HandQy, R.HandQz, R.CmdSendNs,
+        R.RobotRecvNs, R.RobotTxNs, R.RobotSampleNs, R.RobotSeq, R.AppliedSeq,
+        R.RobotPx, R.RobotPy, R.RobotPz, R.RobotQw, R.RobotQx, R.RobotQy, R.RobotQz, R.RttMs));
 }
 
 FString FTeleOpLogger::CommandHeader()
@@ -139,7 +145,10 @@ FString FTeleOpLogger::CommandHeader()
     return
         TEXT("timestamp_ns;device_index;sequence;sent;")
         TEXT("px;py;pz;qw;qx;qy;qz;")
-        TEXT("gripper;clutch_factor;full_clutch\n");
+        TEXT("gripper;clutch_factor;full_clutch;")
+        TEXT("pose_source;pose_sample_ns;hand_px;hand_py;hand_pz;hand_qw;hand_qx;hand_qy;hand_qz;cmd_send_ns;")
+        TEXT("robot_recv_ns;robot_tx_ns;robot_sample_ns;robot_seq;applied_seq;")
+        TEXT("robot_px;robot_py;robot_pz;robot_qw;robot_qx;robot_qy;robot_qz;rtt_ms\n");
 }
 
 void FTeleOpLogger::WriteStreamRow(const FStreamRow& R)

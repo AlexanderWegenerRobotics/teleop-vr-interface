@@ -139,7 +139,8 @@ public:
 private:
     bool ResolveOpenXR();
     bool LocatePoses(const FOperatorInputSnapshot& In, FTransform OutPose[2], bool bOutValid[2]);
-    void SendArm(uint8 Index, const FOperatorInputSnapshot& In, const FTransform& Pose, float Dt);
+    void SendArm(uint8 Index, const FOperatorInputSnapshot& In, const FTransform& Pose, float Dt,
+                 uint64 PoseSampleNs, uint8 PoseSource);
 
     UComLink*      ComLink_ = nullptr;
     FTeleOpLogger* Logger_  = nullptr;

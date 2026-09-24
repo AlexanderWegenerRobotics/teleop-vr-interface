@@ -300,7 +300,8 @@ bool FTeleopCommandThread::LocatePoses(const FOperatorInputSnapshot& In,
 // ---------------------------------------------------------------------------
 
 void FTeleopCommandThread::SendArm(uint8 Index, const FOperatorInputSnapshot& In,
-                                   const FTransform& Pose, float Dt)
+                                   const FTransform& Pose, float Dt,
+                                   uint64 PoseSampleNs, uint8 PoseSource)
 {
     FArmRetarget& R = Retarget_[Index];
     R.Advance(Pose, Dt, In, Index);
@@ -336,6 +337,29 @@ void FTeleopCommandThread::SendArm(uint8 Index, const FOperatorInputSnapshot& In
         Row.Gripper      = Msg.gripper;
         Row.ClutchFactor = In.bFullClutch[Index] ? 0.f : 1.f;
         Row.bFullClutch  = In.bFullClutch[Index];
+
+        Row.PoseSource   = PoseSource;
+        Row.PoseSampleNs = PoseSampleNs;
+        const FVector HandLoc = Pose.GetLocation();
+        const FQuat   HandRot = Pose.GetRotation();
+        Row.HandPx = HandLoc.X; Row.HandPy = HandLoc.Y; Row.HandPz = HandLoc.Z;
+        Row.HandQw = HandRot.W; Row.HandQx = HandRot.X; Row.HandQy = HandRot.Y; Row.HandQz = HandRot.Z;
+        Row.CmdSendNs = bSend ? Msg.header.timestamp_ns : 0;
+
+        if (ComLink_)
+        {
+            uint64 RecvNs = 0;
+            const ArmStateMsg S = ComLink_->PeekArmStateWithRecvTime(Index, RecvNs);
+            Row.RobotRecvNs   = RecvNs;
+            Row.RobotTxNs     = S.header.timestamp_ns;
+            Row.RobotSampleNs = S.header.sample_time_ns;
+            Row.RobotSeq      = S.header.sequence;
+            Row.AppliedSeq    = S.applied_cmd_sequence;
+            Row.RobotPx = S.position[0]; Row.RobotPy = S.position[1]; Row.RobotPz = S.position[2];
+            Row.RobotQw = S.quaternion[0]; Row.RobotQx = S.quaternion[1];
+            Row.RobotQy = S.quaternion[2]; Row.RobotQz = S.quaternion[3];
+            Row.RttMs         = ComLink_->GetArmLastRttMs(Index);
+        }
         Logger_->WriteCommandRow(Row);
     }
 
@@ -384,7 +408,9 @@ uint32 FTeleopCommandThread::Run()
 
         FTransform Pose[2];
         bool bValid[2] = { false, false };
+        const uint64 PoseSampleNs = timestamp_ns();
         bool bHavePose = bXrOk && LocatePoses(In, Pose, bValid);
+        const uint8 PoseSource = bHavePose ? 1 : 0;
 
         if (!bHavePose)
         {
@@ -404,7 +430,7 @@ uint32 FTeleopCommandThread::Run()
                 ++SampleCount_;
                 if (Pose[i].Equals(LastLocated_[i], 0.f)) ++DuplicateCount_;
                 LastLocated_[i] = Pose[i];
-                SendArm(static_cast<uint8>(i), In, Pose[i], Dt);
+                SendArm(static_cast<uint8>(i), In, Pose[i], Dt, PoseSampleNs, PoseSource);
             }
             ++RateWindowCount;
         }

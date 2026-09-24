@@ -47,6 +47,18 @@ public:
     bool IsFullClutch() const { return bFullClutch; }
     bool IsClutching() const { return bFullClutch; }
     void ConsumeMenuPress() { bMenuPressed = false; }
+
+    // Latched HAND GRIP TAP -- pressed and released without touching the pad.
+    // This is the handover shortcut; see OnHandGripReleased for why a tap and
+    // not a press, and PollResumeButton for what it does.
+    bool IsResumeRequested() const { return bResumeRequested; }
+    void ConsumeResumePress() { bResumeRequested = false; }
+
+    // Force the grasp toggle to a known value. Used on a takeover to re-sync
+    // this latch with the gripper the operator is actually inheriting -- see
+    // AOperatorPawn::RequestArmAuthority.
+    void SetGraspHeld(bool bHeld) { bGripHeld = bHeld; }
+
     float GetScaleFactor() const { return ScaleFactor; }
 
     // Arm a one-shot wrist-pivot calibration. While armed, the NEXT grip hold captures
@@ -239,6 +251,10 @@ private:
     float TriggerValue = 0.0f;
     bool bGripHeld = false;
     bool bHandGripHeld = false;
+    // True once the pad was used during the current hand-grip hold, which
+    // makes that hold a scale gesture rather than a handover tap.
+    bool bPadUsedThisHold = false;
+    bool bResumeRequested = false;
     bool bMenuPressed = false;
     bool bFullClutch = true;
     bool bWasFullClutch = false;

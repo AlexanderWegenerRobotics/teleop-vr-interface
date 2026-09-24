@@ -61,6 +61,12 @@ public:
         return LastRecv_;
     }
 
+    TRecv Peek(uint64& OutRecvNs) const {
+        FScopeLock Lock(&Mutex_);
+        OutRecvNs = LastRecvNs_;
+        return LastRecv_;
+    }
+
     bool IsAlive(double TimeoutSec = 0.5) const {
         return Socket_ && Socket_->IsAlive(TimeoutSec);
     }
@@ -88,19 +94,24 @@ public:
     // Returns -1 if the sender does not populate sample_time_ns (older build),
     // so callers can distinguish "unknown" from "fresh". Callers should treat
     // negative as unknown and NOT alarm on it.
+    // Measured on this machine's clock only: time since a packet carrying a
+    // NEW sample_time_ns arrived. Independent of the clock offset between hosts.
     float GetStateAgeMs() const {
-        uint64 SampleNs;
+        uint64 AdvanceNs;
         {
             FScopeLock Lock(&Mutex_);
-            SampleNs = LastRecv_.header.sample_time_ns;
+            AdvanceNs = LastSampleAdvanceNs_;
         }
-        if (SampleNs == 0) return -1.f;
+        if (AdvanceNs == 0) return -1.f;
         const uint64 NowNs = timestamp_ns();
-        if (NowNs <= SampleNs) return 0.f;   // clock skew; clamp rather than report negative
-        return static_cast<float>((NowNs - SampleNs) / 1000000.0);
+        if (NowNs <= AdvanceNs) return 0.f;
+        return static_cast<float>((NowNs - AdvanceNs) / 1000000.0);
     }
 
     FOnStreamFault OnFaultDetected;
+
+    // Called on the receive thread for every accepted packet, with the local receive time.
+    TFunction<void(const TRecv&, uint64)> OnReceived;
 
 private:
     void HandleReceive(const uint8* Data, int32 Size) {
@@ -109,16 +120,28 @@ private:
         TRecv Msg;
         FMemory::Memcpy(&Msg, Data, sizeof(TRecv));
 
+        const uint64 RecvNs = timestamp_ns();
         uint32 Seq = Msg.header.sequence;
+        if (LastRecvSeq_ > 0 && Seq + 1000 < LastRecvSeq_) {
+            LastRecvSeq_ = 0;
+            LatencyMs_   = 0.f;
+        }
         if (Seq > LastRecvSeq_ + 1 && LastRecvSeq_ > 0) {
             DroppedCount_ += (Seq - LastRecvSeq_ - 1);
         }
 
+        bool bAccepted = false;
         if (Seq > LastRecvSeq_ || LastRecvSeq_ == 0) {
             FScopeLock Lock(&Mutex_);
+            bAccepted = true;
             LastRecv_ = Msg;
             bHasNew_  = true;
             LastRecvSeq_ = Seq;
+            LastRecvNs_  = RecvNs;
+            if (Msg.header.sample_time_ns != 0 && Msg.header.sample_time_ns != LastSampleNs_) {
+                LastSampleNs_        = Msg.header.sample_time_ns;
+                LastSampleAdvanceNs_ = RecvNs;
+            }
 
             if (Msg.header.timestamp_ns > 0) {
                 uint64_t NowNs = timestamp_ns();
@@ -141,6 +164,7 @@ private:
                 }
             }
         }
+        if (bAccepted && OnReceived) OnReceived(Msg, RecvNs);
 
         ++RecvCountInWindow_;
         double NowSec = FPlatformTime::Seconds();
@@ -158,6 +182,9 @@ private:
     TRecv    LastRecv_{};
     TAtomic<uint32> SendSeq_{0};
     uint32   LastRecvSeq_ = 0;
+    uint64   LastRecvNs_  = 0;
+    uint64   LastSampleNs_ = 0;
+    uint64   LastSampleAdvanceNs_ = 0;
     uint32   DroppedCount_= 0;
     TAtomic<bool> bHasNew_{false};
 

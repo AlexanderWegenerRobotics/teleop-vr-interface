@@ -172,6 +172,23 @@ struct FCommandRow
     // from events.log at 1 ms resolution and guessed at in between.
     float  ClutchFactor = 0.f;
     bool   bFullClutch  = false;
+
+    // All *_ns below are std::chrono::system_clock on this machine (timestamp_ns()),
+    // except RobotTxNs / RobotSampleNs, which are the avatar's clock.
+    uint8  PoseSource   = 0;   // 1 = OpenXR sampled on the command thread, 0 = game-thread fallback
+    uint64 PoseSampleNs = 0;
+    float  HandPx = 0.f, HandPy = 0.f, HandPz = 0.f;               // UE world, cm
+    float  HandQw = 1.f, HandQx = 0.f, HandQy = 0.f, HandQz = 0.f;
+    uint64 CmdSendNs    = 0;
+
+    uint64 RobotRecvNs   = 0;
+    uint64 RobotTxNs     = 0;
+    uint64 RobotSampleNs = 0;
+    uint32 RobotSeq      = 0;
+    uint32 AppliedSeq    = 0;
+    float  RobotPx = 0.f, RobotPy = 0.f, RobotPz = 0.f;            // avatar world, m
+    float  RobotQw = 1.f, RobotQx = 0.f, RobotQy = 0.f, RobotQz = 0.f;
+    float  RttMs         = 0.f;
 };
 
 // ---------------------------------------------------------------------------

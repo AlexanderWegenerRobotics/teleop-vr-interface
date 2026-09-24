@@ -142,6 +142,15 @@ void UTrackedControllerComponent::OnGripPressed(const FInputActionValue& Value) 
 #if WITH_PIVOT_CALIBRATION
     if (bCalibCapturing) return;
 #endif
+    // HandGrip held suppresses the grasp toggle, so Pad up/down can step the
+    // motion scale without opening the gripper.
+    //
+    // This branch was briefly RESUME as well. It cannot be, on this hardware:
+    // the IMC binds IA_Grip to the Vive TRACKPAD BUTTON, and the trackpad also
+    // raises IA_PadUp/IA_PadDown from the same physical press. So HandGrip +
+    // Grip and HandGrip + Pad are the same gesture, and the 2026-09-23 session
+    // log shows it -- every RESUME_POLICY from the chord carries a GEAR_CHANGE
+    // at the identical nanosecond. Resume lives on its own button instead.
     if (bHandGripHeld) return;
     bGripHeld = !bGripHeld;
 }
@@ -151,10 +160,28 @@ void UTrackedControllerComponent::OnGripReleased(const FInputActionValue& Value)
 
 void UTrackedControllerComponent::OnHandGripPressed(const FInputActionValue& Value) {
     bHandGripHeld = true;
+    bPadUsedThisHold = false;
 }
 
 void UTrackedControllerComponent::OnHandGripReleased(const FInputActionValue& Value) {
     bHandGripHeld = false;
+    // A TAP -- pressed and released without touching the pad -- is RESUME.
+    // A hold with a pad press in it was a scale change, and resumes nothing.
+    //
+    // Fires on release rather than press so the two gestures can share this
+    // button at all: on press there is no way yet to know which one it will
+    // turn out to be. A tap completes in well under a tenth of a second, so
+    // the operator does not feel the difference.
+    //
+    // The hand grip is the only input on a Vive controller that is under the
+    // hand at rest and not already carrying a per-tick job: the trigger is the
+    // clutch, the trackpad button is the gripper, the trackpad directions are
+    // the gear, and the menu button is out at the top where reaching it means
+    // moving the hand. Handover has to be reachable without moving the hand,
+    // or its cost biases when the operator chooses to hand back -- and that
+    // shows up in the dataset, not just in comfort.
+    if (!bPadUsedThisHold) bResumeRequested = true;
+    bPadUsedThisHold = false;
 }
 
 void UTrackedControllerComponent::OnMenuPressed(const FInputActionValue& Value) {
@@ -167,11 +194,15 @@ void UTrackedControllerComponent::OnMenuReleased(const FInputActionValue& Value)
 
 void UTrackedControllerComponent::OnPadUp(const FInputActionValue& Value) {
     if (!bHandGripHeld) return;
+    // Marks this hold as a scale gesture, so releasing the hand grip does not
+    // also hand the robot back.
+    bPadUsedThisHold = true;
     ScaleFactor = FMath::Min(ScaleFactor + ScaleStep, MaxScale);
 }
 
 void UTrackedControllerComponent::OnPadDown(const FInputActionValue& Value) {
     if (!bHandGripHeld) return;
+    bPadUsedThisHold = true;
     ScaleFactor = FMath::Max(ScaleFactor - ScaleStep, MinScale);
 }
 

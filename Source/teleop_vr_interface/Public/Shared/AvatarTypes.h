@@ -17,6 +17,50 @@ enum class ESysState : uint8 {
     Recovering = 8
 };
 
+// Which command channel may move one arm. Mirrors CommandAuthority in
+// teleop-simulator/include/common.hpp -- the values have to agree, because the
+// avatar reads this straight off the wire as a uint8.
+//
+// Named for the mechanism rather than for DAgger: the same mutex is what stops
+// the VR channel and the orchestrator's absolute channel from fighting, which
+// they do today whenever both are live, DAgger or no DAgger.
+//
+// Unset means no one has claimed the arm and the avatar is gating nothing --
+// exactly the behaviour that existed before authority. It is a real state the
+// avatar publishes, not a UI placeholder.
+UENUM(BlueprintType)
+enum class EControlAuthority : uint8 {
+    Policy = 0,
+    Human  = 1,
+    Hold   = 2,
+    Unset  = 255
+};
+
+inline FString AuthorityToString(EControlAuthority A) {
+    switch (A) {
+    case EControlAuthority::Policy: return TEXT("POLICY");
+    case EControlAuthority::Human:  return TEXT("HUMAN");
+    case EControlAuthority::Hold:   return TEXT("HOLD");
+    default:                        return TEXT("UNSET");
+    }
+}
+
+// One character per state, for the fixed-width readout used when the two arms
+// disagree: "L= RH" is left HOLD, right HUMAN.
+//
+// '=' rather than a letter for HOLD -- the two bars read as a pause, and every
+// letter that fits is taken or ambiguous ('H' is HUMAN, and 'O' for hOld next
+// to it was genuinely unreadable on the headset). '?' for Unset says "nobody
+// has claimed this arm", which is a question rather than a state.
+inline FString AuthorityToInitial(EControlAuthority A) {
+    switch (A) {
+    case EControlAuthority::Policy: return TEXT("P");
+    case EControlAuthority::Human:  return TEXT("H");
+    case EControlAuthority::Hold:   return TEXT("=");
+    default:                        return TEXT("?");
+    }
+}
+
 inline ESysState ToESysState(SysState S) {
     return static_cast<ESysState>(S);
 }

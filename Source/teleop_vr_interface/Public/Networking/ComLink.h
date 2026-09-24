@@ -59,6 +59,11 @@ public:
     ArmStateMsg ReadArmState(uint8 DeviceIndex = 0);
     ArmStateMsg PeekArmState(uint8 DeviceIndex = 0) const;
     HeadStateMsg ReadHeadState();
+    // Latest head state without consuming the new-data flag. The head handover
+    // needs the neck's current angles to re-anchor onto, and it needs them at
+    // an arbitrary moment that has nothing to do with whoever else is draining
+    // this stream -- Read() there would clear a flag that is not ours.
+    HeadStateMsg PeekHeadState() const;
 
     // --- command link (avatar system channel) ---
     // SendStateRequest/SendReliable also mirror to the twin's CommandLink
@@ -68,6 +73,21 @@ public:
     // state/HUD logic that should keep reflecting the avatar, not double-fire
     // per peer. Use the Twin* status accessors below for twin-specific reads.
     void SendStateRequest(SysState RequestedState);
+    // Claims or releases one arm for the operator. DeviceIndex 0 = left,
+    // 1 = right; the avatar arbitrates per arm (Avatar::applyAuthorityRequest).
+    //
+    // Sent with AckRequested so a lost claim is retried rather than leaving the
+    // operator pulling a trigger against an arm the avatar still thinks the
+    // policy owns. The avatar echoes the result in SceneObjectsMsg, which is
+    // what the HUD renders -- never the local request, so the pill shows what
+    // was granted rather than what was asked for.
+    //
+    // NOT mirrored to the twin: the twin has no second operator and no policy
+    // contending for its arms, so there is nothing there to arbitrate.
+    // bAllDevices omits the "device" key, which the avatar reads as "every
+    // arm" -- that single flag is the whole difference between whole-body and
+    // per-limb handover on the wire.
+    void SendAuthorityRequest(uint8 DeviceIndex, EControlAuthority Requested, bool bAllDevices = false);
     void SendReliable(const std::string& MsgType, const msgpack::sbuffer& Payload, bool AckRequested = false);
     void RegisterHandler(const std::string& MsgType, FMsgHandler Handler);
 
@@ -113,6 +133,15 @@ public:
     UFUNCTION(BlueprintCallable, Category = "ComLink")
     int32 GetArmDroppedPackets(uint8 DeviceIndex = 0) const;
 
+    // Round trip on this machine's clock: command send time -> first state
+    // packet echoing that command in applied_cmd_sequence. 0 = no sample yet.
+    // Includes up to one avatar state period (5 ms) of waiting on the robot side.
+    UFUNCTION(BlueprintCallable, Category = "ComLink")
+    float GetArmRttMs(uint8 DeviceIndex = 0) const;
+    float GetArmLastRttMs(uint8 DeviceIndex = 0) const;
+
+    ArmStateMsg PeekArmStateWithRecvTime(uint8 DeviceIndex, uint64& OutRecvNs) const;
+
     // True when packets are still arriving but the payload has stopped
     // changing -- the failure mode that looked like a perfectly healthy link
     // on 2026-08-09. Threshold defaults to 5x the 200 Hz publish period.
@@ -149,4 +178,16 @@ private:
 
     bool bWasAvatarAlive_ = false;
     float HeartbeatAccum_ = 0.0f;
+
+    static constexpr uint32 kRttRing = 1024;
+    struct FArmRtt {
+        FCriticalSection Mutex;
+        uint32 SentSeq[kRttRing] = {};
+        uint64 SentNs[kRttRing]  = {};
+        uint32 LastEcho  = 0;
+        float  LastRttMs = 0.f;
+        float  RttMs     = 0.f;
+    };
+    FArmRtt ArmRtt_[2];
+    void OnArmStateReceived(uint8 DeviceIndex, const ArmStateMsg& Msg, uint64 RecvNs);
 };

@@ -92,6 +92,30 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Debug")
 	bool bPrintDebugInfo = false;
 
+	// How often the widget tree is rasterised into the stereo layer, in Hz.
+	// Deliberately not the frame rate -- see the throttle in TickComponent.
+	// Hover and click bypass it, so this paces only the numbers and plots.
+	// <= 0 renders every tick, i.e. the previous behaviour.
+	UPROPERTY(EditAnywhere, Category = "Performance", meta = (ClampMin = "0.0"))
+	float RenderRateHz = 10.0f;
+
+	// Invisible slack added around every button's hit rect, in render-target
+	// pixels. Gaze is not a mouse: the ray carries tracker noise, a calibration
+	// offset and the operator's own microsaccades, so a button that is exactly
+	// as big as it looks is harder to hold than it appears -- the wink lands in
+	// the two-pixel gap between the rect and where the eye actually was.
+	//
+	// This grows the target without growing the graphic, which is the whole
+	// point: the HUD sits over the video and every pixel of panel is a pixel of
+	// workspace the operator cannot see. Making a button easier to hit by
+	// drawing it bigger costs sight; making its hit rect bigger costs nothing
+	// until two rects start to overlap, which is what the exact-hit-first rule
+	// in FindButtonAtUV handles.
+	//
+	// 0 restores the previous pixel-exact behaviour.
+	UPROPERTY(EditAnywhere, Category = "Gaze", meta = (ClampMin = "0.0"))
+	float GazeHitMarginPx = 12.0f;
+
 private:
 	void DiscoverWidgets();
 	void CacheWidgetRects();
@@ -170,4 +194,10 @@ private:
 
 	bool bIsBound_ = false;
 	double LastLogTime_ = 0.0;
+
+	// HUD raster pacing (see TickComponent). RenderAccum_ carries time toward
+	// the next slot; bRenderDirty_ forces a draw on the tick something the
+	// operator interacted with changed, so input never waits for the clock.
+	float RenderAccum_  = 0.0f;
+	bool  bRenderDirty_ = true;   // the first tick after binding always draws
 };
