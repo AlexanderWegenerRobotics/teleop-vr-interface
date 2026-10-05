@@ -341,7 +341,21 @@ void UWidgetBinder::TickComponent(float DeltaTime, ELevelTick TickType, FActorCo
 
 	FVector2D UV;
 	bool bGazeOnPanel = ProjectGazeToUV(UV);
-	FName NewHovered = bGazeOnPanel ? FindButtonAtUV(UV) : FName();
+
+	// Hover follows trusted gaze only; through a wink or a brief tracker
+	// dropout it holds the last trusted target (see BlinkHoverHoldSec).
+	// IsBlinking() also covers the short "open" flickers WinkGesture bridges,
+	// so a one-frame open reading mid-wink cannot retarget the hover.
+	const bool bGazeTrusted = LatestGaze_.bIsValid && !LatestGaze_.bIsRightBlinking
+		&& !WinkGesture_.IsBlinking();
+	FName NewHovered;
+	if (bGazeTrusted || BlinkHoverHoldSec <= 0.f) {
+		UntrustedGazeSec_ = 0.f;
+		NewHovered = bGazeOnPanel ? FindButtonAtUV(UV) : FName();
+	} else {
+		UntrustedGazeSec_ += DeltaTime;
+		NewHovered = (UntrustedGazeSec_ <= BlinkHoverHoldSec) ? HoveredButton_ : FName();
+	}
 
 	if (NewHovered != HoveredButton_) {
 		SetButtonToNormal(HoveredButton_);
@@ -356,6 +370,10 @@ void UWidgetBinder::TickComponent(float DeltaTime, ELevelTick TickType, FActorCo
 	}
 
 	if (bPressed && HoveredButton_ != FName()) {
+		if (UntrustedGazeSec_ > 0.f) {
+			UE_LOG(LogTemp, Log, TEXT("WidgetBinder: press on %s via hover hold (gaze untrusted for %.0f ms)"),
+				*HoveredButton_.ToString(), UntrustedGazeSec_ * 1000.f);
+		}
 		if (LockedButtons_.Contains(HoveredButton_)) {
 			RejectedButton_ = HoveredButton_;
 		}
@@ -827,6 +845,34 @@ void UWidgetBinder::SetVisibility(FName WidgetName, bool bVisible)
 			}
 		}
 	}
+}
+
+FString UWidgetBinder::GetWidgetClassName(FName Name) const {
+	if (UWidget* const* W = CachedWidgets_.Find(Name))
+		if (*W) return (*W)->GetClass()->GetName();
+	return FString();
+}
+
+FLinearColor UWidgetBinder::GetDesignTint(FName Name) const {
+	// Both layers, because both multiply: the widget's own colour AND the
+	// brush's tint underneath it. Either one being non-white is enough to
+	// swallow a runtime accent.
+	if (UImage* const* Img = CachedImages_.Find(Name)) {
+		if (*Img) {
+			const FLinearColor Widget = (*Img)->GetColorAndOpacity();
+			const FLinearColor Brush  = (*Img)->GetBrush().TintColor.GetSpecifiedColor();
+			return Widget * Brush;
+		}
+	}
+	if (UBorder* const* Bdr = CachedBorders_.Find(Name)) {
+		if (*Bdr) {
+			const FLinearColor Widget = (*Bdr)->GetBrushColor();
+			const FLinearColor Brush  = (*Bdr)->Background.TintColor.GetSpecifiedColor();
+			return Widget * Brush;
+		}
+	}
+	// TextBlocks replace rather than multiply, so there is nothing to warn about.
+	return FLinearColor::White;
 }
 
 void UWidgetBinder::SetImageColor(FName WidgetName, const FLinearColor& Color) {

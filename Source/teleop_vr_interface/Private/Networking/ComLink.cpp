@@ -127,10 +127,36 @@ void UComLink::SendArmCommand(ArmCommandMsg& Msg, uint8 DeviceIndex) {
 }
 
 void UComLink::OnArmStateReceived(uint8 DeviceIndex, const ArmStateMsg& Msg, uint64 RecvNs) {
-    const uint32 Echo = Msg.applied_cmd_sequence;
-    if (Echo == 0) return;
     FArmRtt& R = ArmRtt_[DeviceIndex];
     FScopeLock Lock(&R.Mutex);
+
+    // --- network delay: round trip minus the avatar's dwell, halved ---------
+    // Only the FIRST state packet echoing a given command counts: later ones
+    // carry the same echo with a longer hold and add nothing. Both terms of
+    // the subtraction are same-clock durations (ours for the round trip, the
+    // avatar's for the hold), so the hosts' clock offset never enters.
+    const uint32 NetEcho = Msg.echo_cmd_sequence;
+    if (NetEcho != 0 && NetEcho != R.LastNetEcho) {
+        R.LastNetEcho = NetEcho;
+        const uint32 NetSlot = NetEcho % kRttRing;
+        if (R.SentSeq[NetSlot] == NetEcho && R.SentNs[NetSlot] != 0 && RecvNs > R.SentNs[NetSlot]) {
+            const double RoundTripMs = (RecvNs - R.SentNs[NetSlot]) / 1000000.0;
+            if (RoundTripMs < 5000.0) {
+                // Clamped at 0: on loopback the true value is ~0.05 ms and
+                // scheduler noise can push the difference slightly negative.
+                const float OneWayMs = static_cast<float>(
+                    FMath::Max(0.0, RoundTripMs - Msg.echo_hold_us / 1000.0) * 0.5);
+                R.LastNetDelayMs = OneWayMs;
+                const bool bFresh = (FPlatformTime::Seconds() - R.NetDelayUpdateSec) < kNetDelayStaleSec;
+                R.NetDelayMs = bFresh ? 0.1f * OneWayMs + 0.9f * R.NetDelayMs : OneWayMs;
+                R.NetDelayUpdateSec = FPlatformTime::Seconds();
+            }
+        }
+    }
+
+    // --- command-to-effect round trip (applied_cmd_sequence) ----------------
+    const uint32 Echo = Msg.applied_cmd_sequence;
+    if (Echo == 0) return;
     if (Echo == R.LastEcho) return;
     R.LastEcho = Echo;
     const uint32 Slot = Echo % kRttRing;
@@ -146,6 +172,30 @@ float UComLink::GetArmRttMs(uint8 DeviceIndex) const {
     FArmRtt& R = const_cast<FArmRtt&>(ArmRtt_[DeviceIndex]);
     FScopeLock Lock(&R.Mutex);
     return R.RttMs;
+}
+
+float UComLink::GetArmNetworkDelayMs(uint8 DeviceIndex) const {
+    if (DeviceIndex >= 2) return 0.f;
+    FArmRtt& R = const_cast<FArmRtt&>(ArmRtt_[DeviceIndex]);
+    FScopeLock Lock(&R.Mutex);
+    if (R.NetDelayUpdateSec <= 0.0 || FPlatformTime::Seconds() - R.NetDelayUpdateSec > kNetDelayStaleSec)
+        return 0.f;
+    // 0 is reserved for "unknown"; a real loopback reading of 0.00x ms must
+    // still render as a number, so floor it at the display resolution.
+    return FMath::Max(R.NetDelayMs, 0.01f);
+}
+
+float UComLink::GetArmLastNetworkDelayMs(uint8 DeviceIndex) const {
+    if (DeviceIndex >= 2) return 0.f;
+    FArmRtt& R = const_cast<FArmRtt&>(ArmRtt_[DeviceIndex]);
+    FScopeLock Lock(&R.Mutex);
+    if (R.NetDelayUpdateSec <= 0.0 || FPlatformTime::Seconds() - R.NetDelayUpdateSec > kNetDelayStaleSec)
+        return -1.f;
+    return R.LastNetDelayMs;
+}
+
+float UComLink::GetNetworkDelayMs() const {
+    return FMath::Max(GetArmNetworkDelayMs(0), GetArmNetworkDelayMs(1));
 }
 
 float UComLink::GetArmLastRttMs(uint8 DeviceIndex) const {

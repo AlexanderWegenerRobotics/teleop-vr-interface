@@ -67,6 +67,9 @@ struct FStreamRow
     int32  VideoFps       = 0;
 
     // Data stream stats (arm state stream, avatar → operator)
+    // DataLatencyMs is (our receive clock - avatar send clock): it carries the
+    // hosts' clock offset as an unknown additive error. For network delay use
+    // NetDelayMs; DataLatencyMs - NetDelayMs is then an estimate of that offset.
     float  DataLatencyMs  = 0.f;
     float  DataMsgRateHz  = 0.f;
 
@@ -136,6 +139,12 @@ struct FStreamRow
     float  CommandDuplicatePct = 0.f;
     // Cumulative, both arms: tracker discontinuities the jump guard discarded.
     int32  CommandRejectedJumps = 0;
+
+    // One-way NETWORK delay, interface <-> avatar, exactly the value the HUD
+    // pill and the panel's OWD plot show (UComLink::GetNetworkDelayMs):
+    // ((recv - send(echo_cmd_sequence)) - echo_hold_us) / 2, worse of the two
+    // arms, EWMA. Clock-offset free. -1 = unknown (no commands flowing).
+    float  NetDelayMs = -1.f;
 };
 
 // One row per arm command actually placed on the wire.
@@ -189,6 +198,9 @@ struct FCommandRow
     float  RobotPx = 0.f, RobotPy = 0.f, RobotPz = 0.f;            // avatar world, m
     float  RobotQw = 1.f, RobotQx = 0.f, RobotQy = 0.f, RobotQz = 0.f;
     float  RttMs         = 0.f;
+    // Raw (unsmoothed) one-way network delay from the newest echo on this arm;
+    // see FStreamRow::NetDelayMs. -1 = unknown.
+    float  NetDelayMs    = -1.f;
 };
 
 // ---------------------------------------------------------------------------

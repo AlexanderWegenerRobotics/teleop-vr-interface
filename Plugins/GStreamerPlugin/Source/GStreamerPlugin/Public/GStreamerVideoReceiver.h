@@ -56,6 +56,10 @@ struct FReceiverConfig
     int32   StatusPort = 5007;
     FString SenderIP = TEXT("127.0.0.1");
     int32   ReportIntervalMs = 500;
+    // rtpjitterbuffer latency. The jitter buffer holds every packet for this long
+    // before releasing it, so it adds this many ms to every frame. Size it to the
+    // link's jitter (a few ms on the Abu Dhabi link) plus FEC recovery time, not more.
+    int32   JitterBufferMs = 50;
 };
 
 struct FReceiverStats

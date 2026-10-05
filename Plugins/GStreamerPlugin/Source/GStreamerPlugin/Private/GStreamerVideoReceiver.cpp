@@ -326,13 +326,15 @@ bool FGStreamerVideoReceiver::Initialize(const FReceiverConfig& Config)
 bool FGStreamerVideoReceiver::BuildPipeline(bool bUseGpuDecode)
 {
     std::string DecodeStep = bUseGpuDecode ? "nvh264dec ! cudadownload" : "avdec_h264";
-    UE_LOG(LogTemp, Log, TEXT("GStreamer: decoder: %s"),
-           bUseGpuDecode ? TEXT("nvh264dec (GPU)") : TEXT("avdec_h264 (CPU)"));
+    UE_LOG(LogTemp, Log, TEXT("GStreamer: decoder: %s, jitterbuffer %d ms (port %d)"),
+           bUseGpuDecode ? TEXT("nvh264dec (GPU)") : TEXT("avdec_h264 (CPU)"),
+           Config_.JitterBufferMs, Config_.Port);
 
     std::string PipelineStr =
         "udpsrc port=" + std::to_string(Config_.Port) +
         " caps=\"application/x-rtp,media=video,encoding-name=H264,payload=96\""
-        " ! rtpjitterbuffer latency=50"
+        " ! rtpjitterbuffer name=jitterbuffer latency=" + std::to_string(Config_.JitterBufferMs) +
+        " drop-on-latency=true"
         " ! rtpulpfecdec name=fecdec"
         " ! rtph264depay name=depay"
         " ! h264parse"

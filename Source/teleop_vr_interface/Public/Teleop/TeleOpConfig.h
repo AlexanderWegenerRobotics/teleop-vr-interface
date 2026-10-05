@@ -44,11 +44,16 @@ struct FStreamConfig
     FString RemoteIP = TEXT("127.0.0.1");
     bool    bStereo          = false;
     bool    bVideoLogEnabled = true;
+    bool    bVideoLogRaw       = true;
+    bool    bVideoLogAttention = true;
     int32   Port             = 5004;
     int32   FeedbackPort     = 5005;
     int32   TimestampPort    = 5006;
     int32   StatusPort       = 5007;
     int32   ReportIntervalMs = 500;
+    // Optional "jitterbuffer_ms" in stream.json; applies to every GStreamer
+    // receiver (main, twin, PiP). 50 = the old hardcoded value.
+    int32   JitterBufferMs   = 50;
     int32   RightPort             = 5006;
     int32   RightFeedbackPort     = 5008;
     int32   RightStatusPort       = 5009;

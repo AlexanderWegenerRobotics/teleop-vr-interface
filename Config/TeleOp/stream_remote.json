@@ -7,6 +7,8 @@
     "report_interval_ms":   500,
     "stereo":               false,
     "video_log_enabled":    true,
+    "video_log_raw":        true,
+    "video_log_attention":  false,
     "right_port":           5006,
     "right_feedback_port":  5008,
     "right_status_port":    5009,

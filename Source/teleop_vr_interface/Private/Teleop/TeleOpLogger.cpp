@@ -130,14 +130,14 @@ void FTeleOpLogger::WriteCommandRow(const FCommandRow& R)
         TEXT("%.6f;%.6f;%.6f;%.6f;%.6f;%.6f;%.6f;")
         TEXT("%.3f;%.4f;%d;")
         TEXT("%d;%llu;%.3f;%.3f;%.3f;%.6f;%.6f;%.6f;%.6f;%llu;")
-        TEXT("%llu;%llu;%llu;%u;%u;%.5f;%.5f;%.5f;%.6f;%.6f;%.6f;%.6f;%.3f\n"),
+        TEXT("%llu;%llu;%llu;%u;%u;%.5f;%.5f;%.5f;%.6f;%.6f;%.6f;%.6f;%.3f;%.3f\n"),
         R.TimestampNs, R.DeviceIndex, R.Sequence, R.bSent ? 1 : 0,
         R.Px, R.Py, R.Pz, R.Qw, R.Qx, R.Qy, R.Qz,
         R.Gripper, R.ClutchFactor, R.bFullClutch ? 1 : 0,
         R.PoseSource, R.PoseSampleNs, R.HandPx, R.HandPy, R.HandPz,
         R.HandQw, R.HandQx, R.HandQy, R.HandQz, R.CmdSendNs,
         R.RobotRecvNs, R.RobotTxNs, R.RobotSampleNs, R.RobotSeq, R.AppliedSeq,
-        R.RobotPx, R.RobotPy, R.RobotPz, R.RobotQw, R.RobotQx, R.RobotQy, R.RobotQz, R.RttMs));
+        R.RobotPx, R.RobotPy, R.RobotPz, R.RobotQw, R.RobotQx, R.RobotQy, R.RobotQz, R.RttMs, R.NetDelayMs));
 }
 
 FString FTeleOpLogger::CommandHeader()
@@ -148,7 +148,7 @@ FString FTeleOpLogger::CommandHeader()
         TEXT("gripper;clutch_factor;full_clutch;")
         TEXT("pose_source;pose_sample_ns;hand_px;hand_py;hand_pz;hand_qw;hand_qx;hand_qy;hand_qz;cmd_send_ns;")
         TEXT("robot_recv_ns;robot_tx_ns;robot_sample_ns;robot_seq;applied_seq;")
-        TEXT("robot_px;robot_py;robot_pz;robot_qw;robot_qx;robot_qy;robot_qz;rtt_ms\n");
+        TEXT("robot_px;robot_py;robot_pz;robot_qw;robot_qx;robot_qy;robot_qz;rtt_ms;net_delay_ms\n");
 }
 
 void FTeleOpLogger::WriteStreamRow(const FStreamRow& R)
@@ -166,7 +166,8 @@ void FTeleOpLogger::WriteStreamRow(const FStreamRow& R)
         TEXT("%d;%d;%u;%.2f;")
         TEXT("%.2f;%.2f;%.2f;%.2f;")
         TEXT("%d;%d;%s;")
-        TEXT("%.1f;%.2f;%.2f;%d\n"),
+        TEXT("%.1f;%.2f;%.2f;%d;")
+        TEXT("%.3f\n"),
         R.TimestampNs, R.OperatorState,
         R.LeftClutch,  R.LeftGear,  R.LeftGrasp,
         R.LeftPx,  R.LeftPy,  R.LeftPz,
@@ -182,7 +183,8 @@ void FTeleOpLogger::WriteStreamRow(const FStreamRow& R)
         R.FrameMs, R.GameThreadMs, R.RenderThreadMs, R.GpuMs,
         R.LeftTrackState, R.RightTrackState,
         R.VideoSourceName.IsEmpty() ? TEXT("-") : *R.VideoSourceName,
-        R.CommandRateHz, R.CommandJitterMs, R.CommandDuplicatePct, R.CommandRejectedJumps));
+        R.CommandRateHz, R.CommandJitterMs, R.CommandDuplicatePct, R.CommandRejectedJumps,
+        R.NetDelayMs));
 }
 
 void FTeleOpLogger::LogEvent(const FString& Message)
@@ -229,5 +231,8 @@ FString FTeleOpLogger::StreamHeader()
         TEXT("left_track_state;right_track_state;video_source;")
         // Command thread. command_dup_pct is the acceptance test for the
         // decoupled send: see FStreamRow.
-        TEXT("command_rate_hz;command_jitter_ms;command_dup_pct;command_rejected_jumps\n");
+        TEXT("command_rate_hz;command_jitter_ms;command_dup_pct;command_rejected_jumps;")
+        // One-way network delay, the number the HUD shows. data_latency_ms above
+        // differences two hosts' clocks; this one does not. -1 = unknown.
+        TEXT("net_delay_ms\n");
 }

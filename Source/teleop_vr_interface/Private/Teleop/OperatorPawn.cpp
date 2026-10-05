@@ -57,6 +57,26 @@ const FLinearColor kAuthorityHold  (0.8070f, 0.4452f, 0.0137f);
 const FLinearColor kAuthorityMixed (0.55f, 0.55f, 0.55f);
 // AGREE pips: lit in the POLICY accent, unlit near-black.
 const FLinearColor kPipOff(0.15f, 0.15f, 0.15f);
+
+// Foreground for content drawn ON TOP of an accent fill.
+//
+// The DAGGER panel is a solid accent block with a glyph and a word inside it,
+// so those two must NOT take the accent as well -- that paints green on green
+// and the bar reads as an empty colour swatch, which is exactly what happened
+// on 2026-09-27. They take a contrasting foreground instead, chosen from the
+// fill's luminance so it stays readable whichever state the panel is in.
+//
+// Rec.709 coefficients on LINEAR values, which is what FLinearColor holds. All
+// three authority colours land near 0.47-0.50 linear -- bright enough that
+// near-black wins comfortably -- but the test is written out rather than
+// hard-coded so a retuned palette cannot silently produce an unreadable panel.
+const FLinearColor kOnAccentDark (0.03f, 0.03f, 0.04f);
+const FLinearColor kOnAccentLight(0.96f, 0.96f, 0.96f);
+
+FLinearColor ForegroundOn(const FLinearColor& Fill) {
+    const float Luma = 0.2126f * Fill.R + 0.7152f * Fill.G + 0.0722f * Fill.B;
+    return Luma > 0.3f ? kOnAccentDark : kOnAccentLight;
+}
 constexpr int32  kAgreePips            = 5;
 // policy_status arrives at ~5 Hz; older than this and INF/AGREE show nothing.
 constexpr double kPolicyStatusStaleSec = 1.0;
@@ -341,6 +361,7 @@ void AOperatorPawn::BeginPlay() {
 	GstConfig.SenderIP         = Config->Stream.RemoteIP;
 	GstConfig.ReportIntervalMs = Config->Stream.ReportIntervalMs;
 	GstConfig.StatusPort       = Config->Stream.StatusPort;
+	GstConfig.JitterBufferMs   = Config->Stream.JitterBufferMs;
 	VideoFeed->RegisterSource(kAvatarMainSourceName, MakeUnique<FGStreamerSource>(GstConfig));
 	VideoFeed->SetStereoMode(Config->Stream.bStereo);
 
@@ -362,6 +383,7 @@ void AOperatorPawn::BeginPlay() {
 			: Config->Stream.TwinRemoteIP;
 		TwinGstConfig.ReportIntervalMs = Config->Stream.ReportIntervalMs;
 		TwinGstConfig.StatusPort       = Config->Stream.TwinStream.StatusPort;
+		TwinGstConfig.JitterBufferMs   = Config->Stream.JitterBufferMs;
 		VideoFeed->RegisterSource(Config->Stream.TwinStream.Name, MakeUnique<FGStreamerSource>(TwinGstConfig));
 
 		// Cached for the viewmodeButton handler in UpdateStateMachine, which
@@ -403,6 +425,8 @@ void AOperatorPawn::BeginPlay() {
 	RightTracked->bDrawDebugRay = true;
 
 	UIBinder->Initialize(UIWidgetClass, VRCamera, FVector2D(Config->Hud.UIWidgetWidth, Config->Hud.UIWidgetHeight), Config->Hud.UIPlaneDistance, 1);
+	ResolveAuthorityGlyphs();
+	AuditWidgetNames();
 	PiPBaseSlotPos_ = UIBinder->GetWidgetSlotPosition(FName("pip_canvas"));
 	PiPNormalSize_  = UIBinder->GetWidgetSize(FName("pip_canvas"));
 	PiPCurrentSize_ = PiPNormalSize_;
@@ -452,6 +476,7 @@ void AOperatorPawn::BeginPlay() {
 			Cfg.SenderIP         = Config->Stream.RemoteIP;
 			Cfg.ReportIntervalMs = Config->Stream.ReportIntervalMs;
 			Cfg.StatusPort       = S.StatusPort;
+			Cfg.JitterBufferMs   = Config->Stream.JitterBufferMs;
 			Src = MakeUnique<FGStreamerSource>(Cfg);
 		}
 		Src->Initialize();
@@ -552,6 +577,7 @@ void AOperatorPawn::BeginPlay() {
 			if (Logger_) Logger_->LogEvent(FString::Printf(TEXT("ARM_RESET_COMPLETE device=%s"), UTF8_TO_TCHAR(Device.c_str())));
 			if (Device == "arm_left") {
 				LeftTracked->CaptureOrigin();
+				if (CommandThread_) CommandThread_->RequestCaptureOrigin(0);
 				SendArmResume("arm_left");
 				LeftArmResetState_ = EArmResetState::Idle;
 				if (GhostOverlay) {
@@ -565,6 +591,7 @@ void AOperatorPawn::BeginPlay() {
 			}
 			if (Device == "arm_right") {
 				RightTracked->CaptureOrigin();
+				if (CommandThread_) CommandThread_->RequestCaptureOrigin(1);
 				SendArmResume("arm_right");
 				RightArmResetState_ = EArmResetState::Idle;
 				if (GhostOverlay) {
@@ -585,10 +612,14 @@ void AOperatorPawn::BeginPlay() {
 
 	float AspectRatio = 1280.f / 720.f;
 	FGazeProjection::ComputeQuadSize(VideoFeed->PlaneDistance, VideoFeed->FOVCoverage, AspectRatio, VideoQuadWidth_, VideoQuadHeight_, VideoFeed->HmdHFovDeg);
-	if (Config->Stream.bVideoLogEnabled) {
+	if (Config->Stream.bVideoLogEnabled && (Config->Stream.bVideoLogRaw || Config->Stream.bVideoLogAttention)) {
 		FActorSpawnParameters Params;
 		Params.Owner = this;
 		VideoLogger_ = GetWorld()->SpawnActor<AVideoLogger>(AVideoLogger::StaticClass(), FTransform::Identity, Params);
+		if (VideoLogger_) {
+			VideoLogger_->bEnableRawVideo       = Config->Stream.bVideoLogRaw;
+			VideoLogger_->bEnableAttentionVideo = Config->Stream.bVideoLogAttention;
+		}
 	}
 
 	if (VideoLogger_) {
@@ -656,7 +687,10 @@ void AOperatorPawn::Tick(float DeltaTime) {
 
 	FVideoSourceStats Stats = VideoFeed->GetStreamStats();
 	LatencyHistory.Push(Stats.OneWayLatencyMs);
-	JitterHistory.Push(ComLink->GetArmStateLatencyMs(0));
+	// Panel "OWD": the same number as the info-bar pill (UpdateInfoBar), from
+	// the same getter, so the two can never disagree. Network-only one-way
+	// delay, clock-offset free; 0 while no commands are flowing (not ENGAGED).
+	JitterHistory.Push(ComLink->GetNetworkDelayMs());
 	LossHistory.Push(Stats.PacketLossPercent);
 	FpsHistory.Push(static_cast<float>(Stats.CurrentFPS));
 
@@ -984,6 +1018,10 @@ void AOperatorPawn::Tick(float DeltaTime) {
 		Row.VideoFps       = Stats.CurrentFPS;
 
 		Row.DataLatencyMs = ComLink->GetArmStateLatencyMs(0);
+		{
+			const float NetMs = ComLink->GetNetworkDelayMs();
+			Row.NetDelayMs = (NetMs > 0.f) ? NetMs : -1.f;
+		}
 		Row.DataMsgRateHz = ComLink->GetArmMsgRateHz(0);
 
 		ArmStateMsg LeftState = ComLink->PeekArmState(0);
@@ -1084,6 +1122,16 @@ void AOperatorPawn::UpdateStateMachine() {
 			ComLink->SendStateRequest(SysState::HOMING);
 			TransitionTo(ESysState::Homing);
 		}
+		else if (AvatarState == ESysState::Homing || AvatarState == ESysState::Awaiting
+			|| AvatarState == ESysState::Engaged || AvatarState == ESysState::Paused) {
+			static double LastIdleResync = 0.0;
+			const double NowS = FPlatformTime::Seconds();
+			if (NowS - LastIdleResync > 1.0) {
+				LastIdleResync = NowS;
+				ComLink->SendStateRequest(SysState::IDLE);
+				if (Logger_) Logger_->LogEvent(FString::Printf(TEXT("IDLE_RESYNC avatar_state=%s"), *StateToString(AvatarState)));
+			}
+		}
 		break;
 
 	case ESysState::Homing:
@@ -1131,12 +1179,12 @@ void AOperatorPawn::UpdateStateMachine() {
 			ComLink->SendStateRequest(SysState::PAUSED);
 			TransitionTo(ESysState::Paused);
 		}
-		else if (ButtonPressed == FName("resetButtonLeft") && LeftArmResetState_ == EArmResetState::Idle) {
+		else if (ButtonPressed == FName("resetButtonLeft") && LeftArmResetState_ == EArmResetState::Idle && ComLink->IsArmAlive(0)) {
 			SendArmReset("arm_left");
 			LeftArmResetState_ = EArmResetState::Recovering;
 			UpdateButtonStates();
 		}
-		else if (ButtonPressed == FName("resetButtonRight") && RightArmResetState_ == EArmResetState::Idle) {
+		else if (ButtonPressed == FName("resetButtonRight") && RightArmResetState_ == EArmResetState::Idle && ComLink->IsArmAlive(1)) {
 			SendArmReset("arm_right");
 			RightArmResetState_ = EArmResetState::Recovering;
 			UpdateButtonStates();
@@ -1179,12 +1227,12 @@ void AOperatorPawn::UpdateStateMachine() {
 			bAvatarConfirmedEngaged_ = false;
 			TransitionTo(ESysState::Engaged);
 		}
-		else if (ButtonPressed == FName("resetButtonLeft") && LeftArmResetState_ == EArmResetState::Idle) {
+		else if (ButtonPressed == FName("resetButtonLeft") && LeftArmResetState_ == EArmResetState::Idle && ComLink->IsArmAlive(0)) {
 			SendArmReset("arm_left");
 			LeftArmResetState_ = EArmResetState::Recovering;
 			UpdateButtonStates();
 		}
-		else if (ButtonPressed == FName("resetButtonRight") && RightArmResetState_ == EArmResetState::Idle) {
+		else if (ButtonPressed == FName("resetButtonRight") && RightArmResetState_ == EArmResetState::Idle && ComLink->IsArmAlive(1)) {
 			SendArmReset("arm_right");
 			RightArmResetState_ = EArmResetState::Recovering;
 			UpdateButtonStates();
@@ -1367,20 +1415,20 @@ void AOperatorPawn::UpdateStateMachine() {
 
 	bool bCanReset = (OperatorState_ == ESysState::Engaged || OperatorState_ == ESysState::Paused);
 	if (bCanReset && ButtonPressed != FName() && ButtonPressed.ToString().StartsWith(TEXT("__reset_"))) {
-		if (ButtonPressed == FName("__reset_left") && LeftArmResetState_ == EArmResetState::Idle) {
+		if (ButtonPressed == FName("__reset_left") && LeftArmResetState_ == EArmResetState::Idle && ComLink->IsArmAlive(0)) {
 			SendArmReset("arm_left");
 			LeftArmResetState_ = EArmResetState::Recovering;
 			UpdateButtonStates();
 		}
-		else if (ButtonPressed == FName("__reset_right") && RightArmResetState_ == EArmResetState::Idle) {
+		else if (ButtonPressed == FName("__reset_right") && RightArmResetState_ == EArmResetState::Idle && ComLink->IsArmAlive(1)) {
 			SendArmReset("arm_right");
 			RightArmResetState_ = EArmResetState::Recovering;
 			UpdateButtonStates();
 		}
 		else if (ButtonPressed == FName("__reset_all")) {
 			SendResetAll();
-			if (LeftArmResetState_ == EArmResetState::Idle) LeftArmResetState_ = EArmResetState::Recovering;
-			if (RightArmResetState_ == EArmResetState::Idle) RightArmResetState_ = EArmResetState::Recovering;
+			if (LeftArmResetState_ == EArmResetState::Idle && ComLink->IsArmAlive(0)) LeftArmResetState_ = EArmResetState::Recovering;
+			if (RightArmResetState_ == EArmResetState::Idle && ComLink->IsArmAlive(1)) RightArmResetState_ = EArmResetState::Recovering;
 			UpdateButtonStates();
 		}
 		bResetMenuOpen_ = false;
@@ -1398,8 +1446,8 @@ void AOperatorPawn::UpdateStateMachine() {
 			UIBinder->SetButtonToggled(ButtonPressed, false);
 			UIBinder->SetButtonToggled(FName("homeButton"), false);
 			SendResetAll();
-			if (LeftArmResetState_  == EArmResetState::Idle) LeftArmResetState_  = EArmResetState::Recovering;
-			if (RightArmResetState_ == EArmResetState::Idle) RightArmResetState_ = EArmResetState::Recovering;
+			if (LeftArmResetState_  == EArmResetState::Idle && ComLink->IsArmAlive(0)) LeftArmResetState_  = EArmResetState::Recovering;
+			if (RightArmResetState_ == EArmResetState::Idle && ComLink->IsArmAlive(1)) RightArmResetState_ = EArmResetState::Recovering;
 			SendEpisodeRestart(Label);
 			++EpisodeCount_;
 			bAnnotationPending_ = false;
@@ -1418,11 +1466,13 @@ void AOperatorPawn::UpdateInfoBar() {
 	int32 Seconds    = ElapsedSec % 60;
 	UIBinder->SetText(FName("session_time_value"), FString::Printf(TEXT("%d:%02d:%02d"), Hours, Minutes, Seconds));
 
-	float RttMs = ComLink->GetArmRttMs(1);
-	if (RttMs <= 0.f) RttMs = ComLink->GetArmRttMs(0);
-	float LatencyMs = RttMs * 0.5f;
-	if (LatencyMs <= 0.f) LatencyMs = ComLink->GetArmStateLatencyMs(1);
-	if (LatencyMs <= 0.f) LatencyMs = ComLink->GetArmStateLatencyMs(0);
+	// One-way NETWORK delay -- the same getter the stats panel's OWD plot
+	// reads. It used to be half the command round trip, which also counted
+	// the few ms a command waits inside the avatar for the next control tick
+	// and state packet, and then fell back to a two-clock timestamp difference
+	// that reads ~0 on loopback and is wrong by the clock offset on the real
+	// link. No fallback now: unknown (no commands flowing) shows "--".
+	const float LatencyMs = ComLink->GetNetworkDelayMs();
 	if (LatencyMs > 0.f)
 		UIBinder->SetText(FName("latency_value"), FString::Printf(TEXT("%.1f ms"), LatencyMs));
 	else
@@ -1508,11 +1558,45 @@ void AOperatorPawn::UpdateInfoBar() {
 	// word it differently are two chances to disagree with each other, which is
 	// how the first version ended up with an amber dot next to a green panel.
 	UIBinder->SetText(FName("intervention_authority_text"), AuthorityLabel);
+
+	// The panel and the pill are the same fact drawn two ways, and the two
+	// ways are deliberately inverted.
+	//
+	// The pill is small and sits over the video, so it is accent-coloured
+	// content on its own dark background -- legible without occluding much.
+	// The panel is the primary readout: a solid block of the accent, which is
+	// what makes it readable at the edge of vision without being looked at.
+	//
+	// Which means the block's CONTENTS cannot also be the accent. Tinting the
+	// fill, the glyph and the word all the same colour turned the bar into a
+	// plain colour swatch with the state painted invisibly on top of itself.
+	// Fill takes the accent; glyph and word take the contrast.
+	const FLinearColor OnFill = ForegroundOn(Accent);
 	SetWidgetAccent(FName("intervention_authority_fill"), Accent);
+	SetWidgetAccent(FName("intervention_authority_text"), OnFill);
+	// The glyph was never driven at all, which is why the panel showed a human
+	// icon while the policy was driving. It reads as foreground, so it takes
+	// the contrast too. Making it change SHAPE needs a second texture in the
+	// asset and SetImageTexture; colour alone does not say human vs policy.
+	SetWidgetAccent(FName("authority_glyph"), OnFill);
+
+	// Swap the icon itself, not just its tint -- this is the part that says WHO
+	// is driving. Only on a change: SetImageTexture builds a fresh FSlateBrush,
+	// which is not something to do 90 times a second for an unchanged picture.
+	if (UTexture2D* Glyph = AuthorityGlyphFor(bWholeBodyAuthority
+			? GetEffectiveAuthority() : GetArmAuthority(0))) {
+		if (Glyph != LastAuthorityGlyph_) {
+			UIBinder->SetImageTexture(FName("authority_glyph"), Glyph);
+			LastAuthorityGlyph_ = Glyph;
+			// SetImageTexture replaces the brush wholesale, which resets its
+			// tint. Re-apply, or the new icon renders at the brush default for
+			// one state change and the contrast is lost exactly when the panel
+			// has just changed meaning.
+			SetWidgetAccent(FName("authority_glyph"), OnFill);
+		}
+	}
 
 	UIBinder->SetText(FName("interv_value"), FString::Printf(TEXT("%d"), InterventionCount_));
-	SetWidgetAccent(FName("intervention_rec_dot"),
-		bRecordingActive_ ? FLinearColor(0.8f, 0.05f, 0.05f) : FLinearColor(0.15f, 0.15f, 0.15f));
 }
 
 void AOperatorPawn::UpdatePolicyStats(float DeltaTime) {
@@ -1542,11 +1626,177 @@ void AOperatorPawn::UpdatePolicyStats(float DeltaTime) {
 	UIBinder->SetText(FName("inference_value"),
 		bFresh && InfMs >= 0.f ? FString::Printf(TEXT("%.0fms"), InfMs) : FString(TEXT("--")));
 
+	// The dot beside the DAGGER title. It used to mirror bRecordingActive_,
+	// which is true for every tick of every intervention session -- a light
+	// that is always on carries no information, and the operator read it as an
+	// unexplained warning.
+	//
+	// It now reports whether the POLICY is alive: green while predictions are
+	// arriving, grey once they stop. That is the one fact on this panel that
+	// can change without the operator doing anything, and the one whose absence
+	// would otherwise show up only as a robot that quietly stops moving.
+	SetWidgetAccent(FName("intervention_rec_dot"), bFresh ? kAuthorityHuman : kPipOff);
+
 	const float Agree = PolicyAgree_.load();
 	const int32 Lit   = bFresh && Agree >= 0.f
 		? FMath::Clamp(FMath::RoundToInt(Agree * kAgreePips), 0, kAgreePips) : 0;
 	for (int32 i = 0; i < kAgreePips; ++i)
 		SetWidgetAccent(FName(*FString::Printf(TEXT("agree_pip_%d"), i)), i < Lit ? kAuthorityPolicy : kPipOff);
+}
+
+void AOperatorPawn::AuditWidgetNames() const {
+	// One startup report: every widget this class drives that the bound UMG
+	// asset does not contain, plus every ACCENT-driven widget whose type no
+	// colour setter can touch.
+	//
+	// Both failures look identical from the outside and neither raises
+	// anything. UWidgetBinder is keyed by name AND by type: a missing name
+	// no-ops, and so does a present name whose widget is, say, a SizeBox when
+	// the code is trying to tint it. In both cases the widget simply keeps its
+	// design-time appearance, which reads as broken C++ rather than as an
+	// asset mismatch. That has now cost four sessions -- armFaultInfo,
+	// fault_status_canvas, and the authority dot and fill, which is why the
+	// pill's colour tracked state and the DAGGER panel's did not.
+	//
+	// The list is written out rather than discovered because the point is the
+	// CONTRACT: this is what the C++ requires the asset to provide, and the
+	// warning is as much for whoever edits the asset next as for us.
+
+	// Text / value sinks -- SetText only, so any TextBlock will do.
+	static const TCHAR* ExpectedText[] = {
+		TEXT("intervention_authority_text"), TEXT("authority_pill_state"),
+		TEXT("interv_value"), TEXT("auton_value"), TEXT("inference_value"),
+		TEXT("ep_value"), TEXT("session_time_value"), TEXT("latency_value"),
+		TEXT("stream_health_value"), TEXT("viewmode_label"),
+		TEXT("gear_left_value"), TEXT("gear_right_value"), TEXT("fault_status_text"),
+	};
+	// Panels toggled with SetVisibility -- any widget type is fine.
+	static const TCHAR* ExpectedPanel[] = {
+		TEXT("interventionPanel"), TEXT("authority_pill_canvas"),
+		TEXT("fault_status_canvas"), TEXT("armStaleInfo"), TEXT("videoLostInfo"),
+		TEXT("gazeOfflineInfo"), TEXT("statsPanel"), TEXT("settings_canvas"),
+		TEXT("episodeAnnotationCanvas"),
+	};
+	// Buttons -- must be UButton for lock/toggle styling to work at all.
+	static const TCHAR* ExpectedButton[] = {
+		TEXT("interventionButton"), TEXT("resumePolicyButton"),
+	};
+	// ACCENT-driven: coloured every tick via SetWidgetAccent, which only bites
+	// on a TextBlock, an Image or a Border. Anything else is a silent no-op.
+	static const TCHAR* ExpectedAccent[] = {
+		TEXT("authority_pill_dot"), TEXT("authority_pill_state"),
+		TEXT("intervention_authority_text"), TEXT("intervention_authority_fill"),
+		TEXT("authority_glyph"), TEXT("intervention_rec_dot"), TEXT("latency_dot"),
+	};
+
+	TArray<FString> Missing, Untintable, NotAButton;
+
+	auto CheckPresent = [&](const TCHAR* Name) {
+		if (!UIBinder->HasWidget(FName(Name))) Missing.Add(FString(Name));
+	};
+	for (const TCHAR* N : ExpectedText)   CheckPresent(N);
+	for (const TCHAR* N : ExpectedPanel)  CheckPresent(N);
+	for (const TCHAR* N : ExpectedButton) CheckPresent(N);
+	for (const TCHAR* N : ExpectedAccent) CheckPresent(N);
+	for (int32 i = 0; i < kAgreePips; ++i) {
+		const FString Pip = FString::Printf(TEXT("agree_pip_%d"), i);
+		if (!UIBinder->HasWidget(FName(*Pip))) Missing.Add(Pip);
+	}
+
+	for (const TCHAR* Name : ExpectedButton) {
+		const FString Cls = UIBinder->GetWidgetClassName(FName(Name));
+		if (!Cls.IsEmpty() && Cls != TEXT("Button"))
+			NotAButton.Add(FString::Printf(TEXT("%s (is %s)"), Name, *Cls));
+	}
+
+	TArray<FString> Tinted;
+	auto CheckTintable = [&](const FString& Name) {
+		const FString Cls = UIBinder->GetWidgetClassName(FName(*Name));
+		if (Cls.IsEmpty()) return;   // already reported as missing
+		if (Cls != TEXT("TextBlock") && Cls != TEXT("Image") && Cls != TEXT("Border")) {
+			Untintable.Add(FString::Printf(TEXT("%s (is %s)"), *Name, *Cls));
+			return;
+		}
+		// Present, right type, and STILL unable to show an accent, because the
+		// asset's own tint multiplies into every runtime colour. This is the
+		// one that actually bit: a green brush renders green whatever the
+		// accent is, so the light looks stuck rather than broken.
+		const FLinearColor Base = UIBinder->GetDesignTint(FName(*Name));
+		if (!Base.Equals(FLinearColor::White, 0.02f))
+			Tinted.Add(FString::Printf(TEXT("%s (design tint %.2f,%.2f,%.2f)"),
+				*Name, Base.R, Base.G, Base.B));
+	};
+	for (const TCHAR* N : ExpectedAccent) CheckTintable(FString(N));
+	for (int32 i = 0; i < kAgreePips; ++i)
+		CheckTintable(FString::Printf(TEXT("agree_pip_%d"), i));
+
+	if (Tinted.Num())
+		UE_LOG(LogTemp, Warning,
+			TEXT("OperatorPawn: %d accent widget(s) carry a NON-WHITE design tint -- UMG's tint "
+				 "MULTIPLIES the runtime accent, so these can only ever render that colour. "
+				 "Set their Brush Tint / Color to white (1,1,1,1) in the asset: %s"),
+			Tinted.Num(), *FString::Join(Tinted, TEXT(", ")));
+
+	if (Missing.Num() == 0 && Untintable.Num() == 0 && NotAButton.Num() == 0 && Tinted.Num() == 0) {
+		UE_LOG(LogTemp, Log, TEXT("OperatorPawn: HUD widget audit clean."));
+		return;
+	}
+	if (Missing.Num())
+		UE_LOG(LogTemp, Warning,
+			TEXT("OperatorPawn: %d HUD widget(s) MISSING from the bound asset -- every setter "
+				 "targeting them silently does nothing: %s"),
+			Missing.Num(), *FString::Join(Missing, TEXT(", ")));
+	if (Untintable.Num())
+		UE_LOG(LogTemp, Warning,
+			TEXT("OperatorPawn: %d accent widget(s) present but NOT TINTABLE -- SetWidgetAccent "
+				 "only affects TextBlock, Image and Border, so these keep their design-time "
+				 "colour: %s"),
+			Untintable.Num(), *FString::Join(Untintable, TEXT(", ")));
+	if (NotAButton.Num())
+		UE_LOG(LogTemp, Warning,
+			TEXT("OperatorPawn: %d expected button(s) are not UButton -- lock/toggle styling "
+				 "will not apply: %s"),
+			NotAButton.Num(), *FString::Join(NotAButton, TEXT(", ")));
+}
+
+void AOperatorPawn::ResolveAuthorityGlyphs() {
+	// Anything left unassigned in the details panel is looked up by name.
+	// Content paths are a guess, so each miss is reported rather than left to
+	// show as a glyph that never changes -- the exact failure this whole
+	// feature has already hit twice through silent no-ops.
+	static const TCHAR* Folders[] = {
+		TEXT("/Game/UI/Icons"), TEXT("/Game/UI"), TEXT("/Game/Textures"), TEXT("/Game/Icons"),
+	};
+	auto Resolve = [](TObjectPtr<UTexture2D>& Slot, const TCHAR* AssetName) {
+		if (Slot) return;
+		for (const TCHAR* Folder : Folders) {
+			const FString Path = FString::Printf(TEXT("%s/%s.%s"), Folder, AssetName, AssetName);
+			if (UTexture2D* Tex = LoadObject<UTexture2D>(nullptr, *Path)) {
+				Slot = Tex;
+				UE_LOG(LogTemp, Log, TEXT("OperatorPawn: authority glyph '%s' loaded from %s"),
+					AssetName, *Path);
+				return;
+			}
+		}
+		UE_LOG(LogTemp, Warning,
+			TEXT("OperatorPawn: authority glyph '%s' not found -- assign it on the pawn "
+				 "(Teleop|Intervention) or move the texture under /Game/UI/Icons. The DAGGER "
+				 "panel will keep whatever icon the asset has."), AssetName);
+	};
+	Resolve(AuthorityIconHuman,  TEXT("authority_human"));
+	Resolve(AuthorityIconPolicy, TEXT("authority_policy"));
+	Resolve(AuthorityIconHold,   TEXT("authority_hold"));
+}
+
+UTexture2D* AOperatorPawn::AuthorityGlyphFor(EControlAuthority A) const {
+	switch (A) {
+	case EControlAuthority::Policy: return AuthorityIconPolicy;
+	case EControlAuthority::Human:  return AuthorityIconHuman;
+	// Hold covers Unset too: nothing is driving in either case, and inventing
+	// a fourth icon for "nobody has claimed this yet" would be a distinction
+	// the operator never has to act on.
+	default:                        return AuthorityIconHold;
+	}
 }
 
 void AOperatorPawn::SetWidgetAccent(FName WidgetName, const FLinearColor& Color) const {
@@ -1871,6 +2121,10 @@ void AOperatorPawn::TransitionTo(ESysState NewState) {
 	}
 	if (NewState == ESysState::Idle)    bPendingVoiceReengage_ = false;
 	if (NewState == ESysState::Idle || NewState == ESysState::Offline) {
+		LeftArmResetState_  = EArmResetState::Idle;
+		RightArmResetState_ = EArmResetState::Idle;
+		ArmResetRequestTime_[0] = 0.0;
+		ArmResetRequestTime_[1] = 0.0;
 		if (bResetMenuOpen_) {
 			UIBinder->HideMenu();
 			bResetMenuOpen_ = false;
@@ -1897,11 +2151,11 @@ void AOperatorPawn::UpdateButtonStates() {
 	bool bAnyRecovering = LeftArmResetState_ == EArmResetState::Recovering
 		|| RightArmResetState_ == EArmResetState::Recovering;
 
-	auto ApplyResetButton = [&](FName Button, FName Label, EArmResetState ResetState, const TCHAR* Side) {
+	auto ApplyResetButton = [&](FName Button, FName Label, EArmResetState ResetState, const TCHAR* Side, uint8 Index) {
 		switch (ResetState) {
 		case EArmResetState::Idle:
 			UIBinder->SetButtonToggled(Button, false);
-			UIBinder->SetButtonLocked(Button, !bCanReset);
+			UIBinder->SetButtonLocked(Button, !bCanReset || !ComLink->IsArmAlive(Index));
 			UIBinder->SetText(Label, FString::Printf(TEXT("Reset %s"), Side));
 			break;
 		case EArmResetState::Recovering:
@@ -1913,8 +2167,8 @@ void AOperatorPawn::UpdateButtonStates() {
 		}
 		};
 
-	ApplyResetButton(FName("resetButtonLeft"), FName("resetLabelLeft"), LeftArmResetState_, TEXT("L"));
-	ApplyResetButton(FName("resetButtonRight"), FName("resetLabelRight"), RightArmResetState_, TEXT("R"));
+	ApplyResetButton(FName("resetButtonLeft"), FName("resetLabelLeft"), LeftArmResetState_, TEXT("L"), 0);
+	ApplyResetButton(FName("resetButtonRight"), FName("resetLabelRight"), RightArmResetState_, TEXT("R"), 1);
 
 	bool bBothIdle = LeftArmResetState_ == EArmResetState::Idle && RightArmResetState_ == EArmResetState::Idle;
 	bool bResetting = !bBothIdle;
@@ -2271,21 +2525,21 @@ void AOperatorPawn::HandleVoiceAnnotation(const FVoiceAnnotation& Ann) {
 		} else if (Ann.Label.Equals(TEXT("reset"), ESearchCase::IgnoreCase)) {
 			if (OperatorState_ == ESysState::Engaged || OperatorState_ == ESysState::Paused) {
 				SendResetAll();
-				if (LeftArmResetState_  == EArmResetState::Idle) LeftArmResetState_  = EArmResetState::Recovering;
-				if (RightArmResetState_ == EArmResetState::Idle) RightArmResetState_ = EArmResetState::Recovering;
+				if (LeftArmResetState_  == EArmResetState::Idle && ComLink->IsArmAlive(0)) LeftArmResetState_  = EArmResetState::Recovering;
+				if (RightArmResetState_ == EArmResetState::Idle && ComLink->IsArmAlive(1)) RightArmResetState_ = EArmResetState::Recovering;
 				bPendingVoiceReengage_ = true;
 				UpdateButtonStates();
 			}
 		} else if (Ann.Label.Equals(TEXT("reset-left"), ESearchCase::IgnoreCase)) {
 			bool bCanReset = (OperatorState_ == ESysState::Engaged || OperatorState_ == ESysState::Paused);
-			if (bCanReset && LeftArmResetState_ == EArmResetState::Idle) {
+			if (bCanReset && LeftArmResetState_ == EArmResetState::Idle && ComLink->IsArmAlive(0)) {
 				SendArmReset("arm_left");
 				LeftArmResetState_ = EArmResetState::Recovering;
 				UpdateButtonStates();
 			}
 		} else if (Ann.Label.Equals(TEXT("reset-right"), ESearchCase::IgnoreCase)) {
 			bool bCanReset = (OperatorState_ == ESysState::Engaged || OperatorState_ == ESysState::Paused);
-			if (bCanReset && RightArmResetState_ == EArmResetState::Idle) {
+			if (bCanReset && RightArmResetState_ == EArmResetState::Idle && ComLink->IsArmAlive(1)) {
 				SendArmReset("arm_right");
 				RightArmResetState_ = EArmResetState::Recovering;
 				UpdateButtonStates();
@@ -2307,8 +2561,8 @@ void AOperatorPawn::HandleVoiceAnnotation(const FVoiceAnnotation& Ann) {
 				UIBinder->SetButtonToggled(FName("homeButton"), false);
 				UIBinder->SetVisibility(FName("episodeAnnotationCanvas"), false);
 				SendResetAll();
-				if (LeftArmResetState_  == EArmResetState::Idle) LeftArmResetState_  = EArmResetState::Recovering;
-				if (RightArmResetState_ == EArmResetState::Idle) RightArmResetState_ = EArmResetState::Recovering;
+				if (LeftArmResetState_  == EArmResetState::Idle && ComLink->IsArmAlive(0)) LeftArmResetState_  = EArmResetState::Recovering;
+				if (RightArmResetState_ == EArmResetState::Idle && ComLink->IsArmAlive(1)) RightArmResetState_ = EArmResetState::Recovering;
 				SendEpisodeRestart(Label);
 				++EpisodeCount_;
 				bAnnotationPending_ = false;

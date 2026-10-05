@@ -24,6 +24,10 @@
 #include "Video/WorkspaceBoundaryComponent.h"
 #include "Networking/UdpSocket.h"
 #include "Teleop/CommandThread.h"
+// UPROPERTY(TObjectPtr<UTexture2D>) needs the complete type for the generated
+// reflection code; the existing TArray<UTexture2D*> below is a plain member and
+// got away with whatever the include chain happened to provide.
+#include "Engine/Texture2D.h"
 
 #include <atomic>
 
@@ -145,7 +149,7 @@ private:
 	// 5x the avatar's 200 Hz state publish period. Tight enough to catch a
 	// dead control loop within ~25 ms, loose enough not to fire on ordinary
 	// scheduling jitter or a single dropped packet.
-	static constexpr float kArmStateStaleWarnMs = 60.f;
+	static constexpr float kArmStateStaleWarnMs = 25.f;
 
 	bool bPendingVoiceReengage_   = false;
 	bool bResetMenuOpen_          = false;
@@ -194,6 +198,27 @@ private:
 	// so the operator inherits the gripper the policy left rather than the one
 	// they last set before handing over. ArmIndex -1 = both arms.
 	void SyncGraspToMeasured(int32 ArmIndex);
+
+	// Glyph shown inside the DAGGER panel, one per authority state. Colour
+	// alone cannot say WHO is driving -- a green block and a blue block differ
+	// only if you have learnt the palette -- so the icon carries the meaning
+	// and the colour reinforces it.
+	//
+	// EditAnywhere so they can be reassigned without a rebuild; BeginPlay
+	// falls back to loading them by name if they are left unset (see
+	// ResolveAuthorityGlyphs).
+	UPROPERTY(EditAnywhere, Category = "Teleop|Intervention")
+	TObjectPtr<UTexture2D> AuthorityIconHuman = nullptr;
+	UPROPERTY(EditAnywhere, Category = "Teleop|Intervention")
+	TObjectPtr<UTexture2D> AuthorityIconPolicy = nullptr;
+	UPROPERTY(EditAnywhere, Category = "Teleop|Intervention")
+	TObjectPtr<UTexture2D> AuthorityIconHold = nullptr;
+
+	void ResolveAuthorityGlyphs();
+	UTexture2D* AuthorityGlyphFor(EControlAuthority A) const;
+	// Last glyph pushed, so the brush is rebuilt only on a state change rather
+	// than every tick -- SetImageTexture allocates a whole FSlateBrush.
+	UPROPERTY() TObjectPtr<UTexture2D> LastAuthorityGlyph_ = nullptr;
 	// True while the operator's HMD is allowed to drive the neck. False means
 	// the policy owns the head and SendHeadCommand sends nothing at all --
 	// silence, not a held pose, so the operator's HMD motion cannot leak into
@@ -214,6 +239,10 @@ private:
 	// widget silently keeping its design-time colour when its type in UMG is not
 	// the one the C++ guessed.
 	void SetWidgetAccent(FName WidgetName, const FLinearColor& Color) const;
+	// Logs, once at startup, every widget name this class drives that the bound
+	// UMG asset does not contain. UWidgetBinder no-ops silently on a miss, so
+	// without this a renamed or absent widget looks like broken C++.
+	void AuditWidgetNames() const;
 	void SendEpisodeRestart(const FString& Label);
 
 	// Session tracking

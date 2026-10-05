@@ -111,6 +111,15 @@ struct ArmStateMsg {
     //
     // Zero means the sender predates this field: unknown, not "command 0".
     uint32_t  applied_cmd_sequence;
+    // Network-delay echo -- see common.hpp for the full rationale.
+    //   echo_cmd_sequence  newest ArmCommandMsg sequence the avatar RECEIVED
+    //   echo_hold_us       avatar-clock time from that command's arrival to
+    //                      this packet's send
+    // network one-way delay = ((recv_now - send_time(echo)) - hold) / 2, all on
+    // this machine's clock except the hold, which is a same-clock duration on
+    // the avatar. 0 / 0 = unknown.
+    uint32_t  echo_cmd_sequence;
+    uint32_t  echo_hold_us;
 };
 
 struct HeadCommandMsg {
@@ -135,10 +144,11 @@ struct HeadStateMsg {
 // (msgpack channels, state machine, logging) keeps looking healthy.
 //
 //   MsgHeader       15 ->  23   (+ sample_time_ns, 2026-08-09)
-//   ArmStateMsg    105 -> 117   (+ sample_time_ns, + applied_cmd_sequence)
+//   ArmStateMsg    105 -> 117 -> 125   (+ sample_time_ns, + applied_cmd_sequence,
+//                                       + echo_cmd_sequence, echo_hold_us)
 //   ArmCommandMsg   47 ->  55 ->  56   (+ sample_time_ns, + clutch)
 static_assert(sizeof(MsgHeader)      == 23,  "MsgHeader size mismatch");
 static_assert(sizeof(ArmCommandMsg)  == 56,  "ArmCommandMsg size mismatch");
-static_assert(sizeof(ArmStateMsg)    == 117, "ArmStateMsg size mismatch");
+static_assert(sizeof(ArmStateMsg)    == 125, "ArmStateMsg size mismatch");
 static_assert(sizeof(HeadCommandMsg) == 31,  "HeadCommandMsg size mismatch");
 static_assert(sizeof(HeadStateMsg)   == 31,  "HeadStateMsg size mismatch");

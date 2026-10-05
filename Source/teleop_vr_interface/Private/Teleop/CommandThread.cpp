@@ -359,6 +359,7 @@ void FTeleopCommandThread::SendArm(uint8 Index, const FOperatorInputSnapshot& In
             Row.RobotQw = S.quaternion[0]; Row.RobotQx = S.quaternion[1];
             Row.RobotQy = S.quaternion[2]; Row.RobotQz = S.quaternion[3];
             Row.RttMs         = ComLink_->GetArmLastRttMs(Index);
+            Row.NetDelayMs    = ComLink_->GetArmLastNetworkDelayMs(Index);
         }
         Logger_->WriteCommandRow(Row);
     }

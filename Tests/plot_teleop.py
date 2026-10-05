@@ -153,14 +153,23 @@ def plot_latency(df: pd.DataFrame, title: str):
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 6), sharex=True)
     fig.suptitle(f"{title} — Data Channel", fontsize=13, color="#c9d1d9")
 
-    ax1.plot(df["t"], df["data_latency_ms"], lw=1.2,
-             color=LATENCY_COLORS["data_latency"], label="Latency (ms)")
-    ax1.fill_between(df["t"], df["data_latency_ms"], alpha=0.12,
+    # net_delay_ms is the one-way network delay the HUD shows (clock-offset
+    # free, -1 = unknown). Older sessions only have data_latency_ms, which
+    # differences the two hosts' clocks.
+    if "net_delay_ms" in df.columns:
+        col, label = "net_delay_ms", "Network delay, one-way (ms)"
+        y = df[col].where(df[col] >= 0)
+    else:
+        col, label = "data_latency_ms", "Latency (ms)"
+        y = df[col]
+    ax1.plot(df["t"], y, lw=1.2,
+             color=LATENCY_COLORS["data_latency"], label=label)
+    ax1.fill_between(df["t"], y, alpha=0.12,
                      color=LATENCY_COLORS["data_latency"])
-    mean_lat = df["data_latency_ms"].mean()
+    mean_lat = y.mean()
     ax1.axhline(mean_lat, lw=0.8, ls="--", color=LATENCY_COLORS["data_latency"],
                 alpha=0.7, label=f"mean: {mean_lat:.2f} ms")
-    ax1.set_ylabel("Latency (ms)")
+    ax1.set_ylabel(label)
     ax1.legend(fontsize=8)
 
     ax2.plot(df["t"], df["data_msg_rate_hz"], lw=1.2,

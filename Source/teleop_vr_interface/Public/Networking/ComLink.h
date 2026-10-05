@@ -140,6 +140,25 @@ public:
     float GetArmRttMs(uint8 DeviceIndex = 0) const;
     float GetArmLastRttMs(uint8 DeviceIndex = 0) const;
 
+    // THE network delay: one-way, interface <-> avatar, with the avatar's own
+    // dwell taken out -- ((recv - send(echo_cmd_sequence)) - echo_hold_us) / 2.
+    // Clock-offset free (one clock per difference), unlike
+    // GetArmStateLatencyMs, which differences the two hosts' wall clocks and
+    // so reads true only if they are synced to well under a millisecond.
+    //
+    // Only measurable while commands are flowing (the interface sends arm
+    // commands only to an ENGAGED arm). Returns 0 = unknown when the last
+    // sample is older than kNetDelayStaleSec; callers show "--", never 0 ms.
+    UFUNCTION(BlueprintCallable, Category = "ComLink")
+    float GetArmNetworkDelayMs(uint8 DeviceIndex = 0) const;   // EWMA, for display
+    float GetArmLastNetworkDelayMs(uint8 DeviceIndex = 0) const;  // raw last sample, for logs; -1 = unknown
+
+    // The one number the HUD shows and stream.csv logs: the worse of the two
+    // arms' fresh values (both ride the same link, so they normally agree).
+    // 0 = unknown. Pill and panel both read THIS, so they cannot disagree.
+    UFUNCTION(BlueprintCallable, Category = "ComLink")
+    float GetNetworkDelayMs() const;
+
     ArmStateMsg PeekArmStateWithRecvTime(uint8 DeviceIndex, uint64& OutRecvNs) const;
 
     // True when packets are still arriving but the payload has stopped
@@ -187,7 +206,13 @@ private:
         uint32 LastEcho  = 0;
         float  LastRttMs = 0.f;
         float  RttMs     = 0.f;
+        // Network-only delay from echo_cmd_sequence / echo_hold_us.
+        uint32 LastNetEcho       = 0;
+        float  LastNetDelayMs    = 0.f;
+        float  NetDelayMs        = 0.f;
+        double NetDelayUpdateSec = 0.0;   // FPlatformTime::Seconds() of the last sample
     };
+    static constexpr double kNetDelayStaleSec = 1.0;
     FArmRtt ArmRtt_[2];
     void OnArmStateReceived(uint8 DeviceIndex, const ArmStateMsg& Msg, uint64 RecvNs);
 };

@@ -61,6 +61,39 @@ public:
 	bool IsButtonToggled(FName ButtonName) const;
 
 	void SetVisibility(FName WidgetName, bool bVisible);
+
+	// Whether the bound widget tree actually contains this name.
+	//
+	// Every setter on this class is keyed by name and silently no-ops on a
+	// miss, which is the right behaviour at runtime -- a HUD must not crash
+	// because an artist renamed a label -- and a very poor one at bring-up:
+	// the widget simply keeps whatever it was given at design time and the
+	// code looks like it is not working. That has now cost three separate
+	// debugging sessions (armFaultInfo, fault_status_canvas, and the authority
+	// dot/fill). AOperatorPawn::AuditWidgetNames turns it into one startup
+	// line naming exactly what is missing.
+	bool HasWidget(FName Name) const { return CachedWidgets_.Contains(Name); }
+
+	// UMG class of a bound widget, or empty if the name is not in the tree.
+	//
+	// Existence is only half the contract. The colour setters are keyed by TYPE
+	// as well as by name, so a widget can be present, correctly named, and
+	// still immune to every one of them -- indistinguishable from a missing
+	// name from the outside.
+	FString GetWidgetClassName(FName Name) const;
+
+	// The design-time tint an accent would be MULTIPLIED BY, as set in UMG.
+	//
+	// This is the trap that cost the 2026-09-27 session. SetColorAndOpacity on
+	// a UImage and SetBrushColor on a UBorder do not REPLACE the colour, they
+	// multiply into whatever the asset already carries. A widget whose brush is
+	// tinted green at design time can therefore only ever render green, however
+	// the runtime tints it -- amber x green is dark olive, blue x green is dark
+	// green, and the operator sees a light that never changes.
+	//
+	// White (1,1,1,1) is the only design-time tint that lets a runtime accent
+	// show as itself. Returns white for types with no brush.
+	FLinearColor GetDesignTint(FName Name) const;
 	UTextureRenderTarget2D* GetRenderTarget() const { return RenderTarget_; }
 	void SetImageColor(FName WidgetName, const FLinearColor& Color);
 	void SetBorderColor(FName WidgetName, const FLinearColor& Color);
@@ -115,6 +148,24 @@ public:
 	// 0 restores the previous pixel-exact behaviour.
 	UPROPERTY(EditAnywhere, Category = "Gaze", meta = (ClampMin = "0.0"))
 	float GazeHitMarginPx = 12.0f;
+
+	// How long the hovered button is held while the gaze is untrustworthy --
+	// reported invalid, or the right eye (the wink eye) closed.
+	//
+	// A wink is exactly the moment the gaze goes bad: the lid covers the
+	// pupil, the tracker drops validity or reports a ray that slides down with
+	// the lid, and the press fires 150 ms into that. Hover used to be
+	// recomputed from that ray every tick, so by the time the wink fired the
+	// hovered button was often gone (no press) or, worse, a different one.
+	// Now hover only follows TRUSTED gaze; through an untrusted stretch it
+	// holds the last trusted target for up to this long, and the wink lands
+	// on what the operator was looking at when they started it.
+	//
+	// Beyond this the hover clears, so a gaze that is genuinely lost still
+	// cannot press anything. Must exceed the wink threshold (0.15 s) plus the
+	// tracker's reacquire time. 0 restores the old untrusted-ray behaviour.
+	UPROPERTY(EditAnywhere, Category = "Gaze", meta = (ClampMin = "0.0"))
+	float BlinkHoverHoldSec = 0.5f;
 
 private:
 	void DiscoverWidgets();
@@ -186,6 +237,7 @@ private:
 	TMap<FName, FButtonStyle> OriginalStyles_;
 
 	FName HoveredButton_  = FName();
+	float UntrustedGazeSec_ = 0.0f;   // time since gaze was last valid with the wink eye open
 	FName PressedButton_  = FName();
 	FName RejectedButton_ = FName();
 

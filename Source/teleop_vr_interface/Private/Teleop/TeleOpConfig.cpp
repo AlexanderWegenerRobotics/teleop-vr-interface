@@ -97,12 +97,18 @@ bool UTeleOpConfig::LoadStream(const FString& Path) {
     if (!RequireInt(Obj, TEXT("status_port"), Stream.StatusPort, Context)) return false;
 
     Obj->TryGetBoolField(TEXT("stereo"), Stream.bStereo);
+    Obj->TryGetNumberField(TEXT("jitterbuffer_ms"), Stream.JitterBufferMs);
+    Stream.JitterBufferMs = FMath::Clamp(Stream.JitterBufferMs, 0, 500);
+    UE_LOG(LogTemp, Log, TEXT("TeleOpConfig: jitterbuffer %d ms"), Stream.JitterBufferMs);
     Obj->TryGetNumberField(TEXT("right_port"),          Stream.RightPort);
     Obj->TryGetNumberField(TEXT("right_feedback_port"), Stream.RightFeedbackPort);
     Obj->TryGetNumberField(TEXT("right_status_port"),   Stream.RightStatusPort);
     Obj->TryGetBoolField(TEXT("video_log_enabled"), Stream.bVideoLogEnabled);
-    UE_LOG(LogTemp, Log, TEXT("TeleOpConfig: video logging %s"),
-        Stream.bVideoLogEnabled ? TEXT("ENABLED") : TEXT("DISABLED (\"video_log_enabled\": false)"));
+    Obj->TryGetBoolField(TEXT("video_log_raw"), Stream.bVideoLogRaw);
+    Obj->TryGetBoolField(TEXT("video_log_attention"), Stream.bVideoLogAttention);
+    UE_LOG(LogTemp, Log, TEXT("TeleOpConfig: video logging %s (raw=%d attention=%d)"),
+        Stream.bVideoLogEnabled ? TEXT("ENABLED") : TEXT("DISABLED (\"video_log_enabled\": false)"),
+        Stream.bVideoLogRaw ? 1 : 0, Stream.bVideoLogAttention ? 1 : 0);
 
     Stream.PiPStreams.Empty();
     const TArray<TSharedPtr<FJsonValue>>* PiPArray = nullptr;
