@@ -86,7 +86,6 @@ void UWidgetBinder::Initialize(TSubclassOf<UUserWidget> WidgetClass, UCameraComp
 		UE_LOG(LogTemp, Error, TEXT("WidgetBinder: failed to create widget"));
 		return;
 	}
-	Widget_->AddToViewport(0);
 	Widget_->SetVisibility(ESlateVisibility::HitTestInvisible);
 
 	FName LayerName = FName(*FString::Printf(TEXT("UILayer_%s"), *GetName()));
@@ -235,7 +234,7 @@ void UWidgetBinder::CacheWidgetRects() {
 void UWidgetBinder::RenderWidget() {
 	if (!bIsBound_ || !Widget_ || !RenderTarget_ || !WidgetRenderer_) return;
 	if (!RenderTarget_->IsValidLowLevel()) return;
-	WidgetRenderer_->DrawWidget(RenderTarget_, Widget_->TakeWidget(), RenderSize_, 0.0f, true);
+	WidgetRenderer_->DrawWidget(RenderTarget_, Widget_->TakeWidget(), RenderSize_, RenderAccum_, true);
 }
 
 void UWidgetBinder::SetGazeInput(const FGazeData& GazeData) {
