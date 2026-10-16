@@ -23,5 +23,8 @@
 
     "_comment_controller_to_ee": "Controller->EE orientation retarget, [w, x, y, z]. Must match the arm's controller_axis_map.",
     "controller_to_ee_quat_right": [1, 0, 0, 0],
-    "controller_to_ee_quat_left":  [1, 0, 0, 0]
+    "controller_to_ee_quat_left":  [1, 0, 0, 0],
+
+    "_comment_swap_controllers": "Desk has one arm (arm_left). true = the physical RIGHT controller drives arm_left (SteamVR gives a single connected controller the right role).",
+    "swap_controllers": true
 }

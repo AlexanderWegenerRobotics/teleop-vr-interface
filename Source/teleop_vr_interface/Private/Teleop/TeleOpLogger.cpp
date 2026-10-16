@@ -90,7 +90,22 @@ void FBufferedFileWriter::Flush()
 
 FString FTeleOpLogger::Open(const FString& BaseDir)
 {
-    const FString SessionDir = BaseDir / MakeSessionTimestamp();
+    FScopeLock Guard(&Lock_);
+    return OpenAt(BaseDir / MakeSessionTimestamp());
+}
+
+FString FTeleOpLogger::Rotate(const FString& Dir)
+{
+    FScopeLock Guard(&Lock_);
+    if (StreamWriter_ || EventHandle_) {
+        LogEventUnlocked(FString::Printf(TEXT("SESSION_ROTATE next=%s"), *Dir));
+        CloseFiles();
+    }
+    return OpenAt(Dir);
+}
+
+FString FTeleOpLogger::OpenAt(const FString& SessionDir)
+{
     FPlatformFileManager::Get().GetPlatformFile().CreateDirectoryTree(*SessionDir);
 
     StreamWriter_ = MakeUnique<FBufferedFileWriter>(
@@ -105,17 +120,21 @@ FString FTeleOpLogger::Open(const FString& BaseDir)
     IPlatformFile& PF = FPlatformFileManager::Get().GetPlatformFile();
     EventHandle_ = PF.OpenWrite(*(SessionDir / TEXT("events.log")), false, false);
 
-    LogEvent(FString::Printf(TEXT("SESSION_START utc=%s"), *FDateTime::UtcNow().ToString()));
+    LogEventUnlocked(FString::Printf(TEXT("SESSION_START utc=%s"), *FDateTime::UtcNow().ToString()));
 
     return SessionDir;
 }
 
 void FTeleOpLogger::Close()
 {
+    FScopeLock Guard(&Lock_);
     if (!StreamWriter_ && !EventHandle_) return;
+    LogEventUnlocked(TEXT("SESSION_END"));
+    CloseFiles();
+}
 
-    LogEvent(TEXT("SESSION_END"));
-
+void FTeleOpLogger::CloseFiles()
+{
     if (StreamWriter_)  { StreamWriter_->Stop();  StreamWriter_.Reset(); }
     if (CommandWriter_) { CommandWriter_->Stop(); CommandWriter_.Reset(); }
     if (EventHandle_)   { delete EventHandle_;    EventHandle_ = nullptr; }
@@ -123,6 +142,7 @@ void FTeleOpLogger::Close()
 
 void FTeleOpLogger::WriteCommandRow(const FCommandRow& R)
 {
+    FScopeLock Guard(&Lock_);
     if (!CommandWriter_) return;
 
     CommandWriter_->WriteRow(FString::Printf(
@@ -153,6 +173,7 @@ FString FTeleOpLogger::CommandHeader()
 
 void FTeleOpLogger::WriteStreamRow(const FStreamRow& R)
 {
+    FScopeLock Guard(&Lock_);
     if (!StreamWriter_) return;
 
     StreamWriter_->WriteRow(FString::Printf(
@@ -188,6 +209,12 @@ void FTeleOpLogger::WriteStreamRow(const FStreamRow& R)
 }
 
 void FTeleOpLogger::LogEvent(const FString& Message)
+{
+    FScopeLock Guard(&Lock_);
+    LogEventUnlocked(Message);
+}
+
+void FTeleOpLogger::LogEventUnlocked(const FString& Message)
 {
     if (!EventHandle_) return;
     const FString Line = FString::Printf(TEXT("%llu  %s\n"), NowNs(), *Message);

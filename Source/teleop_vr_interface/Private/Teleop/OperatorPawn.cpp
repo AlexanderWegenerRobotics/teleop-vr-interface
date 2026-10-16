@@ -197,6 +197,8 @@ AOperatorPawn::AOperatorPawn() {
 	RightTracked = CreateDefaultSubobject<UTrackedControllerComponent>(TEXT("RightTracked"));
 
 	VoiceAnnotator = CreateDefaultSubobject<UVoiceAnnotatorComponent>(TEXT("VoiceAnnotator"));
+	NudgeReceiver = CreateDefaultSubobject<UNudgeReceiver>(TEXT("NudgeReceiver"));
+	IntentHighlight = CreateDefaultSubobject<UIntentHighlightComponent>(TEXT("IntentHighlight"));
 	GhostOverlay = CreateDefaultSubobject<UGhostOverlayComponent>(TEXT("GhostOverlay"));
 	GhostOverlay->SetCamera(VRCamera);
 	GhostOverlay->SetComLink(ComLink);
@@ -219,7 +221,11 @@ AOperatorPawn::AOperatorPawn() {
 	if (UMaterialInterface* LoadedPatchMat = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Materials/MI_BoundaryPatch.MI_BoundaryPatch"))) {
 		LeftWorkspaceBoundary->PatchMaterial  = LoadedPatchMat;
 		RightWorkspaceBoundary->PatchMaterial = LoadedPatchMat;
+		IntentHighlight->DiscMaterial = LoadedPatchMat;
 	}
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> HlMat(TEXT("/Game/Materials/MI_IntentHighlight.MI_IntentHighlight"));
+	if (HlMat.Succeeded()) IntentHighlight->DiscMaterial = HlMat.Object;
+	else UE_LOG(LogTemp, Warning, TEXT("OperatorPawn: MI_IntentHighlight not found, highlight uses the boundary patch material"));
 
 	static ConstructorHelpers::FObjectFinder<UInputMappingContext> IMC(TEXT("/Game/Input/IMC_PoseMapper.IMC_PoseMapper"));
 	if (IMC.Succeeded()) InputMappingContext = IMC.Object;
@@ -270,8 +276,24 @@ void AOperatorPawn::BeginPlay() {
 		return;
 	}
 
-	RightTracked->ControlPointOffset = Config->Robot.WristPivotRight;
-	LeftTracked->ControlPointOffset  = Config->Robot.WristPivotLeft;
+	bSwapControllers_ = Config->Robot.bSwapControllers;
+	if (bSwapControllers_) {
+		Swap(LeftController, RightController);
+		LeftTracked->MotionController  = LeftController;
+		RightTracked->MotionController = RightController;
+		Swap(LeftTracked->IA_Trigger,  RightTracked->IA_Trigger);
+		Swap(LeftTracked->IA_Grip,     RightTracked->IA_Grip);
+		Swap(LeftTracked->IA_Stop,     RightTracked->IA_Stop);
+		Swap(LeftTracked->IA_PadUp,    RightTracked->IA_PadUp);
+		Swap(LeftTracked->IA_PadDown,  RightTracked->IA_PadDown);
+		Swap(LeftTracked->IA_HandGrip, RightTracked->IA_HandGrip);
+		GhostOverlay->SetLeftHand(LeftController);
+		GhostOverlay->SetRightHand(RightController);
+		UE_LOG(LogTemp, Log, TEXT("OperatorPawn: controllers swapped -- physical right controller drives arm 0 (arm_left)"));
+	}
+
+	RightTracked->ControlPointOffset = bSwapControllers_ ? Config->Robot.WristPivotLeft  : Config->Robot.WristPivotRight;
+	LeftTracked->ControlPointOffset  = bSwapControllers_ ? Config->Robot.WristPivotRight : Config->Robot.WristPivotLeft;
 
 	GhostOverlay->GhostNearThresholdM_      = Config->Overlay.NearThresholdM;
 	GhostOverlay->GhostFarThresholdM_       = Config->Overlay.FarThresholdM;
@@ -328,6 +350,20 @@ void AOperatorPawn::BeginPlay() {
 	VideoFeed->FOVCoverage                 = Config->Overlay.FOVCoverage;
 	VideoFeed->HmdHFovDeg                  = Config->Overlay.HmdHFovDeg;
 
+	LookAround_.MaxYawDeg   = Config->Overlay.LookAroundMaxYawDeg;
+	LookAround_.MaxPitchDeg = Config->Overlay.LookAroundMaxPitchDeg;
+	LookAround_.KneeDeg     = Config->Overlay.LookAroundKneeDeg;
+	LookReturnSec_          = Config->Overlay.LookAroundReturnSec;
+	bLookAroundEnabled_ = Config->Overlay.bLookAroundEnabled
+		&& Config->Overlay.ViewpointMode == EOverlayViewpointMode::Static
+		&& !Config->Stream.bStereo;
+	if (Config->Overlay.bLookAroundEnabled && !bLookAroundEnabled_) {
+		UE_LOG(LogTemp, Warning,
+			TEXT("OperatorPawn: look_around requested but disabled -- needs viewpoint.mode \"static\" and \"stereo\": false (static=%d stereo=%d)"),
+			Config->Overlay.ViewpointMode == EOverlayViewpointMode::Static ? 1 : 0, Config->Stream.bStereo ? 1 : 0);
+	}
+	UE_LOG(LogTemp, Log, TEXT("OperatorPawn: video look-around %s"), bLookAroundEnabled_ ? TEXT("ENABLED") : TEXT("off"));
+
 	RecordingSocket_ = MakeUnique<UdpSocket>();
 	UdpSocket::Config RecordingCfg;
 	RecordingCfg.RemoteIP = TEXT("127.0.0.1");
@@ -354,6 +390,8 @@ void AOperatorPawn::BeginPlay() {
 	ComLink->TwinArmRightReceivePort = Config->NetworkTwin.ArmRight.Receive;
 	ComLink->TwinHeadSendPort = Config->NetworkTwin.Head.Send;
 	ComLink->TwinHeadReceivePort = Config->NetworkTwin.Head.Receive;
+	ComLink->LocalIP   = Config->Network.LocalOrchestratorIP;
+	ComLink->LocalPort = Config->Network.LocalOrchestratorPort;
 
 	FReceiverConfig GstConfig;
 	GstConfig.Port = Config->Stream.Port;
@@ -406,6 +444,15 @@ void AOperatorPawn::BeginPlay() {
 
 		LeftWorkspaceBoundary->Initialize(GhostOverlay, 0);
 		RightWorkspaceBoundary->Initialize(GhostOverlay, 1);
+		if (Config->Overlay.bIntentHighlight) {
+			IntentHighlight->RadiusCm = Config->Overlay.IntentHighlightRadiusCm;
+			IntentHighlight->GoalRadiusCm = Config->Overlay.IntentHighlightGoalRadiusCm;
+			IntentHighlight->GoalLiftM = Config->Overlay.IntentHighlightGoalLiftM;
+			IntentHighlight->MinProb  = Config->Overlay.IntentHighlightMinProb;
+			IntentHighlight->HoldS    = Config->Overlay.IntentHighlightHoldS;
+			IntentHighlight->Tint     = Config->Overlay.IntentHighlightTint;
+			IntentHighlight->Initialize(GhostOverlay);
+		}
 	}
 
 	if (Config->Stream.bStereo) {
@@ -629,11 +676,12 @@ void AOperatorPawn::BeginPlay() {
 			VideoUVOffset = FVector2D(0.0f, 0.0f);
 			VideoUVSize   = FVector2D(0.5f, 1.0f);
 		}
-		VideoLogger_->AddLayerSource([this]() -> UTexture* { return VideoFeed->GetVideoTexture(); }, 0, VideoUVOffset, VideoUVSize);
+		VideoLogger_->bOperatorView = Config->Stream.bVideoLogOperatorView;
+		VideoLogger_->AddLayerSource([this]() -> UTexture* { return VideoFeed->GetVideoTexture(); }, 0, VideoUVOffset, VideoUVSize, true);
 		if (VideoFeed->IsStereoMode()) {
-			VideoLogger_->AddLayerSource([this]() -> UTexture* { return GhostOverlay->IsGhostVisible() ? static_cast<UTexture*>(GhostOverlay->GetRenderTargetLeft()) : nullptr; }, 1);
+			VideoLogger_->AddLayerSource([this]() -> UTexture* { return GhostOverlay->IsGhostVisible() ? static_cast<UTexture*>(GhostOverlay->GetRenderTargetLeft()) : nullptr; }, 1, FVector2D::ZeroVector, FVector2D::UnitVector, true, true);
 		} else {
-			VideoLogger_->AddLayerSource([this]() -> UTexture* { return GhostOverlay->IsGhostVisible() ? static_cast<UTexture*>(GhostOverlay->GetRenderTarget()) : nullptr; }, 1);
+			VideoLogger_->AddLayerSource([this]() -> UTexture* { return GhostOverlay->IsGhostVisible() ? static_cast<UTexture*>(GhostOverlay->GetRenderTarget()) : nullptr; }, 1, FVector2D::ZeroVector, FVector2D::UnitVector, true, true);
 		}
 		VideoLogger_->AddLayerSource([this]() -> UTexture* { return static_cast<UTexture*>(UIBinder->GetRenderTarget()); }, 2);
 
@@ -648,14 +696,38 @@ void AOperatorPawn::BeginPlay() {
 	FString SessionDir = Logger_->Open(FPaths::ProjectDir() / LogBaseDirectory);
 
 	CommandThread_ = MakeUnique<FTeleopCommandThread>(ComLink, Logger_.Get(), CommandThreadRateHz);
+	CommandThread_->SetSwapHands(bSwapControllers_);
 	CommandThread_->StartThread();
 	UE_LOG(LogTemp, Log, TEXT("OperatorPawn: logging to %s"), *SessionDir);
+	NudgeReceiver->Open(Config->Network.NudgePort, LeftTracked, RightTracked, SoundFeedback, Logger_.Get(),
+	                    Config->Overlay.bIntentHighlight ? IntentHighlight.Get() : nullptr);
 
 	if (VideoLogger_) {
 		VideoLogger_->StartLogging(SessionDir);
 	}
+	if (Config->Network.EpisodeEventPort > 0) {
+		EpisodeEvents_ = MakeUnique<FEpisodeEventReceiver>();
+		if (!EpisodeEvents_->Open(Config->Network.EpisodeEventPort)) EpisodeEvents_.Reset();
+	}
 
 	SessionStartTime_ = FPlatformTime::Seconds();
+}
+
+// Episode boundaries come from the avatar so every producer logs into the same <session_id>/<episode>/ folder.
+void AOperatorPawn::PollEpisodeEvents() {
+	if (!EpisodeEvents_) return;
+	FEpisodeEvent Ev;
+	while (EpisodeEvents_->Pop(Ev)) {
+		if (Logger_) Logger_->LogEvent(FString::Printf(TEXT("EPISODE_EVENT type=%s session=%s index=%d reason=%s"),
+			*Ev.Type, *Ev.SessionId, Ev.EpisodeIndex, *Ev.Reason));
+		if (Ev.Type != TEXT("episode_start") || !Logger_) continue;
+		const FString Dir = Logger_->Rotate(FPaths::ProjectDir() / LogBaseDirectory / Ev.EpisodeDir());
+		if (VideoLogger_) {
+			VideoLogger_->StopLogging(TEXT("episode_start"));
+			VideoLogger_->StartLogging(Dir);
+		}
+		UE_LOG(LogTemp, Log, TEXT("OperatorPawn: episode %d of session %s -> %s"), Ev.EpisodeIndex, *Ev.SessionId, *Dir);
+	}
 }
 
 
@@ -664,6 +736,7 @@ void AOperatorPawn::EndPlay(const EEndPlayReason::Type EndPlayReason) {
 	for (auto& Src : PiPSources_) if (Src) Src->Stop();
 	if (VideoLogger_) VideoLogger_->StopLogging(TEXT("EndPlay"));
 	if (CommandThread_) CommandThread_->StopThread();
+	if (EpisodeEvents_) { EpisodeEvents_->Close(); EpisodeEvents_.Reset(); }
 	if (Logger_) Logger_->Close();
 	if (bRecordingActive_) SendRecordingSignal(false);
 	if (RecordingSocket_) RecordingSocket_->Close();
@@ -683,6 +756,8 @@ void AOperatorPawn::SendRecordingSignal(bool bStart) {
 void AOperatorPawn::Tick(float DeltaTime) {
 	Super::Tick(DeltaTime);
 
+	PollEpisodeEvents();
+	UpdateLookAround(DeltaTime);
 	UpdateStateMachine();
 
 	FVideoSourceStats Stats = VideoFeed->GetStreamStats();
@@ -1213,6 +1288,7 @@ void AOperatorPawn::UpdateStateMachine() {
 			SendArmCommands();
 			SendHeadCommand();
 			SendGazeSample();
+			SendOperatorState();
 		}
 		break;
 
@@ -2264,6 +2340,7 @@ void AOperatorPawn::CaptureControllerOrigins() {
 		const HeadStateMsg S = ComLink->PeekHeadState();
 		HeadBasePan_  = S.pan;
 		HeadBaseTilt_ = S.tilt;
+
 	}
 
 	if (GhostOverlay) {
@@ -2456,6 +2533,18 @@ bool AOperatorPawn::IsArmGraspHeld(uint8 ArmIndex) const {
 	return T && T->IsGraspHeld();
 }
 
+void AOperatorPawn::SendOperatorState() {
+	if (!ComLink) return;
+	msgpack::sbuffer Buf;
+	msgpack::packer<msgpack::sbuffer> Pk(Buf);
+	Pk.pack_map(4);
+	Pk.pack(std::string("clutch_left"));  Pk.pack(static_cast<uint8_t>(LeftTracked  && LeftTracked->IsFullClutch()  ? 1 : 0));
+	Pk.pack(std::string("clutch_right")); Pk.pack(static_cast<uint8_t>(RightTracked && RightTracked->IsFullClutch() ? 1 : 0));
+	Pk.pack(std::string("engaged"));      Pk.pack(static_cast<uint8_t>(1));
+	Pk.pack(std::string("timestamp_ns")); Pk.pack(static_cast<uint64_t>(FDateTime::UtcNow().ToUnixTimestamp()) * 1000000000ULL + static_cast<uint64_t>(FDateTime::UtcNow().GetMillisecond()) * 1000000ULL);
+	ComLink->SendReliable("operator_state", Buf, false);
+}
+
 void AOperatorPawn::SendGazeSample(){
 	uint64 FrameId = VideoFeed->GetLastFrameId();
 	if (FrameId == 0) return;
@@ -2466,7 +2555,8 @@ void AOperatorPawn::SendGazeSample(){
 	if (!VRCamera) return;
 
 	FVector2D GazeUV;
-	if (!FGazeProjection::Project(GazeData, VRCamera->GetComponentTransform(), VideoFeed->PlaneDistance, VideoQuadWidth_, VideoQuadHeight_, GazeUV))
+	const FVector2D QuadSize = GetVideoQuadSize();
+	if (!FGazeProjection::ProjectOnQuad(GazeData, VideoQuadWorld_, QuadSize.X, QuadSize.Y, GazeUV))
 		return;
 
 	UTexture2D* Tex = VideoFeed->GetVideoTexture();
@@ -2642,12 +2732,83 @@ FFrameBundle AOperatorPawn::BuildFrameBundle() const {
 	bool bHit = false;
 
 	if (VRCamera) {
-		bHit = FGazeProjection::Project(GazeData, VRCamera->GetComponentTransform(), VideoFeed->PlaneDistance, VideoQuadWidth_, VideoQuadHeight_, GazeUV);
+		const FVector2D QuadSize = GetVideoQuadSize();
+		bHit = FGazeProjection::ProjectOnQuad(GazeData, VideoQuadWorld_, QuadSize.X, QuadSize.Y, GazeUV);
 	}
 
 	Bundle.GazeUV = GazeUV;
 	Bundle.GazeConfidence = GazeData.Confidence;
 	Bundle.bGazeValid = bHit && GazeData.bIsValid;
+	Bundle.ViewYawDeg   = ViewYawDeg_;
+	Bundle.ViewPitchDeg = ViewPitchDeg_;
+	{
+		const FVector2D Q = GetVideoQuadSize();
+		const float D = VideoFeed ? VideoFeed->PlaneDistance : 0.f;
+		if (Q.X > 0.f && Q.Y > 0.f) {
+			Bundle.ViewShiftUV = FVector2D(
+				 D * FMath::Tan(FMath::DegreesToRadians(ViewYawDeg_))   / Q.X,
+				-D * FMath::Tan(FMath::DegreesToRadians(ViewPitchDeg_)) / Q.Y);
+		}
+	}
 
 	return Bundle;
+}
+
+FVector2D AOperatorPawn::GetVideoQuadSize() const {
+	const FVector2D Live = VideoFeed ? VideoFeed->GetQuadSize() : FVector2D::ZeroVector;
+	if (Live.X > 0.f && Live.Y > 0.f) return Live;
+	return FVector2D(VideoQuadWidth_, VideoQuadHeight_);
+}
+
+void AOperatorPawn::UpdateLookAround(float DeltaTime) {
+	if (!VRCamera || !VideoFeed) return;
+
+	const FTransform Head(VRCamera->GetComponentQuat(), VRCamera->GetComponentLocation());
+	const FQuat HeadQ = Head.GetRotation();
+	const float D = VideoFeed->PlaneDistance;
+
+	const bool bWantActive = bLookAroundEnabled_ && OperatorState_ == ESysState::Engaged;
+	if (bWantActive && !bLookActive_) {
+		LookAround_.Anchor(Head);
+		bLookActive_     = true;
+		LookReturnAlpha_ = 1.f;
+		const FRotator Home = LookAround_.HomeRot.Rotator();
+		if (Logger_) Logger_->LogEvent(FString::Printf(TEXT("LOOK_AROUND_ANCHOR yaw=%.1f pitch=%.1f"), Home.Yaw, Home.Pitch));
+	} else if (!bWantActive && bLookActive_) {
+		bLookActive_        = false;
+		LookReturnStartRel_ = HeadQ.Inverse() * VideoQuadWorld_.GetRotation();
+		LookReturnAlpha_    = 0.f;
+		if (Logger_) Logger_->LogEvent(FString::Printf(TEXT("LOOK_AROUND_RELEASE view_yaw=%.1f view_pitch=%.1f"), ViewYawDeg_, ViewPitchDeg_));
+	}
+
+	bool bWorldLocked = false;
+	if (bLookActive_) {
+		VideoQuadWorld_ = LookAround_.ComputeQuadWorld(Head, D, ViewYawDeg_, ViewPitchDeg_);
+		bWorldLocked = true;
+	} else if (LookReturnAlpha_ < 1.f) {
+		LookReturnAlpha_ = (LookReturnSec_ > 0.f) ? FMath::Min(1.f, LookReturnAlpha_ + DeltaTime / LookReturnSec_) : 1.f;
+		const float S = FMath::SmoothStep(0.f, 1.f, LookReturnAlpha_);
+		const FQuat Rel = FQuat::Slerp(LookReturnStartRel_, FQuat::Identity, S);
+		const FQuat QuadRot = HeadQ * Rel;
+		VideoQuadWorld_ = FTransform(QuadRot, Head.GetLocation() + QuadRot.RotateVector(FVector(D, 0.f, 0.f)));
+		const FRotator View = Rel.Inverse().Rotator();
+		ViewYawDeg_   = static_cast<float>(View.Yaw);
+		ViewPitchDeg_ = static_cast<float>(View.Pitch);
+		bWorldLocked = LookReturnAlpha_ < 1.f;
+	}
+
+	if (!bWorldLocked) {
+		VideoQuadWorld_ = FVideoLookAround::FaceLockedQuadWorld(Head, D);
+		ViewYawDeg_   = 0.f;
+		ViewPitchDeg_ = 0.f;
+	}
+
+	if (!bLookAroundEnabled_) return;
+
+	const bool bModeChanged = bWorldLocked != bVideoLayersWorldLocked_;
+	bVideoLayersWorldLocked_ = bWorldLocked;
+
+	FVideoLookAround::ApplyToLayer(VideoFeed->GetMonoLayer(), bWorldLocked, bModeChanged, VideoQuadWorld_, VRCamera, VideoFeed->PlaneDistance, 0);
+	if (GhostOverlay)
+		FVideoLookAround::ApplyToLayer(GhostOverlay->GetMonoLayer(), bWorldLocked, bModeChanged, VideoQuadWorld_, VRCamera, GhostOverlay->PlaneDistance, 1);
 }

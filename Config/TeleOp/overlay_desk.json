@@ -1,5 +1,6 @@
 {
     "_scenario_comment": "Desk scenario: single Franka, no pan/tilt head device, video comes from the fixed 'desk_cam' in the simulator's sim_config_franka_desk.yaml. Select this file by setting \"overlay\": \"overlay_desk.json\" in config.json (same indirection already used for robot/stream/network). Everything below is identical to overlay.json except the viewpoint block and capture FOV.",
+    "intent_highlight": { "enabled": true, "min_prob": 0.5, "radius_cm": 8.0, "goal_radius_cm": 4.0, "goal_lift_m": 0.035, "hold_s": 0.5, "tint": [1.0, 0.75, 0.2] },
     "near_threshold_m": 0.03,
     "far_threshold_m": 0.15,
     "min_opacity": 0.15,
@@ -32,5 +33,13 @@
     "fov_coverage": 0.85,
     "hmd_hfov_deg": 110.0,
     "boundary_plane_width_m": 1.8,
-    "boundary_plane_height_m": 0.96
+    "boundary_plane_height_m": 0.96,
+    "_look_around_comment": "Static cameras only (viewpoint.mode static, stream stereo false). Active only while ENGAGED (anchored on entering it; on stop/pause the image eases back to centre over return_sec). Within +-max_yaw_deg / +-max_pitch_deg of that direction the video and ghost quads stay fixed in the world, beyond it they follow the head; knee_deg softens that transition.",
+    "look_around": {
+        "enabled": true,
+        "max_yaw_deg": 25.0,
+        "max_pitch_deg": 15.0,
+        "knee_deg": 5.0,
+        "return_sec": 0.4
+    }
 }

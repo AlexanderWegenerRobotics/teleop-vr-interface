@@ -72,6 +72,42 @@ struct FGazeProjection
         return true;
     }
 
+    static bool ProjectOnQuad(
+        const FGazeData&    GazeData,
+        const FTransform&   QuadWorld,
+        float               QuadWidth,
+        float               QuadHeight,
+        FVector2D&          OutUV)
+    {
+        if (!GazeData.bIsValid || GazeData.Confidence <= 0.0f)
+            return false;
+        if (QuadWidth <= 0.0f || QuadHeight <= 0.0f)
+            return false;
+
+        const FTransform Quad(QuadWorld.GetRotation(), QuadWorld.GetLocation());
+        const FVector LocalOrigin = Quad.InverseTransformPosition(GazeData.Origin);
+        const FVector LocalDir    = Quad.InverseTransformVectorNoScale(GazeData.Direction).GetSafeNormal();
+
+        if (FMath::IsNearlyZero(LocalDir.X))
+            return false;
+
+        const float T = -LocalOrigin.X / LocalDir.X;
+        if (T < 0.0f)
+            return false;
+
+        const float HitY = LocalOrigin.Y + LocalDir.Y * T;
+        const float HitZ = LocalOrigin.Z + LocalDir.Z * T;
+
+        const float U =  (HitY / QuadWidth)  + 0.5f;
+        const float V = -(HitZ / QuadHeight) + 0.5f;
+
+        if (U < 0.0f || U > 1.0f || V < 0.0f || V > 1.0f)
+            return false;
+
+        OutUV = FVector2D(U, V);
+        return true;
+    }
+
     /**
      * Convenience: compute quad dimensions from the same FOV formula used
      * by VideoFeedComponent::UpdateLayerSize().

@@ -241,6 +241,11 @@ private:
 
     void PlayClutchHaptic(float Intensity, float Duration);
     EControllerHand GetHand() const;
+    FTimerHandle HapticStopTimer_;
+public:
+    // Haptic primitive for the nudge receiver: amplitude follows Intensity (the clutch cue drives frequency instead).
+    void PlayHaptic(float Intensity, float Duration);
+private:
     bool bWasGraspHeld = false;
 
     FTransform Origin;

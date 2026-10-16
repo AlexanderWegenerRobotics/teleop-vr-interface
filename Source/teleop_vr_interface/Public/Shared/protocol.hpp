@@ -120,6 +120,8 @@ struct ArmStateMsg {
     // the avatar. 0 / 0 = unknown.
     uint32_t  echo_cmd_sequence;
     uint32_t  echo_hold_us;
+    // Estimated external wrench at the EE, base frame (fx fy fz tx ty tz). 2026-10-13.
+    float     F_ext[6];
 };
 
 struct HeadCommandMsg {
@@ -144,11 +146,11 @@ struct HeadStateMsg {
 // (msgpack channels, state machine, logging) keeps looking healthy.
 //
 //   MsgHeader       15 ->  23   (+ sample_time_ns, 2026-08-09)
-//   ArmStateMsg    105 -> 117 -> 125   (+ sample_time_ns, + applied_cmd_sequence,
-//                                       + echo_cmd_sequence, echo_hold_us)
+//   ArmStateMsg    105 -> 117 -> 125 -> 149   (+ sample_time_ns, + applied_cmd_sequence,
+//                                       + echo_cmd_sequence, echo_hold_us, + F_ext)
 //   ArmCommandMsg   47 ->  55 ->  56   (+ sample_time_ns, + clutch)
 static_assert(sizeof(MsgHeader)      == 23,  "MsgHeader size mismatch");
 static_assert(sizeof(ArmCommandMsg)  == 56,  "ArmCommandMsg size mismatch");
-static_assert(sizeof(ArmStateMsg)    == 125, "ArmStateMsg size mismatch");
+static_assert(sizeof(ArmStateMsg)    == 149, "ArmStateMsg size mismatch");
 static_assert(sizeof(HeadCommandMsg) == 31,  "HeadCommandMsg size mismatch");
 static_assert(sizeof(HeadStateMsg)   == 31,  "HeadStateMsg size mismatch");

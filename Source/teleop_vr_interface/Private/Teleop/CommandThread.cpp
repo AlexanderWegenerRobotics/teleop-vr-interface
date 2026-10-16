@@ -60,8 +60,8 @@ void FArmRetarget::Reset()
 FQuat FArmRetarget::GetRotation(const FQuat& CurrentRot) const
 {
     if (!bOriginValid) return FQuat::Identity;
-    const FQuat Live = OriginRot.Inverse() * CurrentRot;
-    return BankedRotation * Live;
+    const FQuat Live = CurrentRot * OriginRot.Inverse();
+    return Live * BankedRotation;
 }
 
 void FArmRetarget::Advance(const FTransform& Pose, float Dt,
@@ -96,7 +96,7 @@ void FArmRetarget::Advance(const FTransform& Pose, float Dt,
     // segment starts from zero without losing the pose reached so far.
     if (!bWasFullClutch && bFullClutch)
     {
-        BankedRotation = (BankedRotation * (OriginRot.Inverse() * Rot));
+        BankedRotation = (Rot * OriginRot.Inverse()) * BankedRotation;
         BankedRotation.Normalize();
         BankedTranslation += ScaledTranslation;
         ScaledTranslation = FVector::ZeroVector;
@@ -234,8 +234,8 @@ bool FTeleopCommandThread::ResolveOpenXR()
         if (XR_FAILED(xrPathToString(Instance, Path, sizeof(Buf), &Written, Buf))) continue;
 
         const FString S = ANSI_TO_TCHAR(Buf);
-        if (S.Contains(TEXT("/user/hand/left")))  HandDeviceId_[0] = Id;
-        if (S.Contains(TEXT("/user/hand/right"))) HandDeviceId_[1] = Id;
+        if (S.Contains(TEXT("/user/hand/left")))  HandDeviceId_[bSwapHands_ ? 1 : 0] = Id;
+        if (S.Contains(TEXT("/user/hand/right"))) HandDeviceId_[bSwapHands_ ? 0 : 1] = Id;
     }
 
     if (HandDeviceId_[0] < 0 || HandDeviceId_[1] < 0)
@@ -307,10 +307,13 @@ void FTeleopCommandThread::SendArm(uint8 Index, const FOperatorInputSnapshot& In
     R.Advance(Pose, Dt, In, Index);
 
     const FVector Translation = R.GetTranslation();
-    const FQuat   Rotation    = R.GetRotation(Pose.GetRotation());
+    const FQuat   WorldRot    = R.GetRotation(Pose.GetRotation());
 
     const FVector Local = In.bHMDOriginValid ? In.HMDYawQuat.UnrotateVector(Translation)
                                              : Translation;
+    const FQuat Rotation = In.bHMDOriginValid
+        ? (In.HMDYawQuat.Inverse() * WorldRot * In.HMDYawQuat).GetNormalized()
+        : WorldRot;
 
     ArmCommandMsg Msg{};
     CoordConvert::UnrealToProtocolFloat(Local, Msg.position[0], Msg.position[1], Msg.position[2]);

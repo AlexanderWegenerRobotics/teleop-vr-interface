@@ -224,6 +224,11 @@ public:
     FString Open(const FString& BaseDir);
     void    Close();
 
+    // Episode boundary (avatar EpisodeEventMsg): closes the current files and reopens
+    // them under Dir, so stream/command/events line up with the avatar's episode folder.
+    // Safe against the command thread writing concurrently.
+    FString Rotate(const FString& Dir);
+
     void WriteStreamRow(const FStreamRow& Row);
 
     // Called from the arm-command send path, i.e. at the tick/link rate rather
@@ -241,6 +246,11 @@ private:
     static FString StreamHeader();
     static FString CommandHeader();
 
+    FString OpenAt(const FString& Dir);
+    void    CloseFiles();
+    void    LogEventUnlocked(const FString& Message);
+
+    FCriticalSection                Lock_;
     TUniquePtr<FBufferedFileWriter> StreamWriter_;
     TUniquePtr<FBufferedFileWriter> CommandWriter_;
     IFileHandle*                    EventHandle_ = nullptr;

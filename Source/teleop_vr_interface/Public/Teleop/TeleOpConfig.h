@@ -23,6 +23,14 @@ struct FNetworkConfig
     FPortPair Head;
     // Fire-and-forget start/stop signal for the local operator-side recorder (always localhost).
     int32     RecordingPort = 0;
+    // Cue commands from the local nudge engine (teleop-nudge); 0 = receiver off. Optional key.
+    int32     NudgePort = 0;
+    // Avatar episode events (EpisodeEventMsg fan-out); logs rotate to <session_id>/<episode>/ on episode_start. 0 = off.
+    int32     EpisodeEventPort = 0;
+    // Local orchestrator (intent + nudge engine on this PC): gaze and operator_state go there, fire-and-forget.
+    // Optional "local_orchestrator": {"ip", "port"}; port 0 = off.
+    FString   LocalOrchestratorIP = TEXT("127.0.0.1");
+    int32     LocalOrchestratorPort = 0;
 };
 
 USTRUCT()
@@ -46,6 +54,7 @@ struct FStreamConfig
     bool    bVideoLogEnabled = true;
     bool    bVideoLogRaw       = true;
     bool    bVideoLogAttention = true;
+    bool    bVideoLogOperatorView = true;
     int32   Port             = 5004;
     int32   FeedbackPort     = 5005;
     int32   TimestampPort    = 5006;
@@ -104,6 +113,8 @@ struct FRobotConfig
     FVector WristPivotRight = FVector(-5.9f,  2.1f, 3.4f);
     FVector WristPivotLeft  = FVector(-5.9f, -2.1f, 3.4f);
 
+    bool bSwapControllers = false;
+
     // Controller->EE orientation retarget (protocol frame), per arm. Must match the
     // arm's controller_axis_map (R_ctrl_to_ee_) so ghost orientation tracks the arm.
     // Stored as FQuat(X,Y,Z,W); JSON supplies [w, x, y, z]. Defaults reproduce the
@@ -149,6 +160,15 @@ struct FOverlayConfig
 {
     GENERATED_BODY()
     bool  bEnabled       = true;
+    // Intent highlight (development aid): a disc under the object the intent module believes is the target.
+    // Optional "intent_highlight": {"enabled", "min_prob", "radius_cm", "hold_s"}.
+    bool  bIntentHighlight        = false;
+    float IntentHighlightMinProb  = 0.5f;
+    float IntentHighlightRadiusCm = 8.f;
+    float IntentHighlightGoalRadiusCm = 4.f;   // board slots: smaller ring, lifted to the slot walls
+    float IntentHighlightGoalLiftM = 0.035f;
+    float IntentHighlightHoldS    = 0.5f;
+    FLinearColor IntentHighlightTint = FLinearColor(1.f, 0.75f, 0.2f, 1.f);
     float NearThresholdM = 0.03f;
     float FarThresholdM  = 0.15f;
     float MinOpacity     = 0.15f;
@@ -199,6 +219,12 @@ struct FOverlayConfig
     float HmdHFovDeg         = 110.0f;
     float BoundaryPlaneWidthM  = 1.8f;
     float BoundaryPlaneHeightM = 0.96f;
+
+    bool  bLookAroundEnabled    = false;
+    float LookAroundMaxYawDeg   = 25.0f;
+    float LookAroundMaxPitchDeg = 15.0f;
+    float LookAroundKneeDeg     = 5.0f;
+    float LookAroundReturnSec   = 0.4f;
 };
 
 UCLASS()

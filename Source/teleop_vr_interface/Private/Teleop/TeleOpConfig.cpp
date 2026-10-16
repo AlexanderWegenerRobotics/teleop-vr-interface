@@ -76,6 +76,15 @@ bool UTeleOpConfig::LoadNetworkInto(const FString& Path, FNetworkConfig& OutNetw
     if (!ReadPortPair(Obj, TEXT("arm_right"), OutNetwork.ArmRight, Context)) return false;
     if (!ReadPortPair(Obj, TEXT("head"), OutNetwork.Head, Context)) return false;
     if (!RequireInt(Obj, TEXT("recording_port"), OutNetwork.RecordingPort, Context)) return false;
+    OutNetwork.NudgePort = 0;
+    Obj->TryGetNumberField(TEXT("nudge_port"), OutNetwork.NudgePort);
+    OutNetwork.EpisodeEventPort = 0;
+    Obj->TryGetNumberField(TEXT("episode_event_port"), OutNetwork.EpisodeEventPort);
+    const TSharedPtr<FJsonObject>* LocalObj = nullptr;
+    if (Obj->TryGetObjectField(TEXT("local_orchestrator"), LocalObj) && LocalObj) {
+        (*LocalObj)->TryGetStringField(TEXT("ip"), OutNetwork.LocalOrchestratorIP);
+        (*LocalObj)->TryGetNumberField(TEXT("port"), OutNetwork.LocalOrchestratorPort);
+    }
 
     return true;
 }
@@ -106,6 +115,7 @@ bool UTeleOpConfig::LoadStream(const FString& Path) {
     Obj->TryGetBoolField(TEXT("video_log_enabled"), Stream.bVideoLogEnabled);
     Obj->TryGetBoolField(TEXT("video_log_raw"), Stream.bVideoLogRaw);
     Obj->TryGetBoolField(TEXT("video_log_attention"), Stream.bVideoLogAttention);
+    Obj->TryGetBoolField(TEXT("video_log_operator_view"), Stream.bVideoLogOperatorView);
     UE_LOG(LogTemp, Log, TEXT("TeleOpConfig: video logging %s (raw=%d attention=%d)"),
         Stream.bVideoLogEnabled ? TEXT("ENABLED") : TEXT("DISABLED (\"video_log_enabled\": false)"),
         Stream.bVideoLogRaw ? 1 : 0, Stream.bVideoLogAttention ? 1 : 0);
@@ -226,6 +236,10 @@ bool UTeleOpConfig::LoadRobot(const FString& Path) {
     ReadQuatWXYZ(TEXT("controller_to_ee_quat_right"), Robot.ControllerToEEQuatRight);
     ReadQuatWXYZ(TEXT("controller_to_ee_quat_left"),  Robot.ControllerToEEQuatLeft);
 
+    Obj->TryGetBoolField(TEXT("swap_controllers"), Robot.bSwapControllers);
+    UE_LOG(LogTemp, Log, TEXT("TeleOpConfig: controllers %s"),
+        Robot.bSwapControllers ? TEXT("SWAPPED (right controller -> arm_left)") : TEXT("left -> arm_left, right -> arm_right"));
+
     return true;
 }
 
@@ -239,6 +253,18 @@ bool UTeleOpConfig::LoadOverlay(const FString& Path) {
     const FString Context = TEXT("ghost.json");
 
     Obj->TryGetBoolField(TEXT("enabled"), Overlay.bEnabled);
+    const TSharedPtr<FJsonObject>* HlObj = nullptr;
+    if (Obj->TryGetObjectField(TEXT("intent_highlight"), HlObj) && HlObj) {
+        (*HlObj)->TryGetBoolField(TEXT("enabled"),     Overlay.bIntentHighlight);
+        (*HlObj)->TryGetNumberField(TEXT("min_prob"),  Overlay.IntentHighlightMinProb);
+        (*HlObj)->TryGetNumberField(TEXT("radius_cm"), Overlay.IntentHighlightRadiusCm);
+        (*HlObj)->TryGetNumberField(TEXT("goal_radius_cm"), Overlay.IntentHighlightGoalRadiusCm);
+        (*HlObj)->TryGetNumberField(TEXT("goal_lift_m"), Overlay.IntentHighlightGoalLiftM);
+        (*HlObj)->TryGetNumberField(TEXT("hold_s"),    Overlay.IntentHighlightHoldS);
+        const TArray<TSharedPtr<FJsonValue>>* TintArr = nullptr;
+        if ((*HlObj)->TryGetArrayField(TEXT("tint"), TintArr) && TintArr && TintArr->Num() >= 3)
+            Overlay.IntentHighlightTint = FLinearColor((*TintArr)[0]->AsNumber(), (*TintArr)[1]->AsNumber(), (*TintArr)[2]->AsNumber(), 1.f);
+    }
     UE_LOG(LogTemp, Log, TEXT("TeleOpConfig: overlay layer %s"),
         Overlay.bEnabled ? TEXT("ENABLED") : TEXT("DISABLED (\"enabled\": false)"));
 
@@ -313,6 +339,23 @@ bool UTeleOpConfig::LoadOverlay(const FString& Path) {
             ReadVec3(*StaticObj, TEXT("up"),      Overlay.StaticCamUp);
         }
     }
+
+    const TSharedPtr<FJsonObject>* LookObj = nullptr;
+    if (Obj->TryGetObjectField(TEXT("look_around"), LookObj) && LookObj)
+    {
+        (*LookObj)->TryGetBoolField(TEXT("enabled"),         Overlay.bLookAroundEnabled);
+        (*LookObj)->TryGetNumberField(TEXT("max_yaw_deg"),   Overlay.LookAroundMaxYawDeg);
+        (*LookObj)->TryGetNumberField(TEXT("max_pitch_deg"), Overlay.LookAroundMaxPitchDeg);
+        (*LookObj)->TryGetNumberField(TEXT("knee_deg"),      Overlay.LookAroundKneeDeg);
+        (*LookObj)->TryGetNumberField(TEXT("return_sec"),    Overlay.LookAroundReturnSec);
+        Overlay.LookAroundMaxYawDeg   = FMath::Clamp(Overlay.LookAroundMaxYawDeg,   0.f, 90.f);
+        Overlay.LookAroundMaxPitchDeg = FMath::Clamp(Overlay.LookAroundMaxPitchDeg, 0.f, 60.f);
+        Overlay.LookAroundKneeDeg     = FMath::Clamp(Overlay.LookAroundKneeDeg,     0.f, 30.f);
+        Overlay.LookAroundReturnSec   = FMath::Clamp(Overlay.LookAroundReturnSec,   0.f, 3.f);
+    }
+    UE_LOG(LogTemp, Log, TEXT("TeleOpConfig: look_around %s (yaw %.0f, pitch %.0f, knee %.0f deg)"),
+        Overlay.bLookAroundEnabled ? TEXT("requested") : TEXT("off"),
+        Overlay.LookAroundMaxYawDeg, Overlay.LookAroundMaxPitchDeg, Overlay.LookAroundKneeDeg);
 
     return true;
 }

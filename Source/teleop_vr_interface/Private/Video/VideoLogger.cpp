@@ -137,7 +137,10 @@ void AVideoLogger::StartLogging(const FString& InSessionDir)
                 // --- Attention video: apply gaze spotlight, then encode ---
                 if (EncoderAttention)
                 {
-                    ApplyGazeSpotlight(Frame.Pixels, Frame.Bundle.GazeUV,
+                    const FVector2D SpotUV = bOperatorView
+                        ? Frame.Bundle.GazeUV - Frame.Bundle.ViewShiftUV
+                        : Frame.Bundle.GazeUV;
+                    ApplyGazeSpotlight(Frame.Pixels, SpotUV,
                         Frame.Bundle.bGazeValid, Frame.Bundle.GazeConfidence);
 
                     TArray<uint8> AttnI420;
@@ -235,13 +238,18 @@ void AVideoLogger::CaptureFrame(const FFrameBundle& Bundle, int32 NumFrames)
 
     if (Canvas)
     {
+        const FVector2D ViewOffsetPx = bOperatorView
+            ? FVector2D(-Bundle.ViewShiftUV.X * (float)LogW, -Bundle.ViewShiftUV.Y * (float)LogH)
+            : FVector2D::ZeroVector;
+
         for (const FLayerSource& Src : LayerSources)
         {
             UTexture* Tex = Src.GetTexture ? Src.GetTexture() : nullptr;
             if (!Tex) continue;
 
-            EBlendMode Blend = (Src.Priority == 0) ? BLEND_Opaque : BLEND_Translucent;
-            Canvas->K2_DrawTexture(Tex, FVector2D::ZeroVector,
+            EBlendMode Blend = (Src.Priority == 0) ? BLEND_Opaque
+                             : (Src.bPremultiplied ? BLEND_AlphaComposite : BLEND_Translucent);
+            Canvas->K2_DrawTexture(Tex, Src.bFollowsView ? ViewOffsetPx : FVector2D::ZeroVector,
                 FVector2D((float)LogW, (float)LogH),
                 Src.UVOffset, Src.UVSize,
                 FLinearColor::White, Blend);
@@ -438,6 +446,7 @@ void AVideoLogger::WriteInitialMetadata()
     R->SetNumberField(TEXT("plane_dist_ue"), PlaneDistance);
     R->SetBoolField(TEXT("raw_video"), bEnableRawVideo);
     R->SetBoolField(TEXT("attention_video"), bEnableAttentionVideo);
+    R->SetBoolField(TEXT("operator_view"), bOperatorView);
     R->SetNumberField(TEXT("gaze_radius_frac"), GazeRadiusFraction);
     R->SetNumberField(TEXT("peripheral_brightness"), PeripheralBrightness);
 
@@ -479,6 +488,10 @@ void AVideoLogger::AppendFrameJsonl(const FFrameBundle& B)
     O->SetNumberField(TEXT("gaze_v"), B.GazeUV.Y);
     O->SetNumberField(TEXT("gaze_confidence"), B.GazeConfidence);
     O->SetBoolField(TEXT("gaze_valid"), B.bGazeValid);
+    O->SetNumberField(TEXT("view_yaw_deg"), B.ViewYawDeg);
+    O->SetNumberField(TEXT("view_pitch_deg"), B.ViewPitchDeg);
+    O->SetNumberField(TEXT("view_shift_u"), B.ViewShiftUV.X);
+    O->SetNumberField(TEXT("view_shift_v"), B.ViewShiftUV.Y);
 
     FString Line; TSharedRef<TJsonWriter<>> W = TJsonWriterFactory<>::Create(&Line);
     FJsonSerializer::Serialize(O, W);
@@ -488,13 +501,15 @@ void AVideoLogger::AppendFrameJsonl(const FFrameBundle& B)
 }
 
 void AVideoLogger::AddLayerSource(TFunction<UTexture* ()> Getter, int32 Priority,
-                                   FVector2D UVOffset, FVector2D UVSize)
+                                   FVector2D UVOffset, FVector2D UVSize, bool bFollowsView, bool bPremultiplied)
 {
     FLayerSource Src;
-    Src.GetTexture = MoveTemp(Getter);
-    Src.Priority   = Priority;
-    Src.UVOffset   = UVOffset;
-    Src.UVSize     = UVSize;
+    Src.GetTexture   = MoveTemp(Getter);
+    Src.Priority     = Priority;
+    Src.UVOffset     = UVOffset;
+    Src.UVSize       = UVSize;
+    Src.bFollowsView = bFollowsView;
+    Src.bPremultiplied = bPremultiplied;
     LayerSources.Add(MoveTemp(Src));
     LayerSources.Sort([](const FLayerSource& A, const FLayerSource& B)
         { return A.Priority < B.Priority; });

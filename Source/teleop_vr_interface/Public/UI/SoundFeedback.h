@@ -11,7 +11,8 @@ enum class ESoundType : uint8 {
 	Reject,
 	Click,
 	Warning,
-	Transition
+	Transition,
+	Contact
 };
 
 UCLASS(ClassGroup = (Custom), meta = (BlueprintSpawnableComponent))
@@ -23,7 +24,7 @@ public:
 
 	virtual void BeginPlay() override;
 
-	void Play(ESoundType Type);
+	void Play(ESoundType Type, float Volume = 1.0f);
 	void PlayAtLocation(ESoundType Type, FVector Location);
 	void SetMuted(bool bMute);
 

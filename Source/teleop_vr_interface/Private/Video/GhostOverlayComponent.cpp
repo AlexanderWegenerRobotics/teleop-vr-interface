@@ -521,7 +521,7 @@ bool UGhostOverlayComponent::GetGhostEEPosition(uint8 ArmIndex, float OutPositio
 }
 
 // Raw command-target intent display:
-//   ghost = Origin ⊕ command delta            (Origin·M·R_cmd·Mᵀ for orientation)
+//   ghost = Origin ⊕ command delta            (R_cmd·Origin for orientation, world frame)
 // This leads the arm and shows the full operator intent, including driving past a
 // workspace limit (e.g. into the table) so the operator can see and correct it.
 //
@@ -536,11 +536,8 @@ void UGhostOverlayComponent::UpdateIntentPoses() {
         FIntentPose& P = IntentPoses_[Arm];
         if (!P.bSeeded || !bUseIntentPose) continue;
 
-        const FQuat& M = ControllerToEEQuat[Arm];
-
-        // Command delta as quaternions (stored w,x,y,z → FQuat x,y,z,w).
+        // Command delta as quaternions (stored w,x,y,z → FQuat x,y,z,w), already in the world frame.
         const FQuat LastDeltaQ(P.LastDeltaQuaternion[1], P.LastDeltaQuaternion[2], P.LastDeltaQuaternion[3], P.LastDeltaQuaternion[0]);
-        const FQuat RetargetedDeltaQ = (M * LastDeltaQ * M.Inverse());   // EE-frame command rotation
 
         // --- Guarded origin correction (at rest + in-bounds only) ----------------
         // "At rest": this tick's command delta barely moved from the previous one.
@@ -588,7 +585,7 @@ void UGhostOverlayComponent::UpdateIntentPoses() {
                 P.OriginPosition[i] += k * (OriginEst - P.OriginPosition[i]);
             }
             const FQuat ArmQ(S.quaternion[1], S.quaternion[2], S.quaternion[3], S.quaternion[0]);
-            const FQuat OriginEstQ = ArmQ * RetargetedDeltaQ.Inverse();
+            const FQuat OriginEstQ = LastDeltaQ.Inverse() * ArmQ;
             FQuat OriginQ(P.OriginQuaternion[1], P.OriginQuaternion[2], P.OriginQuaternion[3], P.OriginQuaternion[0]);
             OriginQ = FQuat::Slerp(OriginQ, OriginEstQ, k).GetNormalized();
             P.OriginQuaternion[0] = OriginQ.W; P.OriginQuaternion[1] = OriginQ.X;
@@ -611,7 +608,7 @@ void UGhostOverlayComponent::UpdateIntentPoses() {
         for (int i = 0; i < 3; ++i) P.Position[i] = Target[i];
 
         const FQuat OriginQ(P.OriginQuaternion[1], P.OriginQuaternion[2], P.OriginQuaternion[3], P.OriginQuaternion[0]);
-        const FQuat NewQ = (OriginQ * RetargetedDeltaQ).GetNormalized();
+        const FQuat NewQ = (LastDeltaQ * OriginQ).GetNormalized();
         P.Quaternion[0] = NewQ.W; P.Quaternion[1] = NewQ.X;
         P.Quaternion[2] = NewQ.Y; P.Quaternion[3] = NewQ.Z;
 

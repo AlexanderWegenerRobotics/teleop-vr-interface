@@ -41,6 +41,7 @@ public:
     void UpdateCaptureTick(float DeltaTime);
     void ClearCaptureTargets();
     bool IsGhostVisible() const { return bGhostVisible_; }
+    UStereoLayerComponent* GetMonoLayer() const { return StereoLayer; }
     UTextureRenderTarget2D* GetRenderTarget()      const { return CaptureRT; }
     UTextureRenderTarget2D* GetRenderTargetLeft()  const { return CaptureRTLeft; }
     UTextureRenderTarget2D* GetRenderTargetRight() const { return CaptureRTRight; }

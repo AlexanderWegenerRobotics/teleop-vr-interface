@@ -19,6 +19,9 @@ struct FFrameBundle
     FVector2D GazeUV = FVector2D(0.5f, 0.5f);
     float     GazeConfidence = 0.0f;
     bool      bGazeValid = false;
+    float     ViewYawDeg = 0.0f;
+    float     ViewPitchDeg = 0.0f;
+    FVector2D ViewShiftUV = FVector2D::ZeroVector;
 };
 
 struct FLogFrame
@@ -33,6 +36,8 @@ struct FLayerSource
     int32     Priority  = 0;
     FVector2D UVOffset  = FVector2D::ZeroVector;
     FVector2D UVSize    = FVector2D::UnitVector;
+    bool      bFollowsView = false;
+    bool      bPremultiplied = false;
 };
 
 UCLASS()
@@ -47,7 +52,11 @@ public:
     TArray<FLayerSource> LayerSources;
     void AddLayerSource(TFunction<UTexture* ()> Getter, int32 Priority,
                         FVector2D UVOffset = FVector2D::ZeroVector,
-                        FVector2D UVSize   = FVector2D::UnitVector);
+                        FVector2D UVSize   = FVector2D::UnitVector,
+                        bool bFollowsView  = false,
+                        bool bPremultiplied = false);
+
+    UPROPERTY(EditAnywhere, Category = "VideoLogger") bool bOperatorView = true;
 
     // Output control — set before StartLogging.
     UPROPERTY(EditAnywhere, Category = "VideoLogger") bool bEnableRawVideo = true;

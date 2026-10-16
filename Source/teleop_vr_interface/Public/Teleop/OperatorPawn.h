@@ -17,13 +17,17 @@
 #include "UI/SoundFeedback.h"
 #include "Video/VideoLogger.h"
 #include "Video/GazeProjection.h"
+#include "Video/VideoLookAround.h"
 #include "Teleop/TeleOpLogger.h"
 #include "UI/VoiceAnnotatorComponent.h"
+#include "UI/NudgeReceiver.h"
+#include "Video/IntentHighlightComponent.h"
 #include "Video/GhostOverlayComponent.h"
 #include "Video/GraspIndicatorComponent.h"
 #include "Video/WorkspaceBoundaryComponent.h"
 #include "Networking/UdpSocket.h"
 #include "Teleop/CommandThread.h"
+#include "Teleop/EpisodeEventReceiver.h"
 // UPROPERTY(TObjectPtr<UTexture2D>) needs the complete type for the generated
 // reflection code; the existing TArray<UTexture2D*> below is a plain member and
 // got away with whatever the include chain happened to provide.
@@ -80,6 +84,8 @@ protected:
 	UPROPERTY() TSubclassOf<UUserWidget> TrayWidgetClass;
 	UPROPERTY() AVideoLogger* VideoLogger_ = nullptr;
 	UPROPERTY() TObjectPtr<UVoiceAnnotatorComponent> VoiceAnnotator;
+	UPROPERTY() TObjectPtr<UNudgeReceiver> NudgeReceiver;
+	UPROPERTY() TObjectPtr<UIntentHighlightComponent> IntentHighlight;
 	UPROPERTY() TObjectPtr<UGhostOverlayComponent>  GhostOverlay;
 	UPROPERTY() TObjectPtr<UGraspIndicatorComponent> LeftGraspIndicator;
 	UPROPERTY() TObjectPtr<UGraspIndicatorComponent> RightGraspIndicator;
@@ -88,6 +94,8 @@ protected:
 
 	UPROPERTY(EditAnywhere, Category = "Logging")
 	FString LogBaseDirectory = TEXT("Saved/Logs/TeleOp/");
+	TUniquePtr<FEpisodeEventReceiver> EpisodeEvents_;
+	void PollEpisodeEvents();
 
 	TMetricHistory<128> LatencyHistory;
 	TMetricHistory<128> JitterHistory;
@@ -118,6 +126,7 @@ private:
 	void SendArmReset(const std::string& DeviceName);
 	void SendArmResume(const std::string& DeviceName);
 	void SendGazeSample();
+	void SendOperatorState();
 	void HandleVoiceAnnotation(const FVoiceAnnotation& Ann);
 
 	// Remote arm reported FAULT in its message header. Called from ComLink's
@@ -136,6 +145,7 @@ private:
 	bool bRecordingActive_ = false;
 
 	FTransform HMDOrigin_;
+	bool bSwapControllers_ = false;
 	bool bHMDOriginValid_  = false;
 	bool bLeftWasGrasping  = false;
 	bool bRightWasGrasping = false;
@@ -157,6 +167,19 @@ private:
 
 	float VideoQuadWidth_  = 0.f;
 	float VideoQuadHeight_ = 0.f;
+
+	void UpdateLookAround(float DeltaTime);
+	FVector2D GetVideoQuadSize() const;
+	FVideoLookAround LookAround_;
+	bool bLookAroundEnabled_      = false;
+	bool bVideoLayersWorldLocked_ = false;
+	bool bLookActive_             = false;
+	float LookReturnSec_          = 0.4f;
+	float LookReturnAlpha_        = 1.f;
+	FQuat LookReturnStartRel_     = FQuat::Identity;
+	FTransform VideoQuadWorld_;
+	float ViewYawDeg_   = 0.f;
+	float ViewPitchDeg_ = 0.f;
 
 	void UpdateInfoBar();
 

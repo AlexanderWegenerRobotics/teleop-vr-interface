@@ -9,6 +9,7 @@
 #include "WidgetBinder.generated.h"
 
 class UUserWidget;
+class SWidget;
 class UCameraComponent;
 class UTextBlock;
 class UButton;
@@ -204,6 +205,7 @@ private:
 	UTextureRenderTarget2D* RenderTarget_ = nullptr;
 
 	TSharedPtr<FWidgetRenderer> WidgetRenderer_;
+	TSharedPtr<SWidget> SlateWidget_;
 
 	UPROPERTY() TMap<FName, UWidget*> CachedWidgets_;
 	UPROPERTY() TMap<FName, UButton*> CachedButtons_;

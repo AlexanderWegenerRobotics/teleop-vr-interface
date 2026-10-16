@@ -13,13 +13,16 @@ void USoundFeedback::BeginPlay() {
 	LoadSound(ESoundType::Click, TEXT("/Game/Sounds/click.click"));
 	LoadSound(ESoundType::Warning, TEXT("/Game/Sounds/warning.warning"));
 	LoadSound(ESoundType::Transition, TEXT("/Game/Sounds/positive.positive"));
+	LoadSound(ESoundType::Contact, TEXT("/Game/Sounds/contact.contact"));
+	if (!Sounds_.Contains(ESoundType::Contact) && Sounds_.Contains(ESoundType::Click))
+		Sounds_.Add(ESoundType::Contact, Sounds_[ESoundType::Click]);
 }
 
-void USoundFeedback::Play(ESoundType Type) {
+void USoundFeedback::Play(ESoundType Type, float Volume) {
 	if (bMuted_) return;
 	if (USoundBase** Found = Sounds_.Find(Type)) {
 		if (*Found) {
-			UGameplayStatics::PlaySound2D(GetWorld(), *Found);
+			UGameplayStatics::PlaySound2D(GetWorld(), *Found, Volume);
 		}
 	}
 }

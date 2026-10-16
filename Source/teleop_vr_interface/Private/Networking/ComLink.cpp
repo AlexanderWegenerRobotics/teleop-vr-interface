@@ -66,9 +66,20 @@ void UComLink::BeginPlay() {
 
         UE_LOG(LogTemp, Log, TEXT("ComLink: twin initialized -> %s"), *TwinIP);
     }
+
+    if (LocalPort > 0) {
+        CommandLink::Config LocalCfg;
+        LocalCfg.RemoteIP    = LocalIP;
+        LocalCfg.SendPort    = LocalPort;
+        LocalCfg.ReceivePort = 0;
+        LocalCmdLink_ = MakeUnique<CommandLink>();
+        LocalCmdLink_->Open(LocalCfg);
+        UE_LOG(LogTemp, Log, TEXT("ComLink: local orchestrator peer -> %s:%d"), *LocalIP, LocalPort);
+    }
 }
 
 void UComLink::EndPlay(const EEndPlayReason::Type EndPlayReason) {
+    if (LocalCmdLink_) { LocalCmdLink_->Close(); LocalCmdLink_.Reset(); }
     for (int32 i = 0; i < 2; ++i) {
         if (ArmStreams_[i]) { ArmStreams_[i]->Close(); ArmStreams_[i].Reset(); }
         if (TwinArmStreams_[i]) { TwinArmStreams_[i]->Close(); TwinArmStreams_[i].Reset(); }
@@ -290,8 +301,9 @@ void UComLink::SendAuthorityRequest(uint8 DeviceIndex, EControlAuthority Request
 void UComLink::SendReliable(const std::string& MsgType,
                              const msgpack::sbuffer& Payload,
                              bool AckRequested) {
-    if (CmdLink_)     CmdLink_->Send(MsgType, Payload, AckRequested);
-    if (TwinCmdLink_) TwinCmdLink_->Send(MsgType, Payload, AckRequested);
+    if (CmdLink_)      CmdLink_->Send(MsgType, Payload, AckRequested);
+    if (TwinCmdLink_)  TwinCmdLink_->Send(MsgType, Payload, AckRequested);
+    if (LocalCmdLink_) LocalCmdLink_->Send(MsgType, Payload, false);
 }
 
 void UComLink::RegisterHandler(const std::string& MsgType, FMsgHandler Handler) {

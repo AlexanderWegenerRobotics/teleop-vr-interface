@@ -33,6 +33,7 @@ void UWidgetBinder::EndPlay(const EEndPlayReason::Type EndPlayReason) {
 
 	// Remove from Slate first — stops any new paint/tick commands being queued.
 	if (Widget_) {
+		SlateWidget_.Reset();
 		Widget_->RemoveFromParent();
 		Widget_ = nullptr;
 	}
@@ -87,6 +88,7 @@ void UWidgetBinder::Initialize(TSubclassOf<UUserWidget> WidgetClass, UCameraComp
 		return;
 	}
 	Widget_->SetVisibility(ESlateVisibility::HitTestInvisible);
+	SlateWidget_ = Widget_->TakeWidget();
 
 	FName LayerName = FName(*FString::Printf(TEXT("UILayer_%s"), *GetName()));
 	Layer_ = NewObject<UStereoLayerComponent>(GetOwner(), LayerName);
@@ -107,7 +109,7 @@ void UWidgetBinder::Initialize(TSubclassOf<UUserWidget> WidgetClass, UCameraComp
 
 	// Pre-render so Slate runs a full layout pass; nested widget geometries
 	// (HBox/VBox children) are zero until at least one DrawWidget call.
-	WidgetRenderer_->DrawWidget(RenderTarget_, Widget_->TakeWidget(), RenderSize_, 0.0f, true);
+	WidgetRenderer_->DrawWidget(RenderTarget_, SlateWidget_.ToSharedRef(), RenderSize_, 0.0f, true);
 
 	CacheWidgetRects();
 	bIsBound_ = true;
@@ -232,9 +234,9 @@ void UWidgetBinder::CacheWidgetRects() {
 }
 
 void UWidgetBinder::RenderWidget() {
-	if (!bIsBound_ || !Widget_ || !RenderTarget_ || !WidgetRenderer_) return;
+	if (!bIsBound_ || !Widget_ || !SlateWidget_.IsValid() || !RenderTarget_ || !WidgetRenderer_) return;
 	if (!RenderTarget_->IsValidLowLevel()) return;
-	WidgetRenderer_->DrawWidget(RenderTarget_, Widget_->TakeWidget(), RenderSize_, RenderAccum_, true);
+	WidgetRenderer_->DrawWidget(RenderTarget_, SlateWidget_.ToSharedRef(), RenderSize_, RenderAccum_, true);
 }
 
 void UWidgetBinder::SetGazeInput(const FGazeData& GazeData) {

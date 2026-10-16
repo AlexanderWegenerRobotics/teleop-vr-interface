@@ -47,6 +47,11 @@ public:
     UPROPERTY() int32 TwinHeadSendPort    = 7003;
     UPROPERTY() int32 TwinHeadReceivePort = 8003;
 
+    // Local orchestrator peer: send-only, no acks. Receives every reliable message the
+    // avatar gets (gaze_sample, episode_restart, ...) plus operator_state. Port 0 = off.
+    UPROPERTY() FString LocalIP = TEXT("127.0.0.1");
+    UPROPERTY() int32 LocalPort = 0;
+
     // --- device streams ---
     // Sends to both the avatar and the twin (when twin channels are open --
     // see BeginPlay). Avatar-facing reads (HasNewArmState/ReadArmState/...)
@@ -194,6 +199,7 @@ private:
     TUniquePtr<ArmStream>   TwinArmStreams_[2];
     TUniquePtr<HeadStream>  TwinHeadStream_;
     TUniquePtr<CommandLink>  TwinCmdLink_;
+    TUniquePtr<CommandLink>  LocalCmdLink_;
 
     bool bWasAvatarAlive_ = false;
     float HeartbeatAccum_ = 0.0f;

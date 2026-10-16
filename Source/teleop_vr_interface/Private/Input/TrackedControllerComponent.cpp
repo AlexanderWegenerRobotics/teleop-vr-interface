@@ -358,8 +358,8 @@ FControllerDeltaPose UTrackedControllerComponent::GetDeltaPose() const {
     Delta.Translation = BankedScaledTranslation + ScaledTranslation;
 
     FTransform Current = MotionController->GetComponentTransform();
-    FQuat LiveRotation = Origin.GetRotation().Inverse() * Current.GetRotation();
-    Delta.Rotation = BankedRotation * LiveRotation;
+    FQuat LiveRotation = Current.GetRotation() * Origin.GetRotation().Inverse();
+    Delta.Rotation = LiveRotation * BankedRotation;
 
     return Delta;
 }
@@ -376,8 +376,8 @@ void UTrackedControllerComponent::UpdateClutch() {
     if (!bFullClutch && TriggerValue <= ClutchDisengageThreshold) {
         if (bOriginValid && MotionController && TrackingState == EControllerTrackingState::Tracking) {
             FTransform Current = MotionController->GetComponentTransform();
-            FQuat LiveRotation = Origin.GetRotation().Inverse() * Current.GetRotation();
-            BankedRotation = BankedRotation * LiveRotation;
+            FQuat LiveRotation = Current.GetRotation() * Origin.GetRotation().Inverse();
+            BankedRotation = LiveRotation * BankedRotation;
             BankedRotation.Normalize();
             BankedScaledTranslation += ScaledTranslation;
             ScaledTranslation = FVector::ZeroVector;
@@ -482,6 +482,18 @@ void UTrackedControllerComponent::PlayClutchHaptic(float Intensity, float Durati
     GetWorld()->GetTimerManager().SetTimer(TimerHandle, [PC, Hand]() {
         PC->SetHapticsByValue(0.0f, 0.0f, Hand);
         }, Duration, false);
+}
+
+void UTrackedControllerComponent::PlayHaptic(float Intensity, float Duration) {
+    APawn* Pawn = Cast<APawn>(GetOwner());
+    if (!Pawn) return;
+    APlayerController* PC = Cast<APlayerController>(Pawn->GetController());
+    if (!PC) return;
+    EControllerHand Hand = GetHand();
+    PC->SetHapticsByValue(1.0f, FMath::Clamp(Intensity, 0.f, 1.f), Hand);
+    GetWorld()->GetTimerManager().SetTimer(HapticStopTimer_, [PC, Hand]() {
+        PC->SetHapticsByValue(0.0f, 0.0f, Hand);
+    }, Duration, false);
 }
 
 void UTrackedControllerComponent::ArmPivotCalibration() {

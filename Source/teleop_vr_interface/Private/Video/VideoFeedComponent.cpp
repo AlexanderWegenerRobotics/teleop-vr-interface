@@ -336,7 +336,8 @@ void UVideoFeedComponent::UpdateLayerSize(int32 Width, int32 Height)
     float AspectRatio = static_cast<float>(Width) / static_cast<float>(Height);
     float HalfHeight = HalfWidth / AspectRatio;
 
-    StereoLayer->SetQuadSize(FVector2D(HalfWidth * 2.0f, HalfHeight * 2.0f));
+    QuadSize_ = FVector2D(HalfWidth * 2.0f, HalfHeight * 2.0f);
+    StereoLayer->SetQuadSize(QuadSize_);
 }
 
 void UVideoFeedComponent::SetGhostTextures(UTextureRenderTarget2D* Left, UTextureRenderTarget2D* Right)

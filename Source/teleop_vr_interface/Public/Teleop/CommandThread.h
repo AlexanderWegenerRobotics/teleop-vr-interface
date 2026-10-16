@@ -133,6 +133,8 @@ public:
     // there would make IT jump instead.
     void RequestCaptureOrigin(int32 ArmIndex = -1);
 
+    void SetSwapHands(bool bSwap) { bSwapHands_ = bSwap; }
+
     virtual uint32 Run() override;
     virtual void   Stop() override;
 
@@ -163,6 +165,7 @@ private:
     // --- OpenXR direct sampling ------------------------------------------
     IOpenXRHMD* Xr_ = nullptr;
     int32       HandDeviceId_[2] = { -1, -1 };
+    bool        bSwapHands_ = false;
     bool        bXrResolved_ = false;
     double      LastResolveAttemptSec_ = 0.0;
 

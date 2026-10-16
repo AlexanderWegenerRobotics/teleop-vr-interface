@@ -57,6 +57,9 @@ public:
     // happens inside the single working PP pass rather than a separate (dropped) blendable.
     void SetGhostTextures(UTextureRenderTarget2D* Left, UTextureRenderTarget2D* Right);
 
+    UStereoLayerComponent* GetMonoLayer() const { return StereoLayer; }
+    FVector2D GetQuadSize() const { return QuadSize_; }
+
     UPROPERTY(EditAnywhere, Category = "VideoFeed")
     float PlaneDistance = 700.0f;
 
@@ -78,6 +81,8 @@ private:
 
     UPROPERTY()
     TObjectPtr<UStereoLayerComponent> StereoLayer;
+
+    FVector2D QuadSize_ = FVector2D::ZeroVector;
 
     UPROPERTY()
     TObjectPtr<UMaterialInstanceDynamic> PostProcessMID_;

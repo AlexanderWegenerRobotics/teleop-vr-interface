@@ -4,5 +4,8 @@
     "arm_left":  { "send": 7001, "receive": 8001 },
     "arm_right": { "send": 7002, "receive": 8002 },
     "head":      { "send": 7003, "receive": 8003 },
-    "recording_port": 9500
+    "recording_port": 9500,
+    "nudge_port": 7500,
+    "episode_event_port": 9600,
+    "local_orchestrator": { "ip": "127.0.0.1", "port": 7300 }
 }
