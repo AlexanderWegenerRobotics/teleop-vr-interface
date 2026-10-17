@@ -8,6 +8,9 @@
 #include "DrawDebugHelpers.h"
 #include "Engine/Engine.h"
 #include "Interfaces/IPluginManager.h"
+#include "HAL/PlatformProcess.h"
+#include "HAL/PlatformTime.h"
+#include "Misc/ScopeLock.h"
 
 #if WITH_EDITOR
 #endif
@@ -30,6 +33,184 @@ FViveOpenXREyeTracker::~FViveOpenXREyeTracker()
 
 void FViveOpenXREyeTracker::Destroy()
 {
+	StopPolling();
+}
+
+class FViveEyePollRunnable : public FRunnable
+{
+public:
+	explicit FViveEyePollRunnable(FViveOpenXREyeTracker* InOwner) : Owner(InOwner) {}
+	virtual uint32 Run() override { return Owner->PollLoop(); }
+private:
+	FViveOpenXREyeTracker* Owner;
+};
+
+void FViveOpenXREyeTracker::StartPolling()
+{
+	if (PollThread) return;
+	bPollStop.store(false);
+	PollRunnable = MakeUnique<FViveEyePollRunnable>(this);
+	PollThread = FRunnableThread::Create(PollRunnable.Get(), TEXT("ViveEyePoll"), 0, TPri_AboveNormal);
+	UE_LOG(LogViveOpenXREyeTracker, Log, TEXT("Eye data polled on worker thread (ViveEyePoll)."));
+}
+
+void FViveOpenXREyeTracker::StopPolling()
+{
+	if (!PollThread) return;
+	bPollStop.store(true);
+	PollThread->WaitForCompletion();
+	delete PollThread;
+	PollThread = nullptr;
+	PollRunnable.Reset();
+}
+
+uint32 FViveOpenXREyeTracker::PollLoop()
+{
+	const double Period = 1.0 / 120.0;
+	double Next = FPlatformTime::Seconds();
+
+	double StatStart = Next;
+	int32  StatCount = 0;
+	double StatCallSum = 0.0;
+	double StatCallMax = 0.0;
+	double StatGazeSum = 0.0, StatPupilSum = 0.0, StatGeomSum = 0.0, StatLocSum = 0.0;
+	int32  StatActive = 0, StatLocOk = 0, StatPoseValid = 0, StatPoseTracked = 0, StatHtcOk = 0;
+	XrResult LastLocRes = XR_SUCCESS;
+	XrResult LastHtcRes = XR_SUCCESS;
+	XrSpaceLocationFlags LastFlags = 0;
+	double SessionStart = 0.0;
+	bool bFirstValidLogged = false;
+	bool bNoValidWarned = false;
+	const XrSpaceLocationFlags ValidBits = XR_SPACE_LOCATION_ORIENTATION_VALID_BIT | XR_SPACE_LOCATION_POSITION_VALID_BIT;
+	const XrSpaceLocationFlags TrackedBits = XR_SPACE_LOCATION_ORIENTATION_TRACKED_BIT | XR_SPACE_LOCATION_POSITION_TRACKED_BIT;
+
+	while (!bPollStop.load())
+	{
+		XrSpace Space = XR_NULL_HANDLE;
+		XrTime  Time  = 0;
+		bool    bGazeActive = false;
+		XrEyeTrackerHTC HtcTracker = XR_NULL_HANDLE;
+		{
+			FScopeLock Lock(&EyeDataLock);
+			Space       = PollTrackingSpace;
+			Time        = PollDisplayTime;
+			bGazeActive = bPollGazeActive;
+			HtcTracker  = EyeTrackerHTC;
+		}
+
+		if (isHTCEyeTrackerSupported && HtcTracker == XR_NULL_HANDLE && Session != XR_NULL_HANDLE)
+		{
+			const double RetryNow = FPlatformTime::Seconds();
+			if (RetryNow - LastHtcCreateAttempt >= 2.0)
+			{
+				LastHtcCreateAttempt = RetryNow;
+				XrEyeTrackerHTC NewTracker = XR_NULL_HANDLE;
+				XrEyeTrackerCreateInfoHTC createInfo{ XR_TYPE_EYE_TRACKER_CREATE_INFO_HTC };
+				if (FHTCEyeTracker_ext.xrCreateEyeTrackerHTC(Session, &createInfo, &NewTracker) == XR_SUCCESS)
+				{
+					FScopeLock Lock(&EyeDataLock);
+					EyeTrackerHTC = NewTracker;
+					HtcTracker = NewTracker;
+					UE_LOG(LogViveOpenXREyeTracker, Log, TEXT("HTC eye tracker created on retry."));
+				}
+			}
+		}
+
+		if (Space != XR_NULL_HANDLE && Time != 0)
+		{
+			const double LocStart = FPlatformTime::Seconds();
+			XrSpaceLocation Loc{ XR_TYPE_SPACE_LOCATION };
+			bool bLoc = false;
+			if (bGazeActive && GazeActionSpace != XR_NULL_HANDLE)
+			{
+				LastLocRes = xrLocateSpace(GazeActionSpace, Space, Time, &Loc);
+				bLoc = XR_SUCCEEDED(LastLocRes);
+			}
+			if (SessionStart == 0.0) SessionStart = LocStart;
+			if (bGazeActive) ++StatActive;
+			if (bLoc)
+			{
+				++StatLocOk;
+				LastFlags = Loc.locationFlags;
+				if ((Loc.locationFlags & ValidBits) == ValidBits) ++StatPoseValid;
+				if ((Loc.locationFlags & TrackedBits) == TrackedBits) ++StatPoseTracked;
+			}
+			const bool bPoseValidNow = bLoc && (Loc.locationFlags & ValidBits) == ValidBits;
+			if (bPoseValidNow && !bFirstValidLogged)
+			{
+				bFirstValidLogged = true;
+				UE_LOG(LogViveOpenXREyeTracker, Log, TEXT("Eye gaze: first valid gaze pose %.1f s after session start."), LocStart - SessionStart);
+			}
+			if (!bFirstValidLogged && !bNoValidWarned && LocStart - SessionStart > 10.0)
+			{
+				bNoValidWarned = true;
+				UE_LOG(LogViveOpenXREyeTracker, Warning, TEXT("Eye gaze: no valid gaze pose 10 s after session start (gaze action active %d, last locate %s, flags 0x%llx, HTC tracker %s, last HTC query %s). Headset not worn, or the eye tracker did not start."),
+					bGazeActive ? 1 : 0, OpenXRResultToString(LastLocRes), static_cast<unsigned long long>(LastFlags),
+					HtcTracker != XR_NULL_HANDLE ? TEXT("created") : TEXT("missing"), OpenXRResultToString(LastHtcRes));
+			}
+
+			const double CallStart = FPlatformTime::Seconds();
+			StatLocSum += (CallStart - LocStart) * 1000.0;
+			double T0 = CallStart, T1 = CallStart, T2 = CallStart;
+
+			XrEyeGazeDataHTC      Gaze{ XR_TYPE_EYE_GAZE_DATA_HTC, nullptr };
+			XrEyePupilDataHTC     Pupil{ XR_TYPE_EYE_PUPIL_DATA_HTC, nullptr };
+			XrEyeGeometricDataHTC Geom{ XR_TYPE_EYE_GEOMETRIC_DATA_HTC, nullptr };
+			bool bGaze = false, bPupil = false, bGeom = false;
+			if (isHTCEyeTrackerSupported && HtcTracker != XR_NULL_HANDLE)
+			{
+				XrEyeGazeDataInfoHTC GazeInfo{ XR_TYPE_EYE_GAZE_DATA_INFO_HTC };
+				GazeInfo.baseSpace = Space;
+				GazeInfo.time      = Time;
+				LastHtcRes = FHTCEyeTracker_ext.xrGetEyeGazeDataHTC(HtcTracker, &GazeInfo, &Gaze);
+				bGaze = LastHtcRes == XR_SUCCESS;
+				T0 = FPlatformTime::Seconds();
+
+				XrEyePupilDataInfoHTC PupilInfo{ XR_TYPE_EYE_PUPIL_DATA_INFO_HTC };
+				bPupil = FHTCEyeTracker_ext.xrGetEyePupilDataHTC(HtcTracker, &PupilInfo, &Pupil) == XR_SUCCESS;
+				T1 = FPlatformTime::Seconds();
+
+				XrEyeGeometricDataInfoHTC GeomInfo{ XR_TYPE_EYE_GEOMETRIC_DATA_INFO_HTC };
+				bGeom = FHTCEyeTracker_ext.xrGetEyeGeometricDataHTC(HtcTracker, &GeomInfo, &Geom) == XR_SUCCESS;
+				T2 = FPlatformTime::Seconds();
+				if (bGaze && bGeom) ++StatHtcOk;
+			}
+
+			const double CallMs = (T2 - CallStart) * 1000.0;
+			StatCallSum  += CallMs;
+			StatCallMax   = FMath::Max(StatCallMax, CallMs);
+			StatGazeSum  += (T0 - CallStart) * 1000.0;
+			StatPupilSum += (T1 - T0) * 1000.0;
+			StatGeomSum  += (T2 - T1) * 1000.0;
+			++StatCount;
+
+			{
+				FScopeLock Lock(&EyeDataLock);
+				if (bLoc && bPollGazeActive) EyeTrackerSpaceLocation = Loc;
+				if (bGaze)  EyeGazesHTC          = Gaze;
+				if (bPupil) PupilDatasHTC        = Pupil;
+				if (bGeom)  EyeGeometricDatasHTC = Geom;
+			}
+		}
+
+		const double Now = FPlatformTime::Seconds();
+		if (Now - StatStart >= 5.0 && StatCount > 0)
+		{
+			UE_LOG(LogViveOpenXREyeTracker, Log, TEXT("Eye poll: %.1f Hz, query time mean %.2f ms  max %.2f ms (locate %.2f, gaze %.2f, pupil %.2f, geometric %.2f) | action active %d%%, pose valid %d%%, tracked %d%%, HTC ok %d%%"),
+				StatCount / (Now - StatStart), StatCallSum / StatCount, StatCallMax,
+				StatLocSum / StatCount, StatGazeSum / StatCount, StatPupilSum / StatCount, StatGeomSum / StatCount,
+				100 * StatActive / StatCount, 100 * StatPoseValid / StatCount, 100 * StatPoseTracked / StatCount, 100 * StatHtcOk / StatCount);
+			StatStart = Now; StatCount = 0; StatCallSum = 0.0; StatCallMax = 0.0;
+			StatGazeSum = 0.0; StatPupilSum = 0.0; StatGeomSum = 0.0; StatLocSum = 0.0;
+			StatActive = 0; StatLocOk = 0; StatPoseValid = 0; StatPoseTracked = 0; StatHtcOk = 0;
+		}
+
+		const double MinGap = 0.002;
+		Next += Period;
+		if (Next < Now + MinGap) Next = Now + MinGap;
+		FPlatformProcess::SleepNoStats(static_cast<float>(Next - Now));
+	}
+	return 0;
 }
 
 bool FViveOpenXREyeTracker::GetRequiredExtensions(TArray<const ANSICHAR*>& OutExtensions)
@@ -204,18 +385,33 @@ const void* FViveOpenXREyeTracker::OnBeginSession(XrSession InSession, const voi
 		XrResult result = XrResult::XR_ERROR_HANDLE_INVALID;
 
 		XrEyeTrackerCreateInfoHTC createInfo{ XR_TYPE_EYE_TRACKER_CREATE_INFO_HTC };
-		result = FHTCEyeTracker_ext.xrCreateEyeTrackerHTC(Session, &createInfo, &EyeTrackerHTC);
-
-		XR_ENSURE(result);
+		result = FHTCEyeTracker_ext.xrCreateEyeTrackerHTC(InSession, &createInfo, &EyeTrackerHTC);
+		if (result != XR_SUCCESS)
+		{
+			EyeTrackerHTC = XR_NULL_HANDLE;
+			UE_LOG(LogViveOpenXREyeTracker, Warning, TEXT("xrCreateEyeTrackerHTC failed at session start: %s. Retrying every 2 s."), OpenXRResultToString(result));
+		}
+		else
+		{
+			UE_LOG(LogViveOpenXREyeTracker, Log, TEXT("HTC eye tracker created."));
+		}
+		LastHtcCreateAttempt = FPlatformTime::Seconds();
 	}
 
 	bSessionStarted = true;
+	StartPolling();
 
 	return InNext;
 }
 
 void FViveOpenXREyeTracker::OnDestroySession(XrSession InSession)
 {
+	StopPolling();
+	{
+		FScopeLock Lock(&EyeDataLock);
+		PollTrackingSpace = XR_NULL_HANDLE;
+		PollDisplayTime   = 0;
+	}
 	if (GazeActionSpace)
 	{
 		XR_ENSURE(xrDestroySpace(GazeActionSpace));
@@ -260,56 +456,20 @@ void FViveOpenXREyeTracker::PostSyncActions(XrSession InSession)
 
 void FViveOpenXREyeTracker::UpdateDeviceLocations(XrSession InSession, XrTime DisplayTime, XrSpace TrackingSpace)
 {
-	if (ActionStatePose.isActive) 
+	FScopeLock Lock(&EyeDataLock);
+	bPollGazeActive   = ActionStatePose.isActive != XR_FALSE;
+	PollTrackingSpace = TrackingSpace;
+	PollDisplayTime   = DisplayTime;
+	if (!bPollGazeActive)
 	{
-		check(GazeActionSpace != XR_NULL_HANDLE);
-		XR_ENSURE(xrLocateSpace(GazeActionSpace, TrackingSpace, DisplayTime, &EyeTrackerSpaceLocation));
-	}
-	else
-	{
-		// Clear the tracked bits if the action is not active
 		const XrSpaceLocationFlags TrackedFlags = XR_SPACE_LOCATION_ORIENTATION_TRACKED_BIT | XR_SPACE_LOCATION_POSITION_TRACKED_BIT;
 		EyeTrackerSpaceLocation.locationFlags &= ~TrackedFlags;
-	}
-
-	if (isHTCEyeTrackerSupported)
-	{
-		const float WorldToMetersScale = XRTrackingSystem->GetWorldToMetersScale();
-		XrResult result = XrResult::XR_ERROR_HANDLE_INVALID;
-
-		// Query Gaze information
-		XrEyeGazeDataInfoHTC gazesInfo{ XR_TYPE_EYE_GAZE_DATA_INFO_HTC };
-		gazesInfo.baseSpace = TrackingSpace;
-		gazesInfo.time = DisplayTime;
-		result = FHTCEyeTracker_ext.xrGetEyeGazeDataHTC(EyeTrackerHTC, &gazesInfo, &EyeGazesHTC);
-		XR_ENSURE(result);
-		if (result != XR_SUCCESS)
-		{
-			UE_LOG(LogViveOpenXREyeTracker, Error, TEXT("[GetEyeGazesHTC] xrGetEyeGazesHTC failed: %s"), OpenXRResultToString(result));
-		}
-
-		// Query Pupil information
-		XrEyePupilDataInfoHTC pupilDatasInfo{ XR_TYPE_EYE_PUPIL_DATA_INFO_HTC };
-		result = FHTCEyeTracker_ext.xrGetEyePupilDataHTC(EyeTrackerHTC, &pupilDatasInfo, &PupilDatasHTC);
-		XR_ENSURE(result);
-		if (result != XR_SUCCESS)
-		{
-			UE_LOG(LogViveOpenXREyeTracker, Error, TEXT("[GetPupilDatasHTC] xrGetPupilDatasHTC failed: %s"), OpenXRResultToString(result));
-		}
-
-		// Query Geometric information
-		XrEyeGeometricDataInfoHTC eyeGeometricDatasInfo{ XR_TYPE_EYE_GEOMETRIC_DATA_INFO_HTC };
-		result = FHTCEyeTracker_ext.xrGetEyeGeometricDataHTC(EyeTrackerHTC, &eyeGeometricDatasInfo, &EyeGeometricDatasHTC);
-		XR_ENSURE(result);
-		if (result != XR_SUCCESS)
-		{
-			UE_LOG(LogViveOpenXREyeTracker, Error, TEXT("[GetEyeGeometricDatasHTC] xrGetEyeGeometricDatasHTC failed: %s"), OpenXRResultToString(result));
-		}
 	}
 }
 
 bool FViveOpenXREyeTracker::GetEyeTrackerGazeData(FEyeTrackerGazeData& OutGazeData) const
 {
+	FScopeLock EyeLock(&EyeDataLock);
 	if (!bSessionStarted)
 	{
 		OutGazeData = FEyeTrackerGazeData();
@@ -369,6 +529,7 @@ bool FViveOpenXREyeTracker::GetEyeTrackerGazeData(FEyeTrackerGazeData& OutGazeDa
 // Integrate with HTC EyeTracker
 bool FViveOpenXREyeTracker::GetEyeTrackerStereoGazeData(FEyeTrackerStereoGazeData& OutStereoGazeData) const
 {
+	FScopeLock EyeLock(&EyeDataLock);
 	if (!isHTCEyeTrackerSupported) return false;
 	FEyeTrackerStereoGazeData OutGazeDataHTC;
 	const float WorldToMetersScale = XRTrackingSystem->GetWorldToMetersScale();
@@ -403,6 +564,7 @@ bool FViveOpenXREyeTracker::GetEyeTrackerStereoGazeData(FEyeTrackerStereoGazeDat
 
 EEyeTrackerStatus FViveOpenXREyeTracker::GetEyeTrackerStatus() const
 {
+	FScopeLock EyeLock(&EyeDataLock);
 	if (!bSessionStarted)
 	{
 		return EEyeTrackerStatus::NotConnected;
@@ -433,6 +595,7 @@ bool FViveOpenXREyeTracker::IsStereoGazeDataAvailable() const
 
 void FViveOpenXREyeTracker::DrawDebug(AHUD* HUD, UCanvas* Canvas, const FDebugDisplayInfo& DisplayInfo, float& YL, float& YPos)
 {
+	FScopeLock EyeLock(&EyeDataLock);
 	if (!bSessionStarted)
 	{
 		return;
@@ -553,6 +716,7 @@ bool FViveOpenXREyeTrackerModule::IsEyeTrackerConnected() const
 
 FXrGazeDataHTC FViveOpenXREyeTracker::GetEyeGazeValidDatas()
 {
+	FScopeLock EyeLock(&EyeDataLock);
 	FXrGazeDataHTC OutEyeGazeValidDataHTC;
 	if (!isHTCEyeTrackerSupported) return OutEyeGazeValidDataHTC;
 
@@ -566,6 +730,7 @@ FXrGazeDataHTC FViveOpenXREyeTracker::GetEyeGazeValidDatas()
 
 FXrPupilDataHTC FViveOpenXREyeTracker::GetPupilDatas()
 {
+	FScopeLock EyeLock(&EyeDataLock);
 	FXrPupilDataHTC OutPupilDataHTC;
 	if (!isHTCEyeTrackerSupported) return OutPupilDataHTC;
 
@@ -591,6 +756,7 @@ FXrPupilDataHTC FViveOpenXREyeTracker::GetPupilDatas()
 
 FXrEyeGeometricDataHTC FViveOpenXREyeTracker::GetEyeGeometricDatas()
 {
+	FScopeLock EyeLock(&EyeDataLock);
 	FXrEyeGeometricDataHTC OutEyeGeometricDataHTC;
 	
 	if (!isHTCEyeTrackerSupported) return OutEyeGeometricDataHTC;

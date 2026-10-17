@@ -95,7 +95,9 @@ struct FGazeSampleMsg {
     float    gaze_px_x    = 0.f;
     float    gaze_px_y    = 0.f;
     uint64_t timestamp_ns = 0;
-    MSGPACK_DEFINE_MAP(frame_id, gaze_px_x, gaze_px_y, timestamp_ns)
+    uint32_t image_w      = 0;
+    uint32_t image_h      = 0;
+    MSGPACK_DEFINE_MAP(frame_id, gaze_px_x, gaze_px_y, timestamp_ns, image_w, image_h)
 };
 
 // Whole-machine CPU utilisation in percent across all processes (game-thread sampled).
@@ -277,6 +279,11 @@ void AOperatorPawn::BeginPlay() {
 	}
 
 	bSwapControllers_ = Config->Robot.bSwapControllers;
+
+	if (!Config->bGazeEnabled && Gaze) {
+		Gaze->PrimaryComponentTick.bStartWithTickEnabled = false;
+		Gaze->SetComponentTickEnabled(false);
+	}
 	if (bSwapControllers_) {
 		Swap(LeftController, RightController);
 		LeftTracked->MotionController  = LeftController;
@@ -695,9 +702,11 @@ void AOperatorPawn::BeginPlay() {
 	Logger_ = MakeUnique<FTeleOpLogger>();
 	FString SessionDir = Logger_->Open(FPaths::ProjectDir() / LogBaseDirectory);
 
-	CommandThread_ = MakeUnique<FTeleopCommandThread>(ComLink, Logger_.Get(), CommandThreadRateHz);
-	CommandThread_->SetSwapHands(bSwapControllers_);
-	CommandThread_->StartThread();
+	if (Config->bCommandThreadEnabled) {
+		CommandThread_ = MakeUnique<FTeleopCommandThread>(ComLink, Logger_.Get(), CommandThreadRateHz);
+		CommandThread_->SetSwapHands(bSwapControllers_);
+		CommandThread_->StartThread();
+	}
 	UE_LOG(LogTemp, Log, TEXT("OperatorPawn: logging to %s"), *SessionDir);
 	NudgeReceiver->Open(Config->Network.NudgePort, LeftTracked, RightTracked, SoundFeedback, Logger_.Get(),
 	                    Config->Overlay.bIntentHighlight ? IntentHighlight.Get() : nullptr);
@@ -2571,6 +2580,8 @@ void AOperatorPawn::SendGazeSample(){
 	Msg.gaze_px_x    = GazeUV.X * W;
 	Msg.gaze_px_y    = GazeUV.Y * H;
 	Msg.timestamp_ns = NowNs;
+	Msg.image_w      = static_cast<uint32_t>(W);
+	Msg.image_h      = static_cast<uint32_t>(H);
 
 	msgpack::sbuffer Buf;
 	msgpack::pack(Buf, Msg);

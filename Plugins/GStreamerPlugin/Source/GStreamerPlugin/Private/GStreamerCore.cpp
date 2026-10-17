@@ -580,3 +580,54 @@ extern "C" bool GStreamerNvdecAvailable()
     if (f) { gst_object_unref(f); return true; }
     return false;
 }
+
+extern "C" bool GStreamerElementAvailable(const char* factory_name)
+{
+    GstElementFactory* f = gst_element_factory_find(factory_name);
+    if (f) { gst_object_unref(f); return true; }
+    return false;
+}
+
+extern "C" bool GStreamerElementHasProperty(const char* factory_name, const char* property)
+{
+    GstElement* e = gst_element_factory_make(factory_name, nullptr);
+    if (!e) return false;
+    bool has = g_object_class_find_property(G_OBJECT_GET_CLASS(e), property) != nullptr;
+    gst_object_unref(e);
+    return has;
+}
+
+struct FGstMappedSample
+{
+    GstSample* sample;
+    GstBuffer* buffer;
+    GstMapInfo map;
+};
+
+extern "C" void* GStreamerMapSample(void* sample, const unsigned char** data, int* size)
+{
+    if (!sample || !data || !size) return nullptr;
+    GstBuffer* buffer = gst_sample_get_buffer(GST_SAMPLE(sample));
+    if (!buffer) return nullptr;
+
+    FGstMappedSample* m = static_cast<FGstMappedSample*>(g_malloc0(sizeof(FGstMappedSample)));
+    m->sample = gst_sample_ref(GST_SAMPLE(sample));
+    m->buffer = buffer;
+    if (!gst_buffer_map(buffer, &m->map, GST_MAP_READ)) {
+        gst_sample_unref(m->sample);
+        g_free(m);
+        return nullptr;
+    }
+    *data = m->map.data;
+    *size = (int)m->map.size;
+    return m;
+}
+
+extern "C" void GStreamerUnmapSample(void* handle)
+{
+    if (!handle) return;
+    FGstMappedSample* m = static_cast<FGstMappedSample*>(handle);
+    gst_buffer_unmap(m->buffer, &m->map);
+    gst_sample_unref(m->sample);
+    g_free(m);
+}

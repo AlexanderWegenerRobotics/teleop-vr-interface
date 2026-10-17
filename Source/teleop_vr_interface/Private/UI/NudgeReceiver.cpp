@@ -57,7 +57,7 @@ void UNudgeReceiver::HandleDatagram(const uint8* Data, int32 Size) {
                     auto k = t.find("kind"); if (k != t.end()) T.bGoal = k->second.as<std::string>() == "goal";
                     auto p = t.find("prob"); if (p != t.end()) T.Prob = static_cast<float>(p->second.as<double>());
                     auto q = t.find("position");
-                    if (q != t.end()) { std::vector<double> v; q->second.convert(v); for (int k = 0; k < 3 && k < (int)v.size(); ++k) T.Position[k] = static_cast<float>(v[k]); }
+                    if (q != t.end()) { std::vector<double> v; q->second.convert(v); for (int i = 0; i < 3 && i < (int)v.size(); ++i) T.Position[i] = static_cast<float>(v[i]); }
                     Targets.Add(T);
                 }
             }

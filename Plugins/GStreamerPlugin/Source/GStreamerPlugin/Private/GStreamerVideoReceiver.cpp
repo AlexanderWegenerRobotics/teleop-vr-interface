@@ -3,7 +3,12 @@
 #include "TextureResource.h"
 #include "RHICommandList.h"
 #include "RHI.h"
+#include "CoreGlobals.h"
+#include "Misc/CoreDelegates.h"
+#include "SceneViewExtension.h"
+#include "RenderGraphBuilder.h"
 #include <atomic>
+#include <chrono>
 #include <string>
 
 // ---------------------------------------------------------------------------
@@ -53,6 +58,129 @@ namespace {
     // Long enough for a decoder that cannot initialise at all to say so on the
     // bus; short enough to be invisible at startup. Paid once per process.
     constexpr double kGpuProbeGraceSec = 0.30;
+
+    // cudaconvert (NV12 -> BGRA on the GPU) is used when present. Like the decoder
+    // verdict it is checked once per process; if it errors, later streams convert
+    // on the CPU instead.
+    std::atomic<int32> GCudaConvertVerdict{ static_cast<int32>(EGpuVerdict::Unknown) };
+
+    std::string VideoConvertStep()
+    {
+        static const std::string Step = []()
+        {
+            if (!GStreamerElementHasProperty("videoconvert", "n-threads"))
+                return std::string("videoconvert");
+            const int32 Cores = FPlatformMisc::NumberOfCores();
+            const int32 N = FMath::Clamp(Cores, 1, 4);
+            return std::string("videoconvert n-threads=") + std::to_string(N);
+        }();
+        return Step;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Render-thread upload
+// ---------------------------------------------------------------------------
+// Frames are copied into their textures on the render thread right before the
+// view family is rendered, instead of from the game-thread tick. The game thread
+// runs a frame ahead of the render thread, so picking up the frame here should
+// show it roughly one display frame earlier. High priority so it runs before
+// other extensions (the HMD's stereo layer copy included, if that copy happens
+// in its own PreRenderViewFamily).
+
+class FVideoUploadExtension : public FSceneViewExtensionBase
+{
+public:
+    FVideoUploadExtension(const FAutoRegister& AutoRegister) : FSceneViewExtensionBase(AutoRegister) {}
+
+    virtual void SetupViewFamily(FSceneViewFamily& InViewFamily) override {}
+    virtual void SetupView(FSceneViewFamily& InViewFamily, FSceneView& InView) override {}
+    virtual void BeginRenderViewFamily(FSceneViewFamily& InViewFamily) override {}
+    virtual int32 GetPriority() const override { return 1000; }
+
+    virtual void PreRenderViewFamily_RenderThread(FRDGBuilder& GraphBuilder, FSceneViewFamily& InViewFamily) override
+    {
+        UploadAll_RenderThread(GraphBuilder.RHICmdList);
+    }
+
+    void Add_RenderThread(const FVideoUploadStatePtr& State) { States.AddUnique(State); }
+    void Clear_RenderThread() { States.Empty(); }
+
+private:
+    void UploadAll_RenderThread(FRHICommandListImmediate& RHICmdList)
+    {
+        States.RemoveAll([](const FVideoUploadStatePtr& State) { return State->bDead.load(); });
+
+        const uint64 RenderFrame = GFrameCounterRenderThread;
+        for (const FVideoUploadStatePtr& State : States)
+        {
+            FVideoFramePtr Frame = State->Mailbox.Peek();
+            if (!Frame || !Frame->Data) continue;
+
+            bool bUploaded = false;
+            for (int32 i = 0; i < FVideoUploadState::kMaxTargets; ++i)
+            {
+                FRHITexture* Tex = State->Target[i].GetReference();
+                if (!Tex) continue;
+
+                const uint64 Lease = State->LeaseFrame[i].load();
+                if (Lease == 0 || RenderFrame > Lease + 2) continue;
+                if (State->UploadedSeq[i] == Frame->Seq) continue;
+
+                const FIntPoint Extent = Tex->GetDesc().Extent;
+                if (Extent.X != Frame->Width || Extent.Y != Frame->Height) continue;
+
+                const bool bFirstUploadOfFrame = !bUploaded;
+                const FUpdateTextureRegion2D Region(0, 0, 0, 0, Frame->Width, Frame->Height);
+                RHICmdList.UpdateTexture2D(Tex, 0, Region, Frame->Stride, Frame->Data);
+                State->UploadedSeq[i] = Frame->Seq;
+                bUploaded = true;
+
+                if (bFirstUploadOfFrame)
+                {
+                    const double WaitMs = (FPlatformTime::Seconds() - Frame->Timestamp) * 1000.0;
+                    State->WaitSum += WaitMs;
+                    State->WaitMax  = FMath::Max(State->WaitMax, WaitMs);
+                    if (++State->WaitN >= 300)
+                    {
+                        UE_LOG(LogTemp, Log, TEXT("GStreamer: pull -> render upload mean %.2f ms  max %.2f (port %d)"),
+                               State->WaitSum / State->WaitN, State->WaitMax, State->Port);
+                        State->WaitN = 0; State->WaitSum = 0.0; State->WaitMax = 0.0;
+                    }
+                }
+            }
+
+            if (bUploaded)
+                RHICmdList.EnqueueLambda([KeepAlive = Frame](auto&) {});
+        }
+    }
+
+    TArray<FVideoUploadStatePtr> States;
+};
+
+namespace {
+    TSharedPtr<FVideoUploadExtension, ESPMode::ThreadSafe> GVideoUploadExtension;
+
+    FVideoUploadExtension* GetUploadExtension_GameThread()
+    {
+        check(IsInGameThread());
+        if (!GVideoUploadExtension.IsValid())
+        {
+            GVideoUploadExtension = FSceneViewExtensions::NewExtension<FVideoUploadExtension>();
+
+            // Drop the texture references while the RHI is still alive.
+            FCoreDelegates::OnEnginePreExit.AddLambda([]()
+            {
+                if (FVideoUploadExtension* Ext = GVideoUploadExtension.Get())
+                {
+                    ENQUEUE_RENDER_COMMAND(GStreamerClearUploads)(
+                        [Ext](FRHICommandListImmediate&) { Ext->Clear_RenderThread(); });
+                    FlushRenderingCommands();
+                }
+            });
+        }
+        return GVideoUploadExtension.Get();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -80,39 +208,29 @@ void FGStreamerVideoReceiver::FecProbeThunk(uint16_t Seq, void* Userdata)
 void FFramePullRunnable::ExtractTimestampRow(FVideoFrame& Frame)
 {
     // The sender encodes a 64-bit wall-clock timestamp into the first 64 pixels
-    // of the second-to-last row: each pixel is black (0) or white (255) in RGB,
-    // which after decode arrives as BGRA.  We threshold on the blue channel
-    // (index 0 in BGRA) at 128 to recover each bit.
+    // of the second-to-last row and the frame id into the last row: each pixel
+    // is black or white, which after decode arrives as BGRA. Threshold the blue
+    // channel (index 0) at 128. The two rows are then excluded by reducing
+    // Height; the pixels stay where they are, the texture just never sees them.
 
-    if (Frame.Height < 3) return; // need at least 1 image row + 2 padding rows
+    if (Frame.Height < 3) return;
 
-    int32 RowBytes = Frame.Width * 4; // BGRA
-    int32 TsRowOffset = (Frame.Height - 2) * RowBytes;
-    int32 NeededBytes = TsRowOffset + 64 * 4; // 64 pixels * 4 bytes each
+    const int32 TsRowOffset = (Frame.Height - 2) * Frame.Stride;
+    if (Frame.Size < TsRowOffset + 64 * 4) return;
 
-    if (Frame.Data.Num() < NeededBytes) return;
-
-    const uint8* TsRow = Frame.Data.GetData() + TsRowOffset;
-
+    const uint8* TsRow = Frame.Data + TsRowOffset;
     uint64 SenderNs = 0;
     for (int32 Bit = 0; Bit < 64; ++Bit)
     {
-        // BGRA layout: [B, G, R, A] — use blue channel (offset 0)
-        uint8 Luma = TsRow[Bit * 4 + 0];
-        if (Luma > 128)
-        {
+        if (TsRow[Bit * 4 + 0] > 128)
             SenderNs |= (static_cast<uint64>(1) << Bit);
-        }
     }
-
     Frame.SenderTimestampNs = SenderNs;
 
-    // Decode frame ID from the last padding row (Frame.Height - 1)
-    int32 IdRowOffset  = (Frame.Height - 1) * RowBytes;
-    int32 IdNeeded     = IdRowOffset + 64 * 4;
-    if (Frame.Data.Num() >= IdNeeded)
+    const int32 IdRowOffset = (Frame.Height - 1) * Frame.Stride;
+    if (Frame.Size >= IdRowOffset + 64 * 4)
     {
-        const uint8* IdRow = Frame.Data.GetData() + IdRowOffset;
+        const uint8* IdRow = Frame.Data + IdRowOffset;
         uint64 FrameId = 0;
         for (int32 Bit = 0; Bit < 64; ++Bit)
         {
@@ -123,15 +241,10 @@ void FFramePullRunnable::ExtractTimestampRow(FVideoFrame& Frame)
         LastFrameId.Store(FrameId);
     }
 
-    // Crop: remove the 2 padding rows
     Frame.Height -= 2;
-    Frame.Data.SetNum(Frame.Height * RowBytes);
 
-    // Report latency to stats (captures encode + network + decode)
     if (Stats && SenderNs > 0)
-    {
         Stats->OnFrameLatency(SenderNs);
-    }
 }
 
 int64 FGStreamerVideoReceiver::GetLastSenderTimeNs() const
@@ -146,7 +259,9 @@ uint64 FGStreamerVideoReceiver::GetLastFrameId() const
 
 uint64 FGStreamerVideoReceiver::GetPendingFrameId() const
 {
-    return FramePullRunnable_ ? FramePullRunnable_->GetPendingFrameId() : 0;
+    if (!UploadState_) return 0;
+    FVideoFramePtr Frame = UploadState_->Mailbox.Peek();
+    return (Frame && Frame->Seq != LastReturnedSeq_) ? Frame->FrameId : 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -198,43 +313,63 @@ uint32 FFramePullRunnable::Run()
 
                 if (BufSize == Expected)
                 {
-                    FVideoFrame Frame;
-                    Frame.Width     = W;
-                    Frame.Height    = H;
-                    Frame.Timestamp = FPlatformTime::Seconds();
-                    Frame.Data.SetNumUninitialized(BufSize);
-                    GStreamerCopyBufferData(Buffer, Frame.Data.GetData(), BufSize);
-
-                    // Extract embedded timestamp and crop the extra row
-                    ExtractTimestampRow(Frame);
-                    LastSenderTimeNs.Store(Frame.SenderTimestampNs);
-
-                    // Drain stale — always keep the newest frame only
-                    FVideoFrame Discard;
-                    while (FrameQueue.Dequeue(Discard)) {}
-
-                    uint64 EnqueuedId = Frame.FrameId;
-                    FrameQueue.Enqueue(MoveTemp(Frame));
-                    PendingFrameId.Store(EnqueuedId);
-                    LastFrameReceivedSec.Store(FPlatformTime::Seconds());
-
-                    if (Stats) Stats->OnFrameDecoded();
-
-                    // Welford online variance for inter-frame intervals
-                    double NowSec = FPlatformTime::Seconds();
-                    if (!bFirstFrame)
+                    FVideoFramePtr Frame = MakeShared<FVideoFrame, ESPMode::ThreadSafe>();
+                    Frame->MapHandle = GStreamerMapSample(Sample, &Frame->Data, &Frame->Size);
+                    if (Frame->MapHandle && Frame->Size >= Expected)
                     {
-                        double IntervalMs = (NowSec - LastFrameTimeSec) * 1000.0;
-                        FrameIntervalCount++;
-                        double Delta  = IntervalMs - FrameIntervalMean;
-                        FrameIntervalMean += Delta / static_cast<double>(FrameIntervalCount);
-                        double Delta2 = IntervalMs - FrameIntervalMean;
-                        FrameIntervalM2  += Delta * Delta2;
-                        if (FrameIntervalCount > 1)
-                            FrameIntervalVariance.Store(FrameIntervalM2 / static_cast<double>(FrameIntervalCount - 1));
+                        Frame->Width     = W;
+                        Frame->Height    = H;
+                        Frame->Stride    = W * 4;
+                        Frame->Timestamp = FPlatformTime::Seconds();
+                        Frame->Seq       = NextSeq++;
+
+                        ExtractTimestampRow(*Frame);
+                        LastSenderTimeNs.Store(Frame->SenderTimestampNs);
+
+                        if (Frame->SenderTimestampNs > 0)
+                        {
+                            const int64 NowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                std::chrono::system_clock::now().time_since_epoch()).count();
+                            const double Ms = (NowNs - static_cast<int64>(Frame->SenderTimestampNs)) / 1e6;
+                            if (Ms > -1000.0 && Ms < 1000.0)
+                            {
+                                LatSum += Ms;
+                                LatMin  = FMath::Min(LatMin, Ms);
+                                LatMax  = FMath::Max(LatMax, Ms);
+                                if (++LatN >= kLatencyReportFrames)
+                                {
+                                    UE_LOG(LogTemp, Log,
+                                           TEXT("GStreamer: sender push -> pull mean %.2f ms  min %.2f  max %.2f (port %d, same-machine clock only)"),
+                                           LatSum / LatN, LatMin, LatMax, Port);
+                                    LatN = 0; LatSum = 0.0; LatMin = 1e9; LatMax = 0.0;
+                                }
+                            }
+                        }
+
+                        if (Upload)
+                        {
+                            Upload->Mailbox.Publish(Frame);
+                            Upload->PublishedCount.fetch_add(1);
+                        }
+                        LastFrameReceivedSec.Store(FPlatformTime::Seconds());
+
+                        if (Stats) Stats->OnFrameDecoded();
+
+                        double NowSec = FPlatformTime::Seconds();
+                        if (!bFirstFrame)
+                        {
+                            double IntervalMs = (NowSec - LastFrameTimeSec) * 1000.0;
+                            FrameIntervalCount++;
+                            double Delta  = IntervalMs - FrameIntervalMean;
+                            FrameIntervalMean += Delta / static_cast<double>(FrameIntervalCount);
+                            double Delta2 = IntervalMs - FrameIntervalMean;
+                            FrameIntervalM2  += Delta * Delta2;
+                            if (FrameIntervalCount > 1)
+                                FrameIntervalVariance.Store(FrameIntervalM2 / static_cast<double>(FrameIntervalCount - 1));
+                        }
+                        LastFrameTimeSec = NowSec;
+                        bFirstFrame      = false;
                     }
-                    LastFrameTimeSec = NowSec;
-                    bFirstFrame      = false;
                 }
                 else
                 {
@@ -252,30 +387,41 @@ uint32 FFramePullRunnable::Run()
     return 0;
 }
 
-bool FFramePullRunnable::PopFrame(FVideoFrame& OutFrame)
-{
-    bool bGot = FrameQueue.Dequeue(OutFrame);
-    if (bGot)
-        PendingFrameId.Store(0); // queue now empty
-    return bGot;
-}
-
-// ---------------------------------------------------------------------------
-// FGStreamerVideoReceiver
-// ---------------------------------------------------------------------------
-
 FGStreamerVideoReceiver::FGStreamerVideoReceiver()
 {
-    bUpdateInFlight = MakeShared<TAtomic<bool>, ESPMode::ThreadSafe>(false);
 }
 
 FGStreamerVideoReceiver::~FGStreamerVideoReceiver()
 {
     Stop();
+    UnregisterUploadState();
+    DestroyPipeline();
+}
 
+void FGStreamerVideoReceiver::DestroyPipeline()
+{
     if (Bus)      { GStreamerUnrefBus(Bus);             Bus      = nullptr; }
     if (AppSink)  { GStreamerUnrefElement(AppSink);     AppSink  = nullptr; }
     if (Pipeline) { GStreamerDestroyPipeline(Pipeline); Pipeline = nullptr; }
+}
+
+void FGStreamerVideoReceiver::RegisterUploadState()
+{
+    if (bUploadRegistered_ || !UploadState_) return;
+    FVideoUploadExtension* Ext = GetUploadExtension_GameThread();
+    FVideoUploadStatePtr State = UploadState_;
+    ENQUEUE_RENDER_COMMAND(GStreamerRegisterUpload)(
+        [Ext, State](FRHICommandListImmediate&) { Ext->Add_RenderThread(State); });
+    bUploadRegistered_ = true;
+}
+
+// May run on a worker thread (VideoFeedComponent restarts sources off the game
+// thread), so no render command here: the render thread drops dead states itself.
+void FGStreamerVideoReceiver::UnregisterUploadState()
+{
+    if (!UploadState_) return;
+    UploadState_->bDead.store(true);
+    bUploadRegistered_ = false;
 }
 
 bool FGStreamerVideoReceiver::Initialize(const FReceiverConfig& Config)
@@ -290,12 +436,23 @@ bool FGStreamerVideoReceiver::Initialize(const FReceiverConfig& Config)
     //
     // Once any stream in this process has proven the GPU decoder broken, later streams
     // skip the attempt entirely rather than each rediscovering it.
-    bUsingGpuDecode_ = GStreamerNvdecAvailable() && GetGpuVerdict() != EGpuVerdict::Bad;
-    bool bBuilt = bUsingGpuDecode_ && BuildPipeline(true);
+    UploadState_ = MakeShared<FVideoUploadState, ESPMode::ThreadSafe>();
+
+    bUsingGpuDecode_  = GStreamerNvdecAvailable() && GetGpuVerdict() != EGpuVerdict::Bad;
+    bUsingGpuConvert_ = bUsingGpuDecode_
+        && GCudaConvertVerdict.load() != static_cast<int32>(EGpuVerdict::Bad)
+        && GStreamerElementAvailable("cudaconvert");
+    bool bBuilt = bUsingGpuDecode_ && BuildPipeline(true, bUsingGpuConvert_);
+    if (!bBuilt && bUsingGpuConvert_)
+    {
+        bUsingGpuConvert_ = false;
+        bBuilt = BuildPipeline(true, false);
+    }
     if (!bBuilt)
     {
-        bUsingGpuDecode_ = false;
-        bBuilt = BuildPipeline(false);
+        bUsingGpuDecode_  = false;
+        bUsingGpuConvert_ = false;
+        bBuilt = BuildPipeline(false, false);
     }
     if (!bBuilt)
     {
@@ -320,15 +477,25 @@ bool FGStreamerVideoReceiver::Initialize(const FReceiverConfig& Config)
     return true;
 }
 
-// Builds + resolves the receive pipeline. nvh264dec outputs CUDA memory, so cudadownload
-// brings it back to system memory before the shared videoconvert→BGRA→appsink tail; the
-// CPU path uses avdec_h264.
-bool FGStreamerVideoReceiver::BuildPipeline(bool bUseGpuDecode)
+// Builds + resolves the receive pipeline. nvh264dec outputs CUDA memory: with
+// cudaconvert the NV12 -> BGRA conversion stays on the GPU and only BGRA is
+// downloaded; otherwise cudadownload brings NV12 back and a multithreaded
+// videoconvert does it on the CPU. The CPU decode path uses avdec_h264.
+bool FGStreamerVideoReceiver::BuildPipeline(bool bUseGpuDecode, bool bUseGpuConvert)
 {
-    std::string DecodeStep = bUseGpuDecode ? "nvh264dec ! cudadownload" : "avdec_h264";
-    UE_LOG(LogTemp, Log, TEXT("GStreamer: decoder: %s, jitterbuffer %d ms (port %d)"),
+    std::string DecodeStep;
+    if (bUseGpuDecode && bUseGpuConvert)
+        DecodeStep = "nvh264dec ! cudaconvert ! video/x-raw(memory:CUDAMemory),format=BGRA ! cudadownload";
+    else if (bUseGpuDecode)
+        DecodeStep = "nvh264dec ! cudadownload ! " + VideoConvertStep();
+    else
+        DecodeStep = "avdec_h264 ! " + VideoConvertStep();
+
+    const FString ConvertName = bUseGpuConvert ? FString(TEXT("cudaconvert (GPU)"))
+                                               : FString(VideoConvertStep().c_str());
+    UE_LOG(LogTemp, Log, TEXT("GStreamer: decoder: %s, convert: %s, jitterbuffer %d ms (port %d)"),
            bUseGpuDecode ? TEXT("nvh264dec (GPU)") : TEXT("avdec_h264 (CPU)"),
-           Config_.JitterBufferMs, Config_.Port);
+           *ConvertName, Config_.JitterBufferMs, Config_.Port);
 
     std::string PipelineStr =
         "udpsrc port=" + std::to_string(Config_.Port) +
@@ -339,7 +506,6 @@ bool FGStreamerVideoReceiver::BuildPipeline(bool bUseGpuDecode)
         " ! rtph264depay name=depay"
         " ! h264parse"
         " ! " + DecodeStep +
-        " ! videoconvert"
         " ! video/x-raw,format=BGRA"
         " ! appsink name=sink emit-signals=false sync=false max-buffers=2 drop=true";
 
@@ -383,6 +549,33 @@ bool FGStreamerVideoReceiver::Start()
     // Now the only thing that demotes is an explicit ERROR on the bus, and the question
     // is asked once per process. If the GPU decoder is genuinely broken it will say so
     // here; if it breaks later, the frame-pull thread already drains and logs bus errors.
+    if (bUsingGpuDecode_ && bUsingGpuConvert_
+        && GCudaConvertVerdict.load() == static_cast<int32>(EGpuVerdict::Unknown))
+    {
+        FString FirstError;
+        if (DrainBusForHardError(Bus, kGpuProbeGraceSec, FirstError))
+        {
+            GCudaConvertVerdict.store(static_cast<int32>(EGpuVerdict::Bad));
+            UE_LOG(LogTemp, Warning,
+                   TEXT("GStreamer: cudaconvert reported an error — converting on the CPU for this and ")
+                   TEXT("all later streams. Reason: %s"), *FirstError);
+
+            GStreamerStopPipeline(Pipeline);
+            DestroyPipeline();
+            bUsingGpuConvert_ = false;
+            if (!BuildPipeline(true, false) || !GStreamerStartPipeline(Pipeline))
+            {
+                UE_LOG(LogTemp, Error, TEXT("GStreamer: GPU-decode / CPU-convert pipeline failed to start"));
+                return false;
+            }
+        }
+        else
+        {
+            GCudaConvertVerdict.store(static_cast<int32>(EGpuVerdict::Good));
+            UE_LOG(LogTemp, Log, TEXT("GStreamer: cudaconvert accepted — NV12 to BGRA on the GPU"));
+        }
+    }
+
     if (bUsingGpuDecode_ && GetGpuVerdict() == EGpuVerdict::Unknown)
     {
         FString FirstError;
@@ -394,13 +587,11 @@ bool FGStreamerVideoReceiver::Start()
                    TEXT("for this and all later streams. Reason: %s"), *FirstError);
 
             GStreamerStopPipeline(Pipeline);
-            if (AppSink) { GStreamerUnrefElement(AppSink); AppSink = nullptr; }
-            if (Bus)     { GStreamerUnrefBus(Bus);         Bus     = nullptr; }
-            GStreamerDestroyPipeline(Pipeline);
-            Pipeline = nullptr;
+            DestroyPipeline();
 
-            bUsingGpuDecode_ = false;
-            if (!BuildPipeline(false) || !GStreamerStartPipeline(Pipeline))
+            bUsingGpuDecode_  = false;
+            bUsingGpuConvert_ = false;
+            if (!BuildPipeline(false, false) || !GStreamerStartPipeline(Pipeline))
             {
                 UE_LOG(LogTemp, Error, TEXT("GStreamer: CPU fallback pipeline failed to start"));
                 return false;
@@ -433,7 +624,12 @@ bool FGStreamerVideoReceiver::Start()
 
     if (Stats_) Stats_->Start();
 
-    FramePullRunnable_ = MakeUnique<FFramePullRunnable>(AppSink, Stats_.Get(), Bus);
+    if (UploadState_)
+    {
+        UploadState_->Mailbox.Reset();
+        UploadState_->Port = Config_.Port;
+    }
+    FramePullRunnable_ = MakeUnique<FFramePullRunnable>(AppSink, Stats_.Get(), UploadState_, Config_.Port, Bus);
     FramePullThread_   = TUniquePtr<FRunnableThread>(
         FRunnableThread::Create(
             FramePullRunnable_.Get(),
@@ -467,78 +663,100 @@ void FGStreamerVideoReceiver::Stop()
     if (Pipeline) GStreamerStopPipeline(Pipeline);
 }
 
+// Game thread. Makes sure OutTexture exists at the stream's size and leases it
+// for this frame; the pixels are written later on the render thread by
+// FVideoUploadExtension. Returns true when a frame newer than the last call for
+// this texture is available.
 bool FGStreamerVideoReceiver::UpdateTexture(UTexture2D*& OutTexture)
 {
-    if (!AppSink || !FramePullRunnable_) return false;
+    if (!AppSink || !FramePullRunnable_ || !UploadState_) return false;
 
-    double Now = FPlatformTime::Seconds();
-    double thr = 0.5;
-    if (Now - LastFPSUpdateTime >= thr)
+    RegisterUploadState();
+
+    const double Now = FPlatformTime::Seconds();
+    if (Now - LastFPSUpdateTime >= 0.5)
     {
-        CurrentFPS = FrameCount * 1.0 / thr;
-        FrameCount = 0;
+        const uint64 Count = UploadState_->PublishedCount.load();
+        if (LastFPSUpdateTime > 0.0)
+            CurrentFPS = FMath::RoundToInt(static_cast<double>(Count - LastFPSCount) / (Now - LastFPSUpdateTime));
+        LastFPSCount      = Count;
         LastFPSUpdateTime = Now;
     }
 
-    FVideoFrame Frame;
-    if (!FramePullRunnable_->PopFrame(Frame)) return false;
+    FVideoFramePtr Frame = UploadState_->Mailbox.Peek();
+    if (!Frame) return false;
 
-    FrameCount++;
-    VideoWidth = Frame.Width;
-    VideoHeight = Frame.Height;
+    VideoWidth  = Frame->Width;
+    VideoHeight = Frame->Height;
 
     if (!OutTexture
-        || OutTexture->GetSizeX() != Frame.Width
-        || OutTexture->GetSizeY() != Frame.Height)
+        || OutTexture->GetSizeX() != Frame->Width
+        || OutTexture->GetSizeY() != Frame->Height)
     {
         UE_LOG(LogTemp, Log,
                TEXT("GStreamer: texture resize %dx%d -> %dx%d"),
                OutTexture ? OutTexture->GetSizeX() : 0,
                OutTexture ? OutTexture->GetSizeY() : 0,
-               Frame.Width, Frame.Height);
+               Frame->Width, Frame->Height);
 
         FlushRenderingCommands();
 
         UTexture2D* NewTex = UTexture2D::CreateTransient(
-            Frame.Width, Frame.Height, PF_B8G8R8A8);
+            Frame->Width, Frame->Height, PF_B8G8R8A8);
         if (!NewTex) return false;
         NewTex->SRGB = false;
         NewTex->UpdateResource();
         OutTexture = NewTex;
     }
 
-    if (!OutTexture->GetResource() || !OutTexture->GetResource()->TextureRHI)
-        return false;
+    const int32 Slot = AcquireTargetSlot(OutTexture);
+    if (Slot < 0) return false;
 
-    if (bUpdateInFlight->Load())
+    UploadState_->LeaseFrame[Slot].store(GFrameCounter);
+
+    FTargetSlotGT& S = TargetSlots_[Slot];
+    const bool bNew = (S.LastSeq != Frame->Seq);
+    S.LastSeq        = Frame->Seq;
+    LastReturnedSeq_ = Frame->Seq;
+    return bNew;
+}
+
+// Finds (or assigns) the render-thread upload slot for this texture. A new or
+// re-created texture gets its RHI reference handed to the render thread; slots
+// whose texture stopped being leased are reused, oldest first.
+int32 FGStreamerVideoReceiver::AcquireTargetSlot(UTexture2D* Texture)
+{
+    FTextureResource* Resource = Texture ? Texture->GetResource() : nullptr;
+    if (!Resource) return -1;
+
+    const uint64 Frame = GFrameCounter;
+    int32 Oldest = 0;
+    for (int32 i = 0; i < FVideoUploadState::kMaxTargets; ++i)
     {
-        // Unstick if RHI callback never fired (e.g. render pipeline restart)
-        if (FPlatformTime::Seconds() - UpdateInFlightStartTime > 0.1)
-            bUpdateInFlight->Store(false);
-        else
-            return false;
-    }
-    bUpdateInFlight->Store(true);
-    UpdateInFlightStartTime = FPlatformTime::Seconds();
-
-    FUpdateTextureRegion2D* Region =
-        new FUpdateTextureRegion2D(0, 0, 0, 0, Frame.Width, Frame.Height);
-    TSharedPtr<TArray<uint8>, ESPMode::ThreadSafe> Pixels =
-        MakeShared<TArray<uint8>, ESPMode::ThreadSafe>(MoveTemp(Frame.Data));
-
-    TSharedPtr<TAtomic<bool>, ESPMode::ThreadSafe> InFlightFlag = bUpdateInFlight;
-
-    OutTexture->UpdateTextureRegions(
-        0, 1, Region,
-        static_cast<uint32>(Frame.Width * 4), 4,
-        Pixels->GetData(),
-        [Region, Pixels, InFlightFlag](uint8*, const FUpdateTextureRegion2D*)
+        FTargetSlotGT& S = TargetSlots_[i];
+        if (S.Texture == Texture && S.Resource == Resource)
         {
-            delete Region;
-            InFlightFlag->Store(false);
-        });
+            S.LastUse = Frame;
+            return i;
+        }
+        if (S.LastUse < TargetSlots_[Oldest].LastUse) Oldest = i;
+    }
 
-    return true;
+    FTargetSlotGT& S = TargetSlots_[Oldest];
+    S.Texture  = Texture;
+    S.Resource = Resource;
+    S.LastUse  = Frame;
+    S.LastSeq  = 0;
+
+    FVideoUploadStatePtr State = UploadState_;
+    const int32 Slot = Oldest;
+    ENQUEUE_RENDER_COMMAND(GStreamerBindUploadTarget)(
+        [State, Slot, Resource](FRHICommandListImmediate&)
+        {
+            State->Target[Slot]      = Resource->TextureRHI;
+            State->UploadedSeq[Slot] = 0;
+        });
+    return Slot;
 }
 
 void FGStreamerVideoReceiver::GetDimensions(int32& OutWidth, int32& OutHeight) const

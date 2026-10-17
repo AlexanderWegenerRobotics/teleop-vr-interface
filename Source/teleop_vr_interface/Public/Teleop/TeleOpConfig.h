@@ -241,6 +241,12 @@ public:
     FRobotConfig   Robot;
     FOverlayConfig Overlay;
 
+    // Diagnostic switches in config.json (root level). Both default to on.
+    // command_thread_enabled=false: no command thread, so no arm commands are sent.
+    // gaze_enabled=false: the gaze component never queries the eye tracker.
+    bool bCommandThreadEnabled = true;
+    bool bGazeEnabled          = true;
+
     bool Load(const FString& RootConfigPath);
     static FString DefaultConfigPath();
 

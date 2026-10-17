@@ -20,6 +20,13 @@ bool UTeleOpConfig::Load(const FString& RootConfigPath) {
 
     const FString BaseDir = FPaths::GetPath(RootConfigPath);
 
+    Root->TryGetBoolField(TEXT("command_thread_enabled"), bCommandThreadEnabled);
+    Root->TryGetBoolField(TEXT("gaze_enabled"), bGazeEnabled);
+    if (!bCommandThreadEnabled)
+        UE_LOG(LogTemp, Warning, TEXT("TeleOpConfig: command thread DISABLED (diagnostic) — no arm commands will be sent"));
+    if (!bGazeEnabled)
+        UE_LOG(LogTemp, Warning, TEXT("TeleOpConfig: gaze DISABLED (diagnostic) — eye tracker is not queried"));
+
     FString NetworkPath, NetworkTwinPath, StreamPath, HudPath, RobotPath, GhostPath;
     if (!RequireString(Root, TEXT("network"),      NetworkPath,     TEXT("config.json"))) return false;
     if (!RequireString(Root, TEXT("network_twin"), NetworkTwinPath, TEXT("config.json"))) return false;

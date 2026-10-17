@@ -5,6 +5,10 @@
 #include "IEyeTracker.h"
 #include "IOpenXRExtensionPlugin.h"
 #include "HTCEyeTrackerTypes.h"
+#include "HAL/CriticalSection.h"
+#include "HAL/Runnable.h"
+#include "HAL/RunnableThread.h"
+#include <atomic>
 
 DECLARE_LOG_CATEGORY_EXTERN(LogViveOpenXREyeTracker, Log, All);
 
@@ -87,6 +91,24 @@ private:
 
 	// EyeTracker cached data
 	XrSpaceLocation EyeTrackerSpaceLocation{ XR_TYPE_SPACE_LOCATION };
+
+	// Eye data is polled on a worker thread so the blocking SRanipal calls never
+	// run on the game thread. The game thread only hands over the latest tracking
+	// space and display time; every reader takes EyeDataLock.
+	friend class FViveEyePollRunnable;
+	void StartPolling();
+	void StopPolling();
+	uint32 PollLoop();
+
+	mutable FCriticalSection EyeDataLock;
+	XrSpace PollTrackingSpace = XR_NULL_HANDLE;
+	XrTime  PollDisplayTime   = 0;
+	bool    bPollGazeActive   = false;
+	double  LastHtcCreateAttempt = 0.0;
+
+	std::atomic<bool>       bPollStop{ false };
+	TUniquePtr<FRunnable>   PollRunnable;
+	FRunnableThread*        PollThread = nullptr;
 
 	FHTCEyeTrackerExtesionDispatchTable FHTCEyeTracker_ext{};
 };
