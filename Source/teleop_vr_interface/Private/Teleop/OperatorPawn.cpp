@@ -225,6 +225,12 @@ AOperatorPawn::AOperatorPawn() {
 		RightWorkspaceBoundary->PatchMaterial = LoadedPatchMat;
 		IntentHighlight->DiscMaterial = LoadedPatchMat;
 	}
+	LeftAlignmentPanel  = CreateDefaultSubobject<UAlignmentPanelComponent>(TEXT("LeftAlignmentPanel"));
+	RightAlignmentPanel = CreateDefaultSubobject<UAlignmentPanelComponent>(TEXT("RightAlignmentPanel"));
+	if (UMaterialInterface* LoadedPanelMat = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Materials/M_AlignmentPanel.M_AlignmentPanel"))) {
+		LeftAlignmentPanel->PanelMaterial  = LoadedPanelMat;
+		RightAlignmentPanel->PanelMaterial = LoadedPanelMat;
+	}
 	static ConstructorHelpers::FObjectFinder<UMaterialInterface> HlMat(TEXT("/Game/Materials/MI_IntentHighlight.MI_IntentHighlight"));
 	if (HlMat.Succeeded()) IntentHighlight->DiscMaterial = HlMat.Object;
 	else UE_LOG(LogTemp, Warning, TEXT("OperatorPawn: MI_IntentHighlight not found, highlight uses the boundary patch material"));
@@ -361,15 +367,19 @@ void AOperatorPawn::BeginPlay() {
 	LookAround_.MaxPitchDeg = Config->Overlay.LookAroundMaxPitchDeg;
 	LookAround_.KneeDeg     = Config->Overlay.LookAroundKneeDeg;
 	LookReturnSec_          = Config->Overlay.LookAroundReturnSec;
+	bLookRequireEngaged_    = Config->Overlay.bLookAroundRequireEngaged;
+	if (!bLookRequireEngaged_)
+		UE_LOG(LogTemp, Warning, TEXT("OperatorPawn: look_around.require_engaged is false -- look-around runs in every state (test mode)"));
 	bLookAroundEnabled_ = Config->Overlay.bLookAroundEnabled
-		&& Config->Overlay.ViewpointMode == EOverlayViewpointMode::Static
-		&& !Config->Stream.bStereo;
+		&& Config->Overlay.ViewpointMode == EOverlayViewpointMode::Static;
 	if (Config->Overlay.bLookAroundEnabled && !bLookAroundEnabled_) {
 		UE_LOG(LogTemp, Warning,
-			TEXT("OperatorPawn: look_around requested but disabled -- needs viewpoint.mode \"static\" and \"stereo\": false (static=%d stereo=%d)"),
-			Config->Overlay.ViewpointMode == EOverlayViewpointMode::Static ? 1 : 0, Config->Stream.bStereo ? 1 : 0);
+			TEXT("OperatorPawn: look_around requested but disabled -- needs viewpoint.mode \"static\""));
 	}
-	UE_LOG(LogTemp, Log, TEXT("OperatorPawn: video look-around %s"), bLookAroundEnabled_ ? TEXT("ENABLED") : TEXT("off"));
+	if (bLookAroundEnabled_ && Config->Stream.bStereo)
+		VideoFeed->SetAngularMapping(true, Config->Overlay.StereoCaptureFOV);
+	UE_LOG(LogTemp, Log, TEXT("OperatorPawn: video look-around %s (%s)"),
+		bLookAroundEnabled_ ? TEXT("ENABLED") : TEXT("off"), Config->Stream.bStereo ? TEXT("stereo") : TEXT("mono"));
 
 	RecordingSocket_ = MakeUnique<UdpSocket>();
 	UdpSocket::Config RecordingCfg;
@@ -438,6 +448,17 @@ void AOperatorPawn::BeginPlay() {
 		TwinMainStreamLabel_ = Config->Stream.TwinStream.Name;
 	}
 	GhostOverlay->SetStereoMode(Config->Stream.bStereo);
+
+	if (Config->Stream.Audio.bEnabled) {
+		FAudioReceiverConfig AudioCfg;
+		AudioCfg.Port         = Config->Stream.Audio.Port;
+		AudioCfg.OutputDevice = Config->Stream.Audio.OutputDevice;
+		AudioCfg.bSyncToVideo = Config->Stream.Audio.bSyncToVideo;
+		AudioCfg.ExtraDelayMs = Config->Stream.Audio.ExtraDelayMs;
+		AudioRx_ = MakeUnique<FGStreamerAudioReceiver>();
+		if (!AudioRx_->Start(AudioCfg)) AudioRx_.Reset();
+		bAudioLog_ = AudioRx_.IsValid() && Config->Stream.Audio.bLog;
+	}
 	bOverlayEnabled_ = Config->Overlay.bEnabled;
 	GhostOverlay->SetGhostEnabled(bOverlayEnabled_);
 
@@ -459,6 +480,18 @@ void AOperatorPawn::BeginPlay() {
 			IntentHighlight->HoldS    = Config->Overlay.IntentHighlightHoldS;
 			IntentHighlight->Tint     = Config->Overlay.IntentHighlightTint;
 			IntentHighlight->Initialize(GhostOverlay);
+		}
+		if (Config->Overlay.bAlignmentPanel) {
+			for (UAlignmentPanelComponent* Panel : { LeftAlignmentPanel.Get(), RightAlignmentPanel.Get() }) {
+				Panel->SizeCm       = Config->Overlay.AlignmentPanelSizeCm;
+				Panel->SideOffsetCm = Config->Overlay.AlignmentPanelSideOffsetCm;
+				Panel->UpOffsetCm   = Config->Overlay.AlignmentPanelUpOffsetCm;
+				Panel->FollowTauS   = Config->Overlay.AlignmentPanelFollowTauS;
+				Panel->bAutoScale   = Config->Overlay.bAlignmentPanelAutoScale;
+				Panel->bViewAligned = Config->Overlay.bAlignmentPanelViewAligned;
+			}
+			LeftAlignmentPanel->Initialize(GhostOverlay, 0);
+			RightAlignmentPanel->Initialize(GhostOverlay, 1);
 		}
 	}
 
@@ -665,7 +698,10 @@ void AOperatorPawn::BeginPlay() {
 	UpdateButtonStates();
 
 	float AspectRatio = 1280.f / 720.f;
-	FGazeProjection::ComputeQuadSize(VideoFeed->PlaneDistance, VideoFeed->FOVCoverage, AspectRatio, VideoQuadWidth_, VideoQuadHeight_, VideoFeed->HmdHFovDeg);
+	if (VideoFeed->IsAngularMapping())
+		FGazeProjection::ComputeQuadSize(VideoFeed->PlaneDistance, 1.f, AspectRatio, VideoQuadWidth_, VideoQuadHeight_, Config->Overlay.StereoCaptureFOV);
+	else
+		FGazeProjection::ComputeQuadSize(VideoFeed->PlaneDistance, VideoFeed->FOVCoverage, AspectRatio, VideoQuadWidth_, VideoQuadHeight_, VideoFeed->HmdHFovDeg);
 	if (Config->Stream.bVideoLogEnabled && (Config->Stream.bVideoLogRaw || Config->Stream.bVideoLogAttention)) {
 		FActorSpawnParameters Params;
 		Params.Owner = this;
@@ -710,10 +746,13 @@ void AOperatorPawn::BeginPlay() {
 	UE_LOG(LogTemp, Log, TEXT("OperatorPawn: logging to %s"), *SessionDir);
 	NudgeReceiver->Open(Config->Network.NudgePort, LeftTracked, RightTracked, SoundFeedback, Logger_.Get(),
 	                    Config->Overlay.bIntentHighlight ? IntentHighlight.Get() : nullptr);
+	if (bOverlayEnabled_ && Config->Overlay.bAlignmentPanel)
+		NudgeReceiver->SetAlignmentPanels(LeftAlignmentPanel, RightAlignmentPanel);
 
 	if (VideoLogger_) {
 		VideoLogger_->StartLogging(SessionDir);
 	}
+	if (AudioRx_ && bAudioLog_) AudioRx_->StartLog(SessionDir);
 	if (Config->Network.EpisodeEventPort > 0) {
 		EpisodeEvents_ = MakeUnique<FEpisodeEventReceiver>();
 		if (!EpisodeEvents_->Open(Config->Network.EpisodeEventPort)) EpisodeEvents_.Reset();
@@ -735,6 +774,7 @@ void AOperatorPawn::PollEpisodeEvents() {
 			VideoLogger_->StopLogging(TEXT("episode_start"));
 			VideoLogger_->StartLogging(Dir);
 		}
+		if (AudioRx_ && bAudioLog_) AudioRx_->StartLog(Dir);
 		UE_LOG(LogTemp, Log, TEXT("OperatorPawn: episode %d of session %s -> %s"), Ev.EpisodeIndex, *Ev.SessionId, *Dir);
 	}
 }
@@ -744,6 +784,7 @@ void AOperatorPawn::EndPlay(const EEndPlayReason::Type EndPlayReason) {
 	FlushRenderingCommands();
 	for (auto& Src : PiPSources_) if (Src) Src->Stop();
 	if (VideoLogger_) VideoLogger_->StopLogging(TEXT("EndPlay"));
+	if (AudioRx_) { AudioRx_->Shutdown(); AudioRx_.Reset(); }
 	if (CommandThread_) CommandThread_->StopThread();
 	if (EpisodeEvents_) { EpisodeEvents_->Close(); EpisodeEvents_.Reset(); }
 	if (Logger_) Logger_->Close();
@@ -766,6 +807,13 @@ void AOperatorPawn::Tick(float DeltaTime) {
 	Super::Tick(DeltaTime);
 
 	PollEpisodeEvents();
+	if (AudioRx_ && VideoFeed->GetActiveSourceName() == kAvatarMainSourceName) {
+		const uint64 FrameId = VideoFeed->GetLastFrameId();
+		if (FrameId != LastAudioSyncFrameId_) {
+			LastAudioSyncFrameId_ = FrameId;
+			AudioRx_->ReportVideoSenderTimeNs(VideoFeed->GetSenderTimeNs());
+		}
+	}
 	UpdateLookAround(DeltaTime);
 	UpdateStateMachine();
 
@@ -2571,6 +2619,7 @@ void AOperatorPawn::SendGazeSample(){
 	UTexture2D* Tex = VideoFeed->GetVideoTexture();
 	float W = Tex ? static_cast<float>(Tex->GetSizeX()) : 1280.f;
 	float H = Tex ? static_cast<float>(Tex->GetSizeY()) : 720.f;
+	if (VideoFeed->IsStereoMode() && Tex) W *= 0.5f;
 
 	const FDateTime NowUtc = FDateTime::UtcNow();
 	uint64_t NowNs = static_cast<uint64_t>(NowUtc.ToUnixTimestamp()) * 1000000000ULL + static_cast<uint64_t>(NowUtc.GetMillisecond()) * 1000000ULL;
@@ -2778,7 +2827,7 @@ void AOperatorPawn::UpdateLookAround(float DeltaTime) {
 	const FQuat HeadQ = Head.GetRotation();
 	const float D = VideoFeed->PlaneDistance;
 
-	const bool bWantActive = bLookAroundEnabled_ && OperatorState_ == ESysState::Engaged;
+	const bool bWantActive = bLookAroundEnabled_ && (!bLookRequireEngaged_ || OperatorState_ == ESysState::Engaged);
 	if (bWantActive && !bLookActive_) {
 		LookAround_.Anchor(Head);
 		bLookActive_     = true;
@@ -2815,6 +2864,9 @@ void AOperatorPawn::UpdateLookAround(float DeltaTime) {
 	}
 
 	if (!bLookAroundEnabled_) return;
+
+	if (VideoFeed->IsAngularMapping())
+		VideoFeed->SetLookBasis(bWorldLocked, VideoQuadWorld_.GetRotation());
 
 	const bool bModeChanged = bWorldLocked != bVideoLayersWorldLocked_;
 	bVideoLayersWorldLocked_ = bWorldLocked;

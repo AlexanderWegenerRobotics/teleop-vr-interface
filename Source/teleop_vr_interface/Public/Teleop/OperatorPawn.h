@@ -25,9 +25,11 @@
 #include "Video/GhostOverlayComponent.h"
 #include "Video/GraspIndicatorComponent.h"
 #include "Video/WorkspaceBoundaryComponent.h"
+#include "Video/AlignmentPanelComponent.h"
 #include "Networking/UdpSocket.h"
 #include "Teleop/CommandThread.h"
 #include "Teleop/EpisodeEventReceiver.h"
+#include "GStreamerAudioReceiver.h"
 // UPROPERTY(TObjectPtr<UTexture2D>) needs the complete type for the generated
 // reflection code; the existing TArray<UTexture2D*> below is a plain member and
 // got away with whatever the include chain happened to provide.
@@ -91,6 +93,8 @@ protected:
 	UPROPERTY() TObjectPtr<UGraspIndicatorComponent> RightGraspIndicator;
 	UPROPERTY() TObjectPtr<UWorkspaceBoundaryComponent> LeftWorkspaceBoundary;
 	UPROPERTY() TObjectPtr<UWorkspaceBoundaryComponent> RightWorkspaceBoundary;
+	UPROPERTY() TObjectPtr<UAlignmentPanelComponent> LeftAlignmentPanel;
+	UPROPERTY() TObjectPtr<UAlignmentPanelComponent> RightAlignmentPanel;
 
 	UPROPERTY(EditAnywhere, Category = "Logging")
 	FString LogBaseDirectory = TEXT("Saved/Logs/TeleOp/");
@@ -174,6 +178,7 @@ private:
 	bool bLookAroundEnabled_      = false;
 	bool bVideoLayersWorldLocked_ = false;
 	bool bLookActive_             = false;
+	bool bLookRequireEngaged_     = true;
 	float LookReturnSec_          = 0.4f;
 	float LookReturnAlpha_        = 1.f;
 	FQuat LookReturnStartRel_     = FQuat::Identity;
@@ -274,6 +279,9 @@ private:
 
 	// Logging
 	TUniquePtr<FTeleOpLogger> Logger_;
+	TUniquePtr<FGStreamerAudioReceiver> AudioRx_;
+	bool   bAudioLog_             = false;
+	uint64 LastAudioSyncFrameId_  = 0;
 	float LastHeadPan_   = 0.f;
 	float LastHeadTilt_  = 0.f;
 	// Head authority as SendHeadCommand last acted on it, for edge detection.

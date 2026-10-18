@@ -264,6 +264,11 @@ public:
     // must go through this rig, not a bare SetWorldLocation).
     USceneComponent* GetCaptureAnchor() const { return SceneCapture; }
 
+    // Camera->world rotation of the overlay viewpoint, protocol frame (+X forward, +Y left, +Z up).
+    FQuat GetOverlayCameraQuat() const;
+    // World rotation of the capture view, UE axes (+X forward, +Y right, +Z up).
+    FQuat GetOverlayViewQuatUE() const;
+
     // Public wrapper around the same per-tick pose transform the ghost meshes use (protocol
     // position/quaternion -> camera-relative capture space). Lets an externally registered
     // mesh position itself identically to how the ghost's own meshes are placed.

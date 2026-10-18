@@ -41,19 +41,6 @@ void UGhostOverlayComponent::BeginPlay(){
         }
     }
 
-    // A single fixed camera has exactly one viewpoint, so there is no disparity
-    // in the video to match. Rendering the ghost through the ±IPD eye captures
-    // anyway would place it at a different apparent depth than the image behind
-    // it -- conflicting depth cues, and unpleasant to look at for long. Force
-    // mono and say so loudly, since the fix is a config change elsewhere.
-    if (ViewpointMode == EOverlayViewpointMode::Static && bStereo_)
-    {
-        UE_LOG(LogTemp, Warning,
-            TEXT("GhostOverlay: static viewpoint with stereo enabled — forcing ghost to mono. ")
-            TEXT("Set \"stereo\": false in the stream config so the video path matches."));
-        bStereo_ = false;
-    }
-
     LogResolvedViewpoint();
 
     LoadAssets();
@@ -968,4 +955,16 @@ void UGhostOverlayComponent::UpdateLeftArmPose()
         GhostLeftMeshComp->SetRelativeLocationAndRotation(RelPos, RelRot);
     }
     UpdateFingerPose(LeftArmLeftFingerMeshComp, LeftArmRightFingerMeshComp, LeftTrackedRef);
+}
+
+FQuat UGhostOverlayComponent::GetOverlayCameraQuat() const {
+    FVector CamPos;
+    FQuat CamRot;
+    ResolveCameraPose(CamPos, CamRot);
+    return CamRot;
+}
+
+FQuat UGhostOverlayComponent::GetOverlayViewQuatUE() const {
+    if (bStereo_ && SceneCaptureLeft) return SceneCaptureLeft->GetComponentQuat();
+    return SceneCapture ? SceneCapture->GetComponentQuat() : FQuat::Identity;
 }

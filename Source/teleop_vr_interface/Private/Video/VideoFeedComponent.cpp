@@ -166,6 +166,15 @@ void UVideoFeedComponent::TickComponent(float DeltaTime, ELevelTick TickType, FA
         // Both material params point to the same texture; the HLSL crops per eye.
         PostProcessMID_->SetTextureParameterValue(TEXT("VideoLeft"),  VideoTexture);
         PostProcessMID_->SetTextureParameterValue(TEXT("VideoRight"), VideoTexture);
+
+        int32 W = 0, H = 0;
+        if (ActiveSource_->GetDimensions(W, H) && W > 0 && H > 0)
+        {
+            const float EyeAspect = (W * 0.5f) / static_cast<float>(H);
+            PostProcessMID_->SetScalarParameterValue(TEXT("VideoAspect"), EyeAspect);
+            if (bAngular_)
+                UpdateAngularQuadSize(EyeAspect);
+        }
     }
 
     // Auto-reconnect for the active source is handled by the generic
@@ -306,6 +315,7 @@ void UVideoFeedComponent::CreateStereoLayer()
             PostProcessMID_->SetTextureParameterValue(TEXT("VideoRight"), VideoTexture);
             CameraRef->PostProcessSettings.WeightedBlendables.Array.Add(
                 FWeightedBlendable(1.0f, PostProcessMID_));
+            ApplyAngularParams();
         }
         else
         {
@@ -338,6 +348,44 @@ void UVideoFeedComponent::UpdateLayerSize(int32 Width, int32 Height)
 
     QuadSize_ = FVector2D(HalfWidth * 2.0f, HalfHeight * 2.0f);
     StereoLayer->SetQuadSize(QuadSize_);
+}
+
+void UVideoFeedComponent::SetAngularMapping(bool bEnable, float HFovDeg)
+{
+    bAngular_       = bEnable;
+    AngularHFovDeg_ = FMath::Clamp(HFovDeg, 1.0f, 170.0f);
+    ApplyAngularParams();
+    if (bAngular_)
+        UpdateAngularQuadSize(16.0f / 9.0f);
+    UE_LOG(LogTemp, Log, TEXT("VideoFeed: angular stereo mapping %s (hfov=%.1f deg)"),
+        bAngular_ ? TEXT("ON") : TEXT("off"), AngularHFovDeg_);
+}
+
+void UVideoFeedComponent::ApplyAngularParams()
+{
+    if (!PostProcessMID_) return;
+    PostProcessMID_->SetScalarParameterValue(TEXT("AngularMode"), bAngular_ ? 1.0f : 0.0f);
+    PostProcessMID_->SetScalarParameterValue(TEXT("VideoHFovDeg"), AngularHFovDeg_);
+    PostProcessMID_->SetScalarParameterValue(TEXT("LookLocked"), 0.0f);
+}
+
+void UVideoFeedComponent::UpdateAngularQuadSize(float EyeAspect)
+{
+    if (EyeAspect <= 0.0f) return;
+    const float HalfWidth = PlaneDistance * FMath::Tan(FMath::DegreesToRadians(AngularHFovDeg_ * 0.5f));
+    QuadSize_ = FVector2D(HalfWidth * 2.0f, HalfWidth * 2.0f / EyeAspect);
+}
+
+void UVideoFeedComponent::SetLookBasis(bool bWorldLocked, const FQuat& Rot)
+{
+    if (!PostProcessMID_ || !bAngular_) return;
+    const FVector F = Rot.GetForwardVector();
+    const FVector R = Rot.GetRightVector();
+    const FVector U = Rot.GetUpVector();
+    PostProcessMID_->SetScalarParameterValue(TEXT("LookLocked"), bWorldLocked ? 1.0f : 0.0f);
+    PostProcessMID_->SetVectorParameterValue(TEXT("LookF"), FLinearColor(static_cast<float>(F.X), static_cast<float>(F.Y), static_cast<float>(F.Z), 0.0f));
+    PostProcessMID_->SetVectorParameterValue(TEXT("LookR"), FLinearColor(static_cast<float>(R.X), static_cast<float>(R.Y), static_cast<float>(R.Z), 0.0f));
+    PostProcessMID_->SetVectorParameterValue(TEXT("LookU"), FLinearColor(static_cast<float>(U.X), static_cast<float>(U.Y), static_cast<float>(U.Z), 0.0f));
 }
 
 void UVideoFeedComponent::SetGhostTextures(UTextureRenderTarget2D* Left, UTextureRenderTarget2D* Right)

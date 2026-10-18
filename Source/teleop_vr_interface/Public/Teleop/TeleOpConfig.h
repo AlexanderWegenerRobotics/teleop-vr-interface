@@ -45,6 +45,16 @@ struct FPiPStreamConfig
     bool    bLocalPreview    = false;
 };
 
+struct FAudioStreamConfig
+{
+    bool    bEnabled     = false;
+    int32   Port         = 5020;
+    FString OutputDevice;
+    bool    bSyncToVideo = true;
+    int32   ExtraDelayMs = 0;
+    bool    bLog         = true;
+};
+
 USTRUCT()
 struct FStreamConfig
 {
@@ -83,6 +93,8 @@ struct FStreamConfig
     // twin_stream's JSON; empty means "same host as avatar" (the local
     // dual-run test case, where they happen to coincide).
     FString TwinRemoteIP;
+
+    FAudioStreamConfig Audio;
 };
 
 USTRUCT()
@@ -169,6 +181,15 @@ struct FOverlayConfig
     float IntentHighlightGoalLiftM = 0.035f;
     float IntentHighlightHoldS    = 0.5f;
     FLinearColor IntentHighlightTint = FLinearColor(1.f, 0.75f, 0.2f, 1.f);
+    // Alignment panel per arm, fed by "alignment" messages from the nudge engine.
+    // Optional "alignment_panel": {"enabled", "size_cm", "side_offset_cm", "up_offset_cm", "follow_tau_s", "auto_scale", "frame": "world"|"view"}.
+    bool  bAlignmentPanel            = false;
+    float AlignmentPanelSizeCm       = 8.f;
+    float AlignmentPanelSideOffsetCm = 12.f;
+    float AlignmentPanelUpOffsetCm   = 4.f;
+    float AlignmentPanelFollowTauS   = 0.12f;
+    bool  bAlignmentPanelAutoScale   = true;
+    bool  bAlignmentPanelViewAligned = false;
     float NearThresholdM = 0.03f;
     float FarThresholdM  = 0.15f;
     float MinOpacity     = 0.15f;
@@ -221,6 +242,7 @@ struct FOverlayConfig
     float BoundaryPlaneHeightM = 0.96f;
 
     bool  bLookAroundEnabled    = false;
+    bool  bLookAroundRequireEngaged = true;
     float LookAroundMaxYawDeg   = 25.0f;
     float LookAroundMaxPitchDeg = 15.0f;
     float LookAroundKneeDeg     = 5.0f;

@@ -1,6 +1,7 @@
 {
     "enabled":               false,
     "intent_highlight": { "enabled": false, "min_prob": 0.5, "radius_cm": 8.0, "goal_radius_cm": 4.0, "goal_lift_m": 0.035, "hold_s": 0.5, "tint": [1.0, 0.75, 0.2] },
+    "alignment_panel": { "enabled": true, "size_cm": 8.0, "side_offset_cm": 12.0, "up_offset_cm": 4.0, "follow_tau_s": 0.12, "auto_scale": true, "frame": "world" },
 
     "near_threshold_m":      0.03,
     "far_threshold_m":       0.15,
@@ -14,7 +15,7 @@
 
     "_viewpoint_comment": "Which camera the ghost overlay is reprojected through. 'head_tracked' = camera rides the avatar's pan/tilt head, pose recomputed each tick from HeadStateMsg (needs a head device on the avatar). 'static' = fixed camera, pose constant; pos/look_at use the same convention as a MuJoCo 'type: fixed' camera so they copy straight out of the sim scene config. Both sub-blocks are always parsed, so switching scenarios is a one-word edit to 'mode'. Swap this whole file via config.json for a different scenario (see overlay_desk.json).",
     "viewpoint": {
-        "mode": "head_tracked",
+        "mode": "static",
         "head_tracked": {
             "head_base_position": [0.0, 0.0, 1.844],
             "cam_offset_in_head": [0.05, 0.0, 0.035]
@@ -40,9 +41,10 @@
     "hmd_hfov_deg":          110.0,
     "boundary_plane_width_m":  1.8,
     "boundary_plane_height_m": 0.96,
-    "_look_around_comment": "Static cameras only (viewpoint.mode static, stream stereo false). Anchored at engage: within +-max_yaw_deg / +-max_pitch_deg of that direction the video and ghost quads stay fixed in the world, beyond it they follow the head; knee_deg softens that transition.",
+    "_look_around_comment": "Static cameras only (viewpoint.mode static). In stereo, stereo_capture_fov is also the angular width of the video, so it must be the camera's real per-eye HFOV. Anchored at engage: within +-max_yaw_deg / +-max_pitch_deg of that direction the video and ghost quads stay fixed in the world, beyond it they follow the head; knee_deg softens that transition.",
     "look_around": {
-        "enabled": false,
+        "enabled": true,
+        "require_engaged": false,
         "max_yaw_deg": 25.0,
         "max_pitch_deg": 15.0,
         "knee_deg": 5.0

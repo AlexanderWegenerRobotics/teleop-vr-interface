@@ -171,6 +171,18 @@ bool UTeleOpConfig::LoadStream(const FString& Path) {
             UE_LOG(LogTemp, Log, TEXT("TeleOpConfig: twin stream disabled via \"enabled\": false — avatar-only main view"));
     }
 
+    const TSharedPtr<FJsonObject>* AudioObj = nullptr;
+    if (Obj->TryGetObjectField(TEXT("audio"), AudioObj) && AudioObj) {
+        (*AudioObj)->TryGetBoolField(TEXT("enabled"),         Stream.Audio.bEnabled);
+        (*AudioObj)->TryGetNumberField(TEXT("port"),          Stream.Audio.Port);
+        (*AudioObj)->TryGetStringField(TEXT("output_device"), Stream.Audio.OutputDevice);
+        (*AudioObj)->TryGetBoolField(TEXT("sync_to_video"),   Stream.Audio.bSyncToVideo);
+        (*AudioObj)->TryGetNumberField(TEXT("extra_delay_ms"), Stream.Audio.ExtraDelayMs);
+        (*AudioObj)->TryGetBoolField(TEXT("log"),             Stream.Audio.bLog);
+    }
+    UE_LOG(LogTemp, Log, TEXT("TeleOpConfig: audio %s (port %d)"),
+        Stream.Audio.bEnabled ? TEXT("ENABLED") : TEXT("disabled"), Stream.Audio.Port);
+
     return true;
 }
 
@@ -272,6 +284,17 @@ bool UTeleOpConfig::LoadOverlay(const FString& Path) {
         if ((*HlObj)->TryGetArrayField(TEXT("tint"), TintArr) && TintArr && TintArr->Num() >= 3)
             Overlay.IntentHighlightTint = FLinearColor((*TintArr)[0]->AsNumber(), (*TintArr)[1]->AsNumber(), (*TintArr)[2]->AsNumber(), 1.f);
     }
+    const TSharedPtr<FJsonObject>* ApObj = nullptr;
+    if (Obj->TryGetObjectField(TEXT("alignment_panel"), ApObj) && ApObj) {
+        (*ApObj)->TryGetBoolField(TEXT("enabled"),          Overlay.bAlignmentPanel);
+        (*ApObj)->TryGetNumberField(TEXT("size_cm"),        Overlay.AlignmentPanelSizeCm);
+        (*ApObj)->TryGetNumberField(TEXT("side_offset_cm"), Overlay.AlignmentPanelSideOffsetCm);
+        (*ApObj)->TryGetNumberField(TEXT("up_offset_cm"),   Overlay.AlignmentPanelUpOffsetCm);
+        (*ApObj)->TryGetNumberField(TEXT("follow_tau_s"),   Overlay.AlignmentPanelFollowTauS);
+        (*ApObj)->TryGetBoolField(TEXT("auto_scale"),       Overlay.bAlignmentPanelAutoScale);
+        FString Frame;
+        if ((*ApObj)->TryGetStringField(TEXT("frame"), Frame)) Overlay.bAlignmentPanelViewAligned = Frame.Equals(TEXT("view"), ESearchCase::IgnoreCase);
+    }
     UE_LOG(LogTemp, Log, TEXT("TeleOpConfig: overlay layer %s"),
         Overlay.bEnabled ? TEXT("ENABLED") : TEXT("DISABLED (\"enabled\": false)"));
 
@@ -351,6 +374,7 @@ bool UTeleOpConfig::LoadOverlay(const FString& Path) {
     if (Obj->TryGetObjectField(TEXT("look_around"), LookObj) && LookObj)
     {
         (*LookObj)->TryGetBoolField(TEXT("enabled"),         Overlay.bLookAroundEnabled);
+        (*LookObj)->TryGetBoolField(TEXT("require_engaged"), Overlay.bLookAroundRequireEngaged);
         (*LookObj)->TryGetNumberField(TEXT("max_yaw_deg"),   Overlay.LookAroundMaxYawDeg);
         (*LookObj)->TryGetNumberField(TEXT("max_pitch_deg"), Overlay.LookAroundMaxPitchDeg);
         (*LookObj)->TryGetNumberField(TEXT("knee_deg"),      Overlay.LookAroundKneeDeg);

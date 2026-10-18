@@ -3,6 +3,7 @@
 #include "UI/SoundFeedback.h"
 #include "Teleop/TeleOpLogger.h"
 #include "Video/IntentHighlightComponent.h"
+#include "Video/AlignmentPanelComponent.h"
 #include "Shared/protocol.hpp"
 #include "Misc/DateTime.h"
 
@@ -62,6 +63,48 @@ void UNudgeReceiver::HandleDatagram(const uint8* Data, int32 Size) {
                 }
             }
             Highlight_->SetTargets(Targets);
+            return;
+        }
+        if (Type == TEXT("alignment")) {
+            const FString Arm = str("arm");
+            const int32 Idx = Arm == TEXT("left") ? 0 : (Arm == TEXT("right") ? 1 : -1);
+            if (Idx < 0 || !Panels_[Idx]) return;
+            auto flag = [&](const char* k) {
+                auto it = m.find(k);
+                if (it == m.end()) return false;
+                if (it->second.type == msgpack::type::BOOLEAN) return it->second.as<bool>();
+                return it->second.as<double>() != 0.0;
+            };
+            auto vec = [&](const char* k, float* Out, int N) {
+                auto it = m.find(k);
+                if (it == m.end()) return false;
+                std::vector<double> v;
+                it->second.convert(v);
+                for (int i = 0; i < N && i < (int)v.size(); ++i) Out[i] = static_cast<float>(v[i]);
+                return (int)v.size() >= N;
+            };
+            FAlignmentState S;
+            S.bActive     = flag("active");
+            S.Phase       = str("phase");
+            vec("pos_err", S.PosErr, 3);
+            S.YawErr      = static_cast<float>(num("yaw_err", 0.0));
+            S.TargetYaw   = static_cast<float>(num("target_yaw", 0.0));
+            vec("lean_err", S.Lean, 2);
+            S.TolXY       = static_cast<float>(num("tol_xy", 0.005));
+            S.TolYaw      = static_cast<float>(num("tol_yaw", 0.05));
+            S.TolTilt     = static_cast<float>(num("tol_tilt", 0.026));
+            S.ZRange      = static_cast<float>(num("z_range", 0.10));
+            S.Depth       = static_cast<float>(num("depth", 0.0));
+            S.bXYOk       = flag("xy_ok");
+            S.bYawOk      = flag("yaw_ok");
+            S.bTiltOk     = flag("tilt_ok");
+            S.bTiltActive = flag("tilt_active");
+            S.bDone       = flag("done");
+            S.bTooFast    = flag("too_fast");
+            S.bWedged     = flag("wedged");
+            S.bHasAnchor  = vec("anchor", S.Anchor, 3);
+            S.bHasCmd     = vec("cmd_err", S.CmdErr, 3);
+            Panels_[Idx]->SetState(S);
             return;
         }
         if (Type != TEXT("cue_command")) return;

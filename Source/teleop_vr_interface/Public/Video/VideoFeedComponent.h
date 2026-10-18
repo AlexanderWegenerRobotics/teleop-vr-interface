@@ -57,6 +57,10 @@ public:
     // happens inside the single working PP pass rather than a separate (dropped) blendable.
     void SetGhostTextures(UTextureRenderTarget2D* Left, UTextureRenderTarget2D* Right);
 
+    void SetAngularMapping(bool bEnable, float HFovDeg);
+    void SetLookBasis(bool bWorldLocked, const FQuat& Rot);
+    bool IsAngularMapping() const { return bAngular_; }
+
     UStereoLayerComponent* GetMonoLayer() const { return StereoLayer; }
     FVector2D GetQuadSize() const { return QuadSize_; }
 
@@ -75,6 +79,11 @@ public:
 private:
     void CreateStereoLayer();
     void UpdateLayerSize(int32 Width, int32 Height);
+    void ApplyAngularParams();
+    void UpdateAngularQuadSize(float EyeAspect);
+
+    bool  bAngular_       = false;
+    float AngularHFovDeg_ = 90.0f;
 
     UPROPERTY(EditAnywhere, Category = "VideoFeed")
     TObjectPtr<UMaterialInterface> StereoVideoMaterial;

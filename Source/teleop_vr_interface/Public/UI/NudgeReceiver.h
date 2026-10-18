@@ -10,6 +10,7 @@ class UTrackedControllerComponent;
 class USoundFeedback;
 class FTeleOpLogger;
 class UIntentHighlightComponent;
+class UAlignmentPanelComponent;
 
 // One cue command from the nudge engine (teleop-nudge CueCommand.to_wire()).
 struct FCueCommand {
@@ -41,6 +42,8 @@ public:
 
     int32 Received() const { return Received_; }
 
+    void SetAlignmentPanels(UAlignmentPanelComponent* Left, UAlignmentPanelComponent* Right) { Panels_[0] = Left; Panels_[1] = Right; }
+
 private:
     void HandleDatagram(const uint8* Data, int32 Size);
     void Render(const FCueCommand& Cue);
@@ -52,5 +55,6 @@ private:
     USoundFeedback* Sound_   = nullptr;
     FTeleOpLogger*  Logger_  = nullptr;
     UIntentHighlightComponent* Highlight_ = nullptr;
+    UAlignmentPanelComponent* Panels_[2] = { nullptr, nullptr };
     int32 Received_ = 0;
 };

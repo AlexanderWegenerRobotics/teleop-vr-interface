@@ -1,0 +1,46 @@
+{
+    "enabled":            true,
+    "_scenario_comment": "Desk scenario: single Franka, no pan/tilt head device, video comes from the fixed 'desk_cam' in the simulator's sim_config_franka_desk.yaml. Select this file by setting \"overlay\": \"overlay_desk.json\" in config.json (same indirection already used for robot/stream/network). Everything below is identical to overlay.json except the viewpoint block and capture FOV.",
+    "intent_highlight": { "enabled": true, "min_prob": 0.5, "radius_cm": 8.0, "goal_radius_cm": 4.0, "goal_lift_m": 0.035, "hold_s": 0.5, "tint": [1.0, 0.75, 0.2] },
+    "near_threshold_m": 0.03,
+    "far_threshold_m": 0.15,
+    "min_opacity": 0.15,
+    "max_opacity": 0.85,
+    "latency_ok_ms": 100.0,
+    "latency_warn_ms": 150.0,
+    "latency_bad_ms": 300.0,
+    "latency_bad_exit_ms": 200.0,
+    "_viewpoint_comment": "STATIC viewpoint written by teleop-perception 'calibrate --role operator' for camera 'desk_cam' (20261006_130016). Recalibrate instead of editing by hand.",
+    "viewpoint": {
+        "mode": "static",
+        "static": {
+            "pos": [0.09989, -0.40005, 1.35014],
+            "look_at": [0.71977, 0.05068, 0.70781],
+            "up": [0.51951, 0.37775, 0.76643]
+        },
+        "head_tracked": {
+            "head_base_position": [0.0, 0.0, 1.844],
+            "cam_offset_in_head": [0.05, 0.0, 0.035]
+        }
+    },
+    "_capture_fov_comment": "HORIZONTAL FOV from the calibrated focal length. The overlay assumes square pixels, a centred principal point and no lens distortion, so the video must be undistorted to the same pinhole.",
+    "capture_fov": 73.5823,
+    "stereo_capture_fov": 73.5823,
+    "stereo_eye_offset_cm": 3.05,
+    "render_target_width": 1272,
+    "render_target_height": 720,
+    "_quad_comment": "Face-locked quad geometry, shared by the ghost overlay layer AND the video layer (and read by gaze projection). Keep these in sync with whatever the video is sized against. hmd_hfov_deg is the headset's horizontal FOV -- ~110 for Vive Pro / Pro Eye. These describe the HEADSET, not the scene camera, so they do not change between scenarios.",
+    "plane_distance": 700.0,
+    "fov_coverage": 0.85,
+    "hmd_hfov_deg": 110.0,
+    "boundary_plane_width_m": 1.8,
+    "boundary_plane_height_m": 0.96,
+    "_look_around_comment": "Static cameras only (viewpoint.mode static, stream stereo false). Active only while ENGAGED (anchored on entering it; on stop/pause the image eases back to centre over return_sec). Within +-max_yaw_deg / +-max_pitch_deg of that direction the video and ghost quads stay fixed in the world, beyond it they follow the head; knee_deg softens that transition.",
+    "look_around": {
+        "enabled": true,
+        "max_yaw_deg": 25.0,
+        "max_pitch_deg": 15.0,
+        "knee_deg": 5.0,
+        "return_sec": 0.4
+    }
+}

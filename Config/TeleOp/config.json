@@ -1,8 +1,11 @@
 {
-    "network":      "network_local.json",
+    "network":      "network_remote.json",
     "network_twin": "network_twin.json",
-    "stream":  "stream_local.json",
+    "stream":  "stream_remote.json",
     "hud":     "hud.json",
     "robot":   "robot_bimanual.json",
-    "overlay": "overlay.json"
+    "overlay": "overlay.json",
+
+    "command_thread_enabled": true,
+    "gaze_enabled":           true
 }

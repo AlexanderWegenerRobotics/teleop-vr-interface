@@ -5,13 +5,21 @@
     "timestamp_port":       5006,
     "status_port":          5007,
     "report_interval_ms":   500,
-    "stereo":               false,
+    "stereo":               true,
     "video_log_enabled":    true,
     "video_log_raw":        true,
     "video_log_attention":  false,
     "right_port":           5006,
     "right_feedback_port":  5008,
     "right_status_port":    5009,
+    "audio": {
+        "enabled":        true,
+        "port":           5020,
+        "output_device":  "",
+        "sync_to_video":  true,
+        "extra_delay_ms": 0,
+        "log":            true
+    },
     "pip_streams": [
         { "name": "operator",     "port": 5016, "local_preview": true }
     ],
