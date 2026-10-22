@@ -85,8 +85,8 @@ public:
     FName SevParam = TEXT("Sev");
 
 private:
-    enum class EFace : uint8 { Torso = 0, Left = 1, Right = 2, Floor = 3 };
-    static constexpr int32 kNumFaces = 4;
+    enum class EFace : uint8 { Torso = 0, Left = 1, Right = 2, Floor = 3, Far = 4, Top = 5 };
+    static constexpr int32 kNumFaces = 6;
 
     struct FFaceState {
         UPROPERTY() TObjectPtr<UStaticMeshComponent> Mesh;

@@ -1,0 +1,48 @@
+{
+    "enabled":               true,
+    "intent_highlight": { "enabled": true, "min_prob": 0.5, "radius_cm": 8.0, "goal_radius_cm": 4.0, "goal_lift_m": 0.035, "hold_s": 0.5, "tint": [1.0, 0.75, 0.2] },
+    "alignment_panel": { "enabled": true, "size_cm": 8.0, "side_offset_cm": 12.0, "up_offset_cm": 4.0, "follow_tau_s": 0.12, "auto_scale": true, "frame": "world" },
+
+    "near_threshold_m":      0.03,
+    "far_threshold_m":       0.15,
+    "min_opacity":           0.15,
+    "max_opacity":           0.85,
+
+    "latency_ok_ms":         100.0,
+    "latency_warn_ms":       150.0,
+    "latency_bad_ms":        300.0,
+    "latency_bad_exit_ms":   200.0,
+
+    // static pose of the sim desk_cam (stereo centre) in sim_config_overhead.yaml (up = world z orthogonalised), recalibrate for the real rig
+    "viewpoint": {
+        "mode": "static",
+        "static": {
+            "pos": [0.16, 0.45, 1.40],
+            "look_at": [0.55, 0.4, 0.82],
+            "up": [0.82101, -0.10526, 0.56113]
+        },
+        "head_tracked": {
+            "head_base_position": [0.0, 0.0, 1.844],
+            "cam_offset_in_head": [0.05, 0.0, 0.035]
+        }
+    },
+
+    "capture_fov":           84.0,   // horizontal: 2*atan(tan(fovy/2) * w/h), sim fovy 54 at 848x480
+    "stereo_capture_fov":    84.3,   // per eye, sim fovy 54 at 1280x720 (ZED Mini HD720)
+    "stereo_eye_offset_cm":  3.05,
+    "render_target_width":   1272,
+    "render_target_height":  720,
+
+    "plane_distance":        700.0,
+    "fov_coverage":          0.75,
+    "hmd_hfov_deg":          110.0,
+    "boundary_plane_width_m":  1.8,
+    "boundary_plane_height_m": 0.96,
+    "look_around": {
+        "enabled": true,
+        "max_yaw_deg": 45.0,
+        "max_pitch_deg": 35.0,
+        "knee_deg": 5.0,
+        "return_sec": 0.4
+    }
+}

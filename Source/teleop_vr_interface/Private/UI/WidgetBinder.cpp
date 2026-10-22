@@ -13,6 +13,7 @@
 #include "Components/Image.h"
 #include "Components/Border.h"
 #include "Slate/WidgetRenderer.h"
+#include "Video/VideoLookAround.h"
 
 
 #ifdef UpdateResource
@@ -95,6 +96,7 @@ void UWidgetBinder::Initialize(TSubclassOf<UUserWidget> WidgetClass, UCameraComp
 	Layer_->SetTexture(RenderTarget_);
 	Layer_->bLiveTexture = true;
 	Layer_->bSupportsDepth = false;
+	Priority_ = Priority;
 	Layer_->SetPriority(Priority);
 	Layer_->AttachToComponent(Camera, FAttachmentTransformRules::KeepRelativeTransform);
 	Layer_->SetRelativeLocation(FVector(Distance, 0.0f, 0.0f));
@@ -112,6 +114,7 @@ void UWidgetBinder::Initialize(TSubclassOf<UUserWidget> WidgetClass, UCameraComp
 	WidgetRenderer_->DrawWidget(RenderTarget_, SlateWidget_.ToSharedRef(), RenderSize_, 0.0f, true);
 
 	CacheWidgetRects();
+	UpdateLayerVisibility();
 	bIsBound_ = true;
 }
 
@@ -239,15 +242,46 @@ void UWidgetBinder::RenderWidget() {
 	WidgetRenderer_->DrawWidget(RenderTarget_, SlateWidget_.ToSharedRef(), RenderSize_, RenderAccum_, true);
 }
 
+void UWidgetBinder::UpdateLayerVisibility() {
+	bool bAny = false;
+	if (Widget_ && Widget_->WidgetTree) {
+		Widget_->WidgetTree->ForEachWidget([&bAny](UWidget* W) {
+			if (bAny || !W || Cast<UPanelWidget>(W)) return;
+			if (IsEffectivelyVisible(W)) bAny = true;
+		});
+	}
+	bContentVisible_ = bAny;
+	const bool bShow = !bHideLayerWhenEmpty || bAny;
+	if (Layer_ && bShow != bLayerShown_) {
+		Layer_->SetVisibility(bShow);
+		bLayerShown_ = bShow;
+	}
+}
+
+void UWidgetBinder::SetPlacement(EHudPlacement NewPlacement) {
+	if (!Layer_ || NewPlacement == Placement_) return;
+	Placement_ = NewPlacement;
+	const bool bWorld = Placement_ == EHudPlacement::WorldLocked;
+	FVideoLookAround::ApplyToLayer(Layer_, bWorld, true, WorldPose_, Camera_, LayerDistance_, Priority_);
+	bRenderDirty_ = true;
+	UE_LOG(LogTemp, Log, TEXT("WidgetBinder(%s): placement -> %s"), *GetName(), bWorld ? TEXT("world-locked") : TEXT("head-locked"));
+}
+
+void UWidgetBinder::SetWorldPose(const FTransform& QuadWorld) {
+	WorldPose_ = QuadWorld;
+	if (Layer_ && Placement_ == EHudPlacement::WorldLocked)
+		Layer_->SetWorldLocationAndRotation(QuadWorld.GetLocation(), QuadWorld.GetRotation());
+}
+
+void UWidgetBinder::SetOccluder(UWidgetBinder* Other) {
+	if (Other == this) return;
+	Occluder_ = Other;
+	if (Other) AddTickPrerequisiteComponent(Other);
+}
+
 void UWidgetBinder::SetGazeInput(const FGazeData& GazeData) {
-	if (!Camera_) return;
-
-	FTransform CameraWorld = Camera_->GetComponentTransform();
-	FTransform CameraInverse = CameraWorld.Inverse();
-
-	GazeLocalOrigin_ = CameraInverse.TransformPosition(GazeData.Origin);
-	GazeLocalDirection_ = CameraInverse.TransformVectorNoScale(GazeData.Direction).GetSafeNormal();
-
+	GazeWorldOrigin_    = GazeData.Origin;
+	GazeWorldDirection_ = GazeData.Direction.GetSafeNormal();
 	LatestGaze_ = GazeData;
 }
 
@@ -317,7 +351,7 @@ void UWidgetBinder::SetButtonToLocked(FName Name) {
 	auto* Style = OriginalStyles_.Find(Name);
 	if (!Style) return;
 	// Keep the Normal image visible; apply the Disabled tint so the button is dimmed but not blank.
-	FSlateBrush Brush = Style->Normal;
+	FSlateBrush Brush = ToggledButtons_.Contains(Name) ? Style->Pressed : Style->Normal;
 	Brush.TintColor   = Style->Disabled.TintColor;
 	ApplyButtonStyle(Name, Brush);
 }
@@ -357,6 +391,7 @@ void UWidgetBinder::TickComponent(float DeltaTime, ELevelTick TickType, FActorCo
 		UntrustedGazeSec_ += DeltaTime;
 		NewHovered = (UntrustedGazeSec_ <= BlinkHoverHoldSec) ? HoveredButton_ : FName();
 	}
+	if (Occluder_ && Occluder_->GetHoveredButton() != FName()) NewHovered = FName();
 
 	if (NewHovered != HoveredButton_) {
 		SetButtonToNormal(HoveredButton_);
@@ -381,7 +416,8 @@ void UWidgetBinder::TickComponent(float DeltaTime, ELevelTick TickType, FActorCo
 		else {
 			PressedButton_ = HoveredButton_;
 			// Toggle persistent pressed state; visual follows immediately.
-			SetButtonToggled(HoveredButton_, !ToggledButtons_.Contains(HoveredButton_));
+			if (!StateDrivenButtons_.Contains(HoveredButton_))
+				SetButtonToggled(HoveredButton_, !ToggledButtons_.Contains(HoveredButton_));
 		}
 		bRenderDirty_ = true;   // the click must feel instant, not up to a slot late
 	}
@@ -391,6 +427,7 @@ void UWidgetBinder::TickComponent(float DeltaTime, ELevelTick TickType, FActorCo
 		RebuildMessageLog();
 		bMessagesDirty_ = false;
 		bRenderDirty_   = true;   // a new operator message should not be late
+		bStaticRectsDirty_ = true;
 	}
 
 	// ── HUD raster rate ──────────────────────────────────────────────────────
@@ -415,13 +452,13 @@ void UWidgetBinder::TickComponent(float DeltaTime, ELevelTick TickType, FActorCo
 	// what is DRAWN, never what is SENSED.
 	RenderAccum_ += DeltaTime;
 	const float RenderPeriod = (RenderRateHz > 0.f) ? (1.f / RenderRateHz) : 0.f;
-	if (bRenderDirty_ || RenderAccum_ >= RenderPeriod) {
+	if (bRenderDirty_ || (bLayerShown_ && RenderAccum_ >= RenderPeriod)) {
 		RenderWidget();
 		RenderAccum_  = 0.f;
 		bRenderDirty_ = false;
 	}
 
-	if (bStaticRectsDirty_) { CacheWidgetRects(); bStaticRectsDirty_ = false; }
+	if (bStaticRectsDirty_) { CacheWidgetRects(); UpdateLayerVisibility(); bStaticRectsDirty_ = false; }
 
 	if (bMenuRectsDirty_) {
 		bool bAllReady = true;
@@ -451,18 +488,27 @@ void UWidgetBinder::TickComponent(float DeltaTime, ELevelTick TickType, FActorCo
 }
 
 bool UWidgetBinder::ProjectGazeToUV(FVector2D& OutUV) const {
-	if (FMath::IsNearlyZero(GazeLocalDirection_.X)) return false;
+	if (!Layer_ || !bLayerShown_) return false;
+	if (QuadSize_.X <= 0.0 || QuadSize_.Y <= 0.0) return false;
 
-	float T = (LayerDistance_ - GazeLocalOrigin_.X) / GazeLocalDirection_.X;
-	if (T < 0.0f) return false;
+	const FTransform LayerWorld = (Placement_ == EHudPlacement::WorldLocked)
+		? WorldPose_
+		: Layer_->GetComponentTransform();
 
-	float HitY = GazeLocalOrigin_.Y + GazeLocalDirection_.Y * T;
-	float HitZ = GazeLocalOrigin_.Z + GazeLocalDirection_.Z * T;
+	const FVector O = LayerWorld.InverseTransformPositionNoScale(GazeWorldOrigin_);
+	const FVector D = LayerWorld.InverseTransformVectorNoScale(GazeWorldDirection_);
+	if (FMath::IsNearlyZero(D.X)) return false;
 
-	OutUV.X = (HitY / ExpandedWidth_) + 0.5f;
-	OutUV.Y = (-HitZ / RenderSize_.Y) + 0.5f;
+	const double T = -O.X / D.X;
+	if (T < 0.0) return false;
 
-	return OutUV.X >= 0.0f && OutUV.X <= 1.0f && OutUV.Y >= 0.0f && OutUV.Y <= 1.0f;
+	const double HitY = O.Y + D.Y * T;
+	const double HitZ = O.Z + D.Z * T;
+
+	OutUV.X = (HitY / QuadSize_.X) + 0.5;
+	OutUV.Y = (-HitZ / QuadSize_.Y) + 0.5;
+
+	return OutUV.X >= 0.0 && OutUV.X <= 1.0 && OutUV.Y >= 0.0 && OutUV.Y <= 1.0;
 }
 
 FName UWidgetBinder::FindButtonAtUV(const FVector2D& UV) const {
@@ -842,6 +888,18 @@ void UWidgetBinder::SetVisibility(FName WidgetName, bool bVisible)
 				// A panel appearing or disappearing is an interaction result,
 				// not a readout -- draw it on this tick rather than up to a
 				// render slot later.
+				bRenderDirty_ = true;
+			}
+		}
+	}
+}
+
+void UWidgetBinder::SetOpacity(FName WidgetName, float Opacity) {
+	if (auto* Found = CachedWidgets_.Find(WidgetName)) {
+		if (*Found) {
+			const float A = FMath::Clamp(Opacity, 0.f, 1.f);
+			if (!FMath::IsNearlyEqual((*Found)->GetRenderOpacity(), A, 0.005f)) {
+				(*Found)->SetRenderOpacity(A);
 				bRenderDirty_ = true;
 			}
 		}

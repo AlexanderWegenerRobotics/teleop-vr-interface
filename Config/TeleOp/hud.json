@@ -5,7 +5,28 @@
     "metric_entry_window_s":    5.0,
     "metric_exit_window_s":     3.0,
     "confirmation_duration_s":  3.0,
-    "ui_widget_width":          1280.0,
-    "ui_widget_height":         800.0,
-    "ui_plane_distance":        690.0
+    "_ui_widget_comment": "WBP_HudFrame canvas, same size in both modes (widgets are centre-anchored, the canvas only has to contain them). 1 px = 1 cm at ui_plane_distance. 1480x860 leaves room for the tray directly under the desk video's bottom edge (340 px below centre) and the right column just outside its side edge (605 px right of centre).",
+    "ui_widget_width":          1480.0,
+    "ui_widget_height":         860.0,
+    "ui_plane_distance":        690.0,
+
+    "_placement_comment": "WBP_HudFrame placement. 'head' = always face-locked (moving neck camera). 'world' = face-locked while not ENGAGED, world-locked with the video while ENGAGED (needs overlay look_around); system_control_tray_near is shown instead of system_control_tray while face-locked. 'auto' = world when look_around is active. WBP_HudAlerts is always face-locked.",
+    "placement":                "auto",
+
+    "alerts_widget_width":      1280.0,
+    "alerts_widget_height":     800.0,
+    "alerts_plane_distance":    680.0,
+
+    "_wrist_view_comment": "Wrist camera shown next to its gripper in the video (own headset layer, full stream rate, rigid with the video). streams[i] is the pip_streams name for arm i (0 = left, 1 = right); the stream must be enabled in stream.json. Sizes in cm on the video plane (1 cm ~ 0.08 deg at 700 cm). mode: 'always' (test), 'phase' later. Gaze on it enlarges it away from the gripper.",
+    "wrist_view": {
+        "enabled":        true,
+        "mode":           "always",
+        "streams":        ["camera left", "camera right"],
+        "width_cm":       200.0,
+        "gap_cm":         40.0,
+        "up_cm":          0.0,
+        "follow_tau_s":   0.15,
+        "expand_scale":   1.6,
+        "shrink_delay_s": 0.6
+    }
 }

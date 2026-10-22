@@ -137,11 +137,8 @@ void AVideoLogger::StartLogging(const FString& InSessionDir)
                 // --- Attention video: apply gaze spotlight, then encode ---
                 if (EncoderAttention)
                 {
-                    const FVector2D SpotUV = bOperatorView
-                        ? Frame.Bundle.GazeUV - Frame.Bundle.ViewShiftUV
-                        : Frame.Bundle.GazeUV;
-                    ApplyGazeSpotlight(Frame.Pixels, SpotUV,
-                        Frame.Bundle.bGazeValid, Frame.Bundle.GazeConfidence);
+                    ApplyGazeSpotlight(Frame.Pixels, GazeToPixel(Frame.Bundle),
+                        Frame.Bundle.bGazeOnPlane, Frame.Bundle.GazeConfidence);
 
                     TArray<uint8> AttnI420;
                     ConvertBGRAtoYUV420P(Frame.Pixels, AttnI420);
@@ -238,19 +235,28 @@ void AVideoLogger::CaptureFrame(const FFrameBundle& Bundle, int32 NumFrames)
 
     if (Canvas)
     {
-        const FVector2D ViewOffsetPx = bOperatorView
-            ? FVector2D(-Bundle.ViewShiftUV.X * (float)LogW, -Bundle.ViewShiftUV.Y * (float)LogH)
-            : FVector2D::ZeroVector;
+        const FVector2D Center((double)LogW * 0.5, (double)LogH * 0.5);
+        const FVector2D ShiftPx = Bundle.ViewShiftCm * (double)PxPerCm;
 
         for (const FLayerSource& Src : LayerSources)
         {
             UTexture* Tex = Src.GetTexture ? Src.GetTexture() : nullptr;
             if (!Tex) continue;
 
+            const bool bFollows = Src.GetFollowsView ? Src.GetFollowsView() : Src.bFollowsView;
+            FVector2D Offset = FVector2D::ZeroVector;
+            if (bOperatorView) { if (bFollows)  Offset = -ShiftPx; }
+            else               { if (!bFollows) Offset =  ShiftPx; }
+
+            const FVector2D SizePx = Src.GetSizeCm
+                ? Src.GetSizeCm() * (double)PxPerCm
+                : FVector2D((double)LogW, (double)LogH);
+            if (SizePx.X <= 0.0 || SizePx.Y <= 0.0) continue;
+
             EBlendMode Blend = (Src.Priority == 0) ? BLEND_Opaque
                              : (Src.bPremultiplied ? BLEND_AlphaComposite : BLEND_Translucent);
-            Canvas->K2_DrawTexture(Tex, Src.bFollowsView ? ViewOffsetPx : FVector2D::ZeroVector,
-                FVector2D((float)LogW, (float)LogH),
+            const FVector2D CenterPx = Src.GetCenterCm ? Src.GetCenterCm() * (double)PxPerCm : FVector2D::ZeroVector;
+            Canvas->K2_DrawTexture(Tex, Center + CenterPx - SizePx * 0.5 + Offset, SizePx,
                 Src.UVOffset, Src.UVSize,
                 FLinearColor::White, Blend);
         }
@@ -356,14 +362,21 @@ void AVideoLogger::ConvertBGRAtoYUV420P(const TArray<FColor>& Pixels, TArray<uin
 // ApplyGazeSpotlight
 // ----------------------------------------------------------------
 
+FVector2D AVideoLogger::GazeToPixel(const FFrameBundle& Bundle) const
+{
+    FVector2D Cm = Bundle.GazePlaneCm;
+    if (bOperatorView) Cm -= Bundle.ViewShiftCm;
+    return FVector2D((double)LogW * 0.5, (double)LogH * 0.5) + Cm * (double)PxPerCm;
+}
+
 void AVideoLogger::ApplyGazeSpotlight(TArray<FColor>& Pixels,
-    FVector2D GazeUV, bool bValid, float Confidence) const
+    FVector2D GazePx, bool bValid, float Confidence) const
 {
     const float Dark = FMath::Clamp(PeripheralBrightness, 0.f, 1.f);
-    const float RadPx = GazeRadiusFraction * (float)LogW;
+    const float RadPx = GazeRadiusFraction * VideoWidthPx;
     const float SigSq = RadPx * RadPx;
-    const float GX = GazeUV.X * (float)LogW;
-    const float GY = GazeUV.Y * (float)LogH;
+    const float GX = (float)GazePx.X;
+    const float GY = (float)GazePx.Y;
 
     for (int32 Y = 0; Y < LogH; ++Y)
         for (int32 X = 0; X < LogW; ++X)
@@ -444,6 +457,14 @@ void AVideoLogger::WriteInitialMetadata()
     R->SetNumberField(TEXT("quad_width_ue"), QuadWidth);
     R->SetNumberField(TEXT("quad_height_ue"), QuadHeight);
     R->SetNumberField(TEXT("plane_dist_ue"), PlaneDistance);
+    R->SetStringField(TEXT("canvas_layout"), TEXT("plane at plane_dist_ue, centred on the video quad; px = (width/2, height/2) + cm * px_per_cm, x right, y down"));
+    R->SetNumberField(TEXT("canvas_half_w_cm"), CanvasHalfCm.X);
+    R->SetNumberField(TEXT("canvas_half_h_cm"), CanvasHalfCm.Y);
+    R->SetNumberField(TEXT("px_per_cm"), PxPerCm);
+    R->SetNumberField(TEXT("video_rect_x_px"), (double)LogW * 0.5 - QuadWidth  * 0.5 * PxPerCm);
+    R->SetNumberField(TEXT("video_rect_y_px"), (double)LogH * 0.5 - QuadHeight * 0.5 * PxPerCm);
+    R->SetNumberField(TEXT("video_rect_w_px"), QuadWidth  * PxPerCm);
+    R->SetNumberField(TEXT("video_rect_h_px"), QuadHeight * PxPerCm);
     R->SetBoolField(TEXT("raw_video"), bEnableRawVideo);
     R->SetBoolField(TEXT("attention_video"), bEnableAttentionVideo);
     R->SetBoolField(TEXT("operator_view"), bOperatorView);
@@ -492,6 +513,12 @@ void AVideoLogger::AppendFrameJsonl(const FFrameBundle& B)
     O->SetNumberField(TEXT("view_pitch_deg"), B.ViewPitchDeg);
     O->SetNumberField(TEXT("view_shift_u"), B.ViewShiftUV.X);
     O->SetNumberField(TEXT("view_shift_v"), B.ViewShiftUV.Y);
+    O->SetNumberField(TEXT("view_shift_x_cm"), B.ViewShiftCm.X);
+    O->SetNumberField(TEXT("view_shift_y_cm"), B.ViewShiftCm.Y);
+    O->SetBoolField(TEXT("gaze_on_plane"), B.bGazeOnPlane);
+    O->SetNumberField(TEXT("gaze_plane_x_cm"), B.GazePlaneCm.X);
+    O->SetNumberField(TEXT("gaze_plane_y_cm"), B.GazePlaneCm.Y);
+    O->SetBoolField(TEXT("hud_world_locked"), B.bHudWorldLocked);
 
     FString Line; TSharedRef<TJsonWriter<>> W = TJsonWriterFactory<>::Create(&Line);
     FJsonSerializer::Serialize(O, W);
@@ -500,10 +527,34 @@ void AVideoLogger::AppendFrameJsonl(const FFrameBundle& B)
         FFileHelper::EEncodingOptions::AutoDetect, &IFileManager::Get(), FILEWRITE_Append);
 }
 
+void AVideoLogger::SetCanvas(FVector2D InCanvasHalfCm, float InPxPerCm, float InVideoWidthPx)
+{
+    if (bIsLogging) return;
+    if (InCanvasHalfCm.X <= 0.0 || InCanvasHalfCm.Y <= 0.0 || InPxPerCm <= 0.f) return;
+    CanvasHalfCm = InCanvasHalfCm;
+    PxPerCm      = InPxPerCm;
+    VideoWidthPx = InVideoWidthPx;
+    const int32 NewW = FMath::Max(2, 2 * FMath::RoundToInt(CanvasHalfCm.X * PxPerCm));
+    const int32 NewH = FMath::Max(2, 2 * FMath::RoundToInt(CanvasHalfCm.Y * PxPerCm));
+    if (NewW != LogW || NewH != LogH)
+    {
+        LogW = NewW;
+        LogH = NewH;
+        LoggingRT = nullptr;
+    }
+    UE_LOG(LogTemp, Log, TEXT("VideoLogger: canvas %dx%d px (+-%.0f x +-%.0f cm, %.3f px/cm)"),
+        LogW, LogH, CanvasHalfCm.X, CanvasHalfCm.Y, PxPerCm);
+}
+
 void AVideoLogger::AddLayerSource(TFunction<UTexture* ()> Getter, int32 Priority,
-                                   FVector2D UVOffset, FVector2D UVSize, bool bFollowsView, bool bPremultiplied)
+                                   FVector2D UVOffset, FVector2D UVSize, bool bFollowsView, bool bPremultiplied,
+                                   TFunction<FVector2D()> SizeCm, TFunction<bool()> FollowsView,
+                                   TFunction<FVector2D()> CenterCm)
 {
     FLayerSource Src;
+    Src.GetCenterCm    = MoveTemp(CenterCm);
+    Src.GetSizeCm      = MoveTemp(SizeCm);
+    Src.GetFollowsView = MoveTemp(FollowsView);
     Src.GetTexture   = MoveTemp(Getter);
     Src.Priority     = Priority;
     Src.UVOffset     = UVOffset;

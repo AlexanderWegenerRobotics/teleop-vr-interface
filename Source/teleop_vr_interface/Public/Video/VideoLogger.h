@@ -22,6 +22,10 @@ struct FFrameBundle
     float     ViewYawDeg = 0.0f;
     float     ViewPitchDeg = 0.0f;
     FVector2D ViewShiftUV = FVector2D::ZeroVector;
+    FVector2D ViewShiftCm = FVector2D::ZeroVector;
+    FVector2D GazePlaneCm = FVector2D::ZeroVector;
+    bool      bGazeOnPlane = false;
+    bool      bHudWorldLocked = false;
 };
 
 struct FLogFrame
@@ -38,6 +42,9 @@ struct FLayerSource
     FVector2D UVSize    = FVector2D::UnitVector;
     bool      bFollowsView = false;
     bool      bPremultiplied = false;
+    TFunction<FVector2D()> GetSizeCm;
+    TFunction<bool()>      GetFollowsView;
+    TFunction<FVector2D()> GetCenterCm;
 };
 
 UCLASS()
@@ -54,7 +61,12 @@ public:
                         FVector2D UVOffset = FVector2D::ZeroVector,
                         FVector2D UVSize   = FVector2D::UnitVector,
                         bool bFollowsView  = false,
-                        bool bPremultiplied = false);
+                        bool bPremultiplied = false,
+                        TFunction<FVector2D()> SizeCm = nullptr,
+                        TFunction<bool()> FollowsView = nullptr,
+                        TFunction<FVector2D()> CenterCm = nullptr);
+
+    void SetCanvas(FVector2D InCanvasHalfCm, float InPxPerCm, float InVideoWidthPx);
 
     UPROPERTY(EditAnywhere, Category = "VideoLogger") bool bOperatorView = true;
 
@@ -75,6 +87,10 @@ public:
     float QuadHeight = 830.0f;
     float PlaneDistance = 700.0f;
 
+    FVector2D CanvasHalfCm = FVector2D(640.0, 360.0);
+    float PxPerCm = 1.0f;
+    float VideoWidthPx = 1280.0f;
+
     // If SessionDir is non-empty the logger writes into that directory instead of
     // creating its own timestamped subfolder — use this to co-locate video and
     // telemetry logs in the same session folder.
@@ -91,7 +107,8 @@ protected:
 
 private:
     void CaptureFrame(const FFrameBundle& Bundle, int32 NumFrames = 1);
-    void ApplyGazeSpotlight(TArray<FColor>& Pixels, FVector2D GazeUV, bool bValid, float Confidence) const;
+    void ApplyGazeSpotlight(TArray<FColor>& Pixels, FVector2D GazePx, bool bValid, float Confidence) const;
+    FVector2D GazeToPixel(const FFrameBundle& Bundle) const;
     void ConvertBGRAtoYUV420P(const TArray<FColor>& Pixels, TArray<uint8>& OutI420) const;
 
     void InitSessionDirectory();

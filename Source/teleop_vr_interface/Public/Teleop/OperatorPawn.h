@@ -13,6 +13,7 @@
 #include "Networking/ComLink.h"
 #include "UI/GazeComponent.h"
 #include "UI/WidgetBinder.h"
+#include "UI/HudPanels.h"
 #include "UI/TMetricHistory.h"
 #include "UI/SoundFeedback.h"
 #include "Video/VideoLogger.h"
@@ -26,6 +27,7 @@
 #include "Video/GraspIndicatorComponent.h"
 #include "Video/WorkspaceBoundaryComponent.h"
 #include "Video/AlignmentPanelComponent.h"
+#include "Video/WristViewComponent.h"
 #include "Networking/UdpSocket.h"
 #include "Teleop/CommandThread.h"
 #include "Teleop/EpisodeEventReceiver.h"
@@ -80,6 +82,8 @@ protected:
 	UPROPERTY() TObjectPtr<UGazeComponent> Gaze;
 	UPROPERTY() TObjectPtr<UWidgetBinder> UIBinder;
 	UPROPERTY() TSubclassOf<UUserWidget> UIWidgetClass;
+	UPROPERTY() TObjectPtr<UWidgetBinder> AlertBinder;
+	UPROPERTY() TSubclassOf<UUserWidget> AlertWidgetClass;
 	UPROPERTY() TObjectPtr<USoundFeedback> SoundFeedback;
 
 	UPROPERTY() TObjectPtr<UWidgetBinder> TrayBinder;
@@ -93,6 +97,8 @@ protected:
 	UPROPERTY() TObjectPtr<UGraspIndicatorComponent> RightGraspIndicator;
 	UPROPERTY() TObjectPtr<UWorkspaceBoundaryComponent> LeftWorkspaceBoundary;
 	UPROPERTY() TObjectPtr<UWorkspaceBoundaryComponent> RightWorkspaceBoundary;
+	UPROPERTY() TObjectPtr<UWristViewComponent> LeftWristView;
+	UPROPERTY() TObjectPtr<UWristViewComponent> RightWristView;
 	UPROPERTY() TObjectPtr<UAlignmentPanelComponent> LeftAlignmentPanel;
 	UPROPERTY() TObjectPtr<UAlignmentPanelComponent> RightAlignmentPanel;
 
@@ -178,13 +184,34 @@ private:
 	bool bLookAroundEnabled_      = false;
 	bool bVideoLayersWorldLocked_ = false;
 	bool bLookActive_             = false;
-	bool bLookRequireEngaged_     = true;
 	float LookReturnSec_          = 0.4f;
 	float LookReturnAlpha_        = 1.f;
 	FQuat LookReturnStartRel_     = FQuat::Identity;
 	FTransform VideoQuadWorld_;
 	float ViewYawDeg_   = 0.f;
 	float ViewPitchDeg_ = 0.f;
+
+	FHudPanels Hud_;
+	EHudPlacement HudPlacement_ = EHudPlacement::HeadLocked;
+	float HudFrameDistance_ = 690.f;
+	FVector2D FrameSize_ = FVector2D(1280.f, 800.f);
+	void UpdateHudFrame(bool bWorldLocked, const FTransform& FramePose);
+	void ApplyControlPanelSet(bool bWorldLocked);
+
+	bool    bWristViewEnabled_ = false;
+	FString WristViewMode_     = TEXT("always");
+	int32   WristStreamIdx_[2] = { INDEX_NONE, INDEX_NONE };
+	UWristViewComponent* WristView(uint8 Arm) const { return Arm == 0 ? LeftWristView.Get() : RightWristView.Get(); }
+	void UpdateWristViews(float DeltaTime);
+
+	TMap<FName, FLinearColor> DeviceColors_;
+	double LastDeviceChangeSec_ = 0.0;
+	float  DeviceGraphOpacity_  = 1.f;
+	static constexpr float kDeviceGraphDimOpacity = 0.2f;
+	static constexpr float kDeviceGraphHoldSec    = 4.0f;
+	static constexpr float kDeviceGraphFadeSpeed  = 6.0f;
+	void SetDeviceColor(FName Name, const FLinearColor& Color);
+	void UpdateDeviceGraphOpacity(float DeltaTime);
 
 	void UpdateInfoBar();
 

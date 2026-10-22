@@ -71,8 +71,9 @@ bool FGStreamerAudioReceiver::Start(const FAudioReceiverConfig& InConfig)
     }
     bStopRequested = false;
     Thread = FRunnableThread::Create(this, TEXT("TeleopAudioRx"), 0, TPri_AboveNormal);
-    UE_LOG(LogTemp, Log, TEXT("AudioRx: listening on UDP %d (sync to video: %s, extra delay %d ms)"),
-           Config.Port, Config.bSyncToVideo ? TEXT("on") : TEXT("off"), Config.ExtraDelayMs);
+    UE_LOG(LogTemp, Log, TEXT("AudioRx: listening on UDP %d (sync to video: %s, extra delay %d ms, margin %d ms, output buffer %d ms)"),
+           Config.Port, Config.bSyncToVideo ? TEXT("on") : TEXT("off"), Config.ExtraDelayMs,
+           Config.SafetyMarginMs, Config.OutputBufferMs);
     return Thread != nullptr;
 }
 
@@ -132,8 +133,13 @@ bool FGStreamerAudioReceiver::BuildPipeline()
     FString SinkDesc;
     if (!bUseFakeSink && GStreamerElementAvailable("wasapi2sink"))
     {
-        SinkDesc = TEXT("wasapi2sink name=aout low-latency=true sync=true");
-        if (!Config.OutputDevice.IsEmpty())
+        SinkDesc = FString::Printf(TEXT("wasapi2sink name=aout low-latency=true sync=true buffer-time=%d latency-time=%d"),
+                                   Config.OutputBufferMs * 1000, FMath::Max(Config.OutputBufferMs / 4, 2) * 1000);
+        if (Config.OutputDevice.IsEmpty())
+        {
+            UE_LOG(LogTemp, Log, TEXT("AudioRx: output device = Windows default (set \"output_device\" to pick one)"));
+        }
+        else
         {
             char Id[512] = {0};
             char Name[256] = {0};
@@ -161,10 +167,12 @@ bool FGStreamerAudioReceiver::BuildPipeline()
         TEXT("caps=audio/x-opus,rate=48000,channels=%d,channel-mapping-family=0 ")
         TEXT("! opusdec plc=true ! audioconvert ! audioresample ")
         TEXT("! audio/x-raw,format=S16LE,rate=48000,channels=%d ! tee name=at ")
-        TEXT("at. ! queue max-size-time=300000000 max-size-buffers=0 max-size-bytes=0 ! %s ")
+        TEXT("at. ! queue max-size-time=300000000 max-size-buffers=0 max-size-bytes=0 ")
+        TEXT("! audioconvert ! volume volume=%.3f ! audiodynamic mode=compressor characteristics=soft-knee threshold=0.5 ratio=0.25 ")
+        TEXT("! audioconvert ! %s ")
         TEXT("at. ! queue max-size-time=1000000000 max-size-buffers=0 max-size-bytes=0 leaky=downstream ")
         TEXT("! appsink name=alog sync=false emit-signals=false max-buffers=1000 drop=true"),
-        Channels, Channels, *SinkDesc);
+        Channels, Channels, FMath::Pow(10.f, Config.GainDb / 20.f), *SinkDesc);
 
     Pipeline = GStreamerCreatePipeline(TCHAR_TO_UTF8(*Desc));
     if (!Pipeline)
@@ -185,8 +193,8 @@ bool FGStreamerAudioReceiver::BuildPipeline()
     PipelineStartTime = FPlatformTime::Seconds();
     bLatencyQueried   = false;
     ResetTiming();
-    UE_LOG(LogTemp, Log, TEXT("AudioRx: playback pipeline running (%d ch, %lld ms frames)"),
-           Channels, FrameNs / 1000000);
+    UE_LOG(LogTemp, Log, TEXT("AudioRx: playback pipeline running (%d ch, %lld ms frames, gain %+.0f dB)"),
+           Channels, FrameNs / 1000000, Config.GainDb);
     return true;
 }
 

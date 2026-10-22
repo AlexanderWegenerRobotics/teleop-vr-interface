@@ -72,7 +72,7 @@ Generate project files for `teleop_vr_interface.uproject` and build the `teleop_
 
 ### Configure
 
-Point `Config/TeleOp/config.json` at the scenario you want — it is a small index that selects which network, stream, robot and overlay configs to load. Set `remote_ip` in the network and stream configs to the robot host's ZeroTier address. Nothing here needs a recompile; all of it is read at startup.
+`Config/TeleOp/config.json` selects the robot and overlay file for the setup (desk or bimanual). `network.json` and `stream.json` are shared; set `remote_ip` in both to the robot host's ZeroTier address (the local value is in the comment next to it). Nothing here needs a recompile; all of it is read at startup.
 
 ### Run
 
@@ -80,7 +80,7 @@ Start the robot-side backend first (see [teleop-simulator](https://github.com/Al
 
 ### Without a robot
 
-The interface runs against a local preview source and the local network/stream configs, so the UI, HUD, gaze interaction and recording can be exercised on one machine with no Franka and no remote host. Pair it with the simulator repo's MuJoCo backend for a full loop in simulation.
+The interface runs against a local preview source with `remote_ip` set to `127.0.0.1`, so the UI, HUD, gaze interaction and recording can be exercised on one machine with no Franka and no remote host. Pair it with the simulator repo's MuJoCo backend for a full loop in simulation.
 
 ---
 
@@ -132,7 +132,7 @@ Fault codes surfaced live in the HUD include `JOINT_LIMIT`, `JOINT_LOCKED`, `HIG
 
 ## Configuration
 
-All runtime parameters live in `Config/TeleOp/` and are read at startup. `config.json` selects which file fills each role, so switching between scenarios — desk robot, warehouse cell, local-only — is an edit to one small index rather than a diff across every config. The files themselves carry inline comments explaining the non-obvious values; those comments are the reference, not this table.
+All runtime parameters live in `Config/TeleOp/` and are read at startup. `config.json` selects which file fills each role. JSON files may contain `//` comments; values that differ between setups (local/remote, desk/bimanual) are written as a comment after the active value.
 
 | Role | What it governs |
 |------|-----------------|
@@ -143,7 +143,7 @@ All runtime parameters live in `Config/TeleOp/` and are read at startup. `config
 | `robot` | Workspace bounds, boundary-cue tuning, wrist pivots, controller→end-effector retargeting |
 | `overlay` | Ghost overlay thresholds and opacity, camera viewpoint and FOV, shared quad geometry |
 
-Scenario variants sit beside the defaults (`*_local` for single-machine operation, `*_desk` for the desk-mounted arm) and are selected through `config.json`.
+Only `robot` and `overlay` have one file per setup (`*_desk`, `*_bimanual`); everything else is a single file.
 
 ---
 

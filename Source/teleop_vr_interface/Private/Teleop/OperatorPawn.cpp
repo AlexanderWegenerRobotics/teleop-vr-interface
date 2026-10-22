@@ -14,6 +14,7 @@ extern RENDERCORE_API uint32 GRenderThreadTime;
 #include "Shared/annotation_msg.hpp"
 #include "Engine/Engine.h"
 #include "IXRTrackingSystem.h"
+#include "IHeadMountedDisplay.h"
 #include "IOpenXRHMD.h"
 
 #if PLATFORM_WINDOWS
@@ -195,6 +196,9 @@ AOperatorPawn::AOperatorPawn() {
 	Gaze = CreateDefaultSubobject<UGazeComponent>(TEXT("Gaze"));
 	SoundFeedback = CreateDefaultSubobject<USoundFeedback>(TEXT("SoundFeedback"));
 	UIBinder = CreateDefaultSubobject<UWidgetBinder>(TEXT("UIBinder"));
+	AlertBinder = CreateDefaultSubobject<UWidgetBinder>(TEXT("AlertBinder"));
+	LeftWristView  = CreateDefaultSubobject<UWristViewComponent>(TEXT("LeftWristView"));
+	RightWristView = CreateDefaultSubobject<UWristViewComponent>(TEXT("RightWristView"));
 	LeftTracked = CreateDefaultSubobject<UTrackedControllerComponent>(TEXT("LeftTracked"));
 	RightTracked = CreateDefaultSubobject<UTrackedControllerComponent>(TEXT("RightTracked"));
 
@@ -267,12 +271,17 @@ AOperatorPawn::AOperatorPawn() {
 	RightTracked->IA_PadDown = RightPadDown.Object;
 	RightTracked->IA_HandGrip = RightHandGrip.Object;
 
-	static ConstructorHelpers::FClassFinder<UUserWidget> UIClass(TEXT("/Game/UI/WBP_DebugPanel.WBP_DebugPanel_C"));
-	if (UIClass.Succeeded()) {
-		UIWidgetClass = UIClass.Class;
+	static ConstructorHelpers::FClassFinder<UUserWidget> FrameClass(TEXT("/Game/UI/WBP_HudFrame.WBP_HudFrame_C"));
+	static ConstructorHelpers::FClassFinder<UUserWidget> AlertsClass(TEXT("/Game/UI/WBP_HudAlerts.WBP_HudAlerts_C"));
+	if (FrameClass.Succeeded() && AlertsClass.Succeeded()) {
+		UIWidgetClass    = FrameClass.Class;
+		AlertWidgetClass = AlertsClass.Class;
 	}
 	else {
-		UE_LOG(LogTemp, Warning, TEXT("OperatorPawn: WBP_DebugPanel not found"));
+		UE_LOG(LogTemp, Warning, TEXT("OperatorPawn: WBP_HudFrame / WBP_HudAlerts not found, falling back to WBP_DebugPanel"));
+		static ConstructorHelpers::FClassFinder<UUserWidget> UIClass(TEXT("/Game/UI/WBP_DebugPanel.WBP_DebugPanel_C"));
+		if (UIClass.Succeeded()) UIWidgetClass = UIClass.Class;
+		else UE_LOG(LogTemp, Warning, TEXT("OperatorPawn: WBP_DebugPanel not found"));
 	}
 }
 
@@ -319,6 +328,8 @@ void AOperatorPawn::BeginPlay() {
 	GhostOverlay->WorkspaceMinX_            = Config->Robot.WorkspaceMinX;
 	GhostOverlay->WorkspaceMaxY_            = Config->Robot.WorkspaceMaxY;
 	GhostOverlay->WorkspaceMinY_            = Config->Robot.WorkspaceMinY;
+	GhostOverlay->WorkspaceMaxX_            = Config->Robot.WorkspaceMaxX;
+	GhostOverlay->WorkspaceMaxZ_            = Config->Robot.WorkspaceMaxZ;
 
 	for (UWorkspaceBoundaryComponent* Boundary : { LeftWorkspaceBoundary, RightWorkspaceBoundary }) {
 		Boundary->TtcHorizonS        = Config->Robot.BoundaryTtcHorizonS;
@@ -367,9 +378,6 @@ void AOperatorPawn::BeginPlay() {
 	LookAround_.MaxPitchDeg = Config->Overlay.LookAroundMaxPitchDeg;
 	LookAround_.KneeDeg     = Config->Overlay.LookAroundKneeDeg;
 	LookReturnSec_          = Config->Overlay.LookAroundReturnSec;
-	bLookRequireEngaged_    = Config->Overlay.bLookAroundRequireEngaged;
-	if (!bLookRequireEngaged_)
-		UE_LOG(LogTemp, Warning, TEXT("OperatorPawn: look_around.require_engaged is false -- look-around runs in every state (test mode)"));
 	bLookAroundEnabled_ = Config->Overlay.bLookAroundEnabled
 		&& Config->Overlay.ViewpointMode == EOverlayViewpointMode::Static;
 	if (Config->Overlay.bLookAroundEnabled && !bLookAroundEnabled_) {
@@ -455,6 +463,9 @@ void AOperatorPawn::BeginPlay() {
 		AudioCfg.OutputDevice = Config->Stream.Audio.OutputDevice;
 		AudioCfg.bSyncToVideo = Config->Stream.Audio.bSyncToVideo;
 		AudioCfg.ExtraDelayMs = Config->Stream.Audio.ExtraDelayMs;
+		AudioCfg.GainDb       = static_cast<float>(Config->Stream.Audio.GainDb);
+		AudioCfg.SafetyMarginMs = Config->Stream.Audio.SafetyMarginMs;
+		AudioCfg.OutputBufferMs = Config->Stream.Audio.OutputBufferMs;
 		AudioRx_ = MakeUnique<FGStreamerAudioReceiver>();
 		if (!AudioRx_->Start(AudioCfg)) AudioRx_.Reset();
 		bAudioLog_ = AudioRx_.IsValid() && Config->Stream.Audio.bLog;
@@ -511,37 +522,66 @@ void AOperatorPawn::BeginPlay() {
 	LeftTracked->bDrawDebugRay = true;
 	RightTracked->bDrawDebugRay = true;
 
-	UIBinder->Initialize(UIWidgetClass, VRCamera, FVector2D(Config->Hud.UIWidgetWidth, Config->Hud.UIWidgetHeight), Config->Hud.UIPlaneDistance, 1);
+	if (Config->Hud.Placement == TEXT("world"))      HudPlacement_ = EHudPlacement::WorldLocked;
+	else if (Config->Hud.Placement == TEXT("head"))  HudPlacement_ = EHudPlacement::HeadLocked;
+	else HudPlacement_ = bLookAroundEnabled_ ? EHudPlacement::WorldLocked : EHudPlacement::HeadLocked;
+	if (HudPlacement_ == EHudPlacement::WorldLocked && !bLookAroundEnabled_) {
+		UE_LOG(LogTemp, Warning, TEXT("OperatorPawn: HUD placement world needs look-around -- frame stays head-locked"));
+		HudPlacement_ = EHudPlacement::HeadLocked;
+	}
+
+	const bool bWorldHud = HudPlacement_ == EHudPlacement::WorldLocked;
+	FrameSize_        = FVector2D(Config->Hud.UIWidgetWidth, Config->Hud.UIWidgetHeight);
+	HudFrameDistance_ = Config->Hud.UIPlaneDistance;
+
+	UIBinder->Initialize(UIWidgetClass, VRCamera, FrameSize_, HudFrameDistance_, 2);
+	Hud_.Frame = UIBinder;
+	if (AlertWidgetClass && AlertBinder) {
+		AlertBinder->bHideLayerWhenEmpty = true;
+		AlertBinder->Initialize(AlertWidgetClass, VRCamera,
+			FVector2D(Config->Hud.AlertsWidgetWidth, Config->Hud.AlertsWidgetHeight), Config->Hud.AlertsPlaneDistance, 4);
+		UIBinder->SetOccluder(AlertBinder);
+		Hud_.Alerts = AlertBinder;
+	}
+	Hud_.BuildMirrors();
+	Hud_.SetStateDriven(FName("startButton"));
+	Hud_.SetStateDriven(FName("engageButton"));
+	ApplyControlPanelSet(false);
+	UE_LOG(LogTemp, Log, TEXT("OperatorPawn: HUD frame %.0fx%.0f, %s, near control panel %s, alerts %s"),
+		FrameSize_.X, FrameSize_.Y,
+		bWorldHud ? TEXT("world-locked while ENGAGED") : TEXT("always head-locked"),
+		UIBinder->HasWidget(FName("system_control_tray_near")) ? TEXT("found") : TEXT("not found"),
+		Hud_.Alerts ? TEXT("loaded") : TEXT("not loaded"));
 	ResolveAuthorityGlyphs();
 	AuditWidgetNames();
-	PiPBaseSlotPos_ = UIBinder->GetWidgetSlotPosition(FName("pip_canvas"));
-	PiPNormalSize_  = UIBinder->GetWidgetSize(FName("pip_canvas"));
+	PiPBaseSlotPos_ = Hud_.GetWidgetSlotPosition(FName("pip_canvas"));
+	PiPNormalSize_  = Hud_.GetWidgetSize(FName("pip_canvas"));
 	PiPCurrentSize_ = PiPNormalSize_;
-	UIBinder->SetVisibility(FName("statsPanel"), false);
-	UIBinder->SetVisibility(FName("pip_canvas"), false);
-	UIBinder->SetVisibility(FName("cameraMenu"), false);
-	UIBinder->SetVisibility(FName("resetMenu"), false);
-	UIBinder->SetVisibility(FName("episodeAnnotationCanvas"), false);
-	UIBinder->SetVisibility(FName("settings_canvas"), false);
+	Hud_.SetVisibility(FName("statsPanel"), false);
+	Hud_.SetVisibility(FName("pip_canvas"), false);
+	Hud_.SetVisibility(FName("cameraMenu"), false);
+	Hud_.SetVisibility(FName("resetMenu"), false);
+	Hud_.SetVisibility(FName("episodeAnnotationCanvas"), false);
+	Hud_.SetVisibility(FName("settings_canvas"), false);
 	// Warning banners. These are laid out visible in UMG so they can be
 	// positioned, and nothing hid them at startup -- fault_status_canvas in
 	// particular sat on screen showing its placeholder text for a whole session
 	// with no fault anywhere. The Tick handlers below set them correctly from
 	// the first frame, but only once the relevant feed has been heard from; this
 	// makes the starting state false rather than "whatever the artist left".
-	UIBinder->SetVisibility(FName("fault_status_canvas"), false);
-	UIBinder->SetVisibility(FName("armStaleInfo"), false);
-	UIBinder->SetVisibility(FName("videoLostInfo"), false);
+	Hud_.SetVisibility(FName("fault_status_canvas"), false);
+	Hud_.SetVisibility(FName("armStaleInfo"), false);
+	Hud_.SetVisibility(FName("videoLostInfo"), false);
 	// Intervention UI. Hidden until the operator arms the session; see the
 	// interventionButton handler. Both widgets are driven from the single
 	// bInterventionArmed_ flag so they can never disagree about whether the
 	// feature is on screen -- or, now, about whether it is live.
-	UIBinder->SetVisibility(FName("interventionPanel"),     bInterventionArmed_);
-	UIBinder->SetVisibility(FName("authority_pill_canvas"), bInterventionArmed_);
+	Hud_.SetVisibility(FName("interventionPanel"),     bInterventionArmed_);
+	Hud_.SetVisibility(FName("authority_pill_canvas"), bInterventionArmed_);
 	// Start from a known visual state. Without this the button rests on
 	// whatever its UMG Normal brush happens to be, which is only the unmuted
 	// icon by convention rather than by anything enforcing it.
-	UIBinder->SetButtonToggled(FName("muteButton"), bSoundMuted_);
+	Hud_.SetButtonToggled(FName("muteButton"), bSoundMuted_);
 	SoundFeedback->SetMuted(bSoundMuted_);
 
 	// Main-view avatar/twin label -- debug-simple text readout for now (see
@@ -550,7 +590,7 @@ void AOperatorPawn::BeginPlay() {
 	// warning if it isn't there yet, so this is safe even before that widget
 	// exists.
 	if (Config->Stream.bHasTwinStream)
-		UIBinder->SetText(FName("viewmode_label"), *kAvatarMainLabel); // avatar is always the initial active source
+		Hud_.SetText(FName("viewmode_label"), *kAvatarMainLabel); // avatar is always the initial active source
 
 	for (const FPiPStreamConfig& S : Config->Stream.PiPStreams) {
 		TUniquePtr<IVideoSource> Src;
@@ -588,26 +628,46 @@ void AOperatorPawn::BeginPlay() {
 		PiPSourceNames_.Add(TwinPiPEntryName_);
 	}
 
+	bWristViewEnabled_ = Config->Hud.bWristViewEnabled;
+	WristViewMode_     = Config->Hud.WristViewMode;
+	if (bWristViewEnabled_) {
+		FWristViewSettings WS;
+		WS.WidthCm      = Config->Hud.WristViewWidthCm;
+		WS.GapCm        = Config->Hud.WristViewGapCm;
+		WS.UpCm         = Config->Hud.WristViewUpCm;
+		WS.FollowTauS   = Config->Hud.WristViewFollowTauS;
+		WS.ExpandScale  = Config->Hud.WristViewExpandScale;
+		WS.ShrinkDelayS = Config->Hud.WristViewShrinkDelayS;
+		for (uint8 Arm = 0; Arm < 2; ++Arm) {
+			const FString StreamName = Config->Hud.WristViewStreams.IsValidIndex(Arm) ? Config->Hud.WristViewStreams[Arm] : FString();
+			const int32 Idx = StreamName.IsEmpty() ? INDEX_NONE : PiPSourceNames_.IndexOfByKey(StreamName);
+			WristStreamIdx_[Arm] = (Idx != INDEX_NONE && PiPSources_.IsValidIndex(Idx)) ? Idx : INDEX_NONE;
+			if (UWristViewComponent* V = WristView(Arm)) V->Initialize(VRCamera, 3, Arm == 0 ? -1.f : 1.f, WS);
+			UE_LOG(LogTemp, Log, TEXT("OperatorPawn: wrist view arm %d -> stream \"%s\" %s (mode %s)"),
+				Arm, *StreamName, WristStreamIdx_[Arm] != INDEX_NONE ? TEXT("found") : TEXT("NOT FOUND (enable it in stream.json pip_streams)"), *WristViewMode_);
+		}
+	}
+
 	const float LatencyWarn = Config->Hud.LatencyWarningMs;
-	UIBinder->BindPlot(FName("videoLatencyPlot"), LatencyHistory.GetSamplesPtr(), nullptr, LatencyHistory.Capacity(), LatencyHistory.GetHeadPtr(), 0.0f, LatencyWarn * 2.0f);
-	UIBinder->SetPlotThreshold(FName("videoLatencyPlot"), LatencyWarn);
+	Hud_.BindPlot(FName("videoLatencyPlot"), LatencyHistory.GetSamplesPtr(), nullptr, LatencyHistory.Capacity(), LatencyHistory.GetHeadPtr(), 0.0f, LatencyWarn * 2.0f);
+	Hud_.SetPlotThreshold(FName("videoLatencyPlot"), LatencyWarn);
 
 	const float DataLatencyWarn = Config->Hud.DataLatencyWarningMs;
-	UIBinder->BindPlot(FName("dataLatencyPlot"), JitterHistory.GetSamplesPtr(), nullptr, JitterHistory.Capacity(), JitterHistory.GetHeadPtr(), 0.0f, DataLatencyWarn * 2.0f);
-	UIBinder->SetPlotThreshold(FName("dataLatencyPlot"), DataLatencyWarn);
+	Hud_.BindPlot(FName("dataLatencyPlot"), JitterHistory.GetSamplesPtr(), nullptr, JitterHistory.Capacity(), JitterHistory.GetHeadPtr(), 0.0f, DataLatencyWarn * 2.0f);
+	Hud_.SetPlotThreshold(FName("dataLatencyPlot"), DataLatencyWarn);
 
-	UIBinder->BindPlot(FName("dataFpsPlot"), FpsHistory.GetSamplesPtr(), nullptr, FpsHistory.Capacity(), FpsHistory.GetHeadPtr(), 0.0f, 60.0f);
-	UIBinder->SetPlotThreshold(FName("dataFpsPlot"), 30.0f);
+	Hud_.BindPlot(FName("dataFpsPlot"), FpsHistory.GetSamplesPtr(), nullptr, FpsHistory.Capacity(), FpsHistory.GetHeadPtr(), 0.0f, 60.0f);
+	Hud_.SetPlotThreshold(FName("dataFpsPlot"), 30.0f);
 
 	// CPU and GPU utilization — 0-100%, threshold at 80%.
 	// GPU is normalised against a 90 Hz VR frame budget (11.11 ms = 100%).
-	UIBinder->BindPlot(FName("dataCpuPlot"), CpuHistory.GetSamplesPtr(), nullptr, CpuHistory.Capacity(), CpuHistory.GetHeadPtr(), 0.0f, 100.0f);
-	UIBinder->SetPlotThreshold(FName("dataCpuPlot"), 80.0f);
-	UIBinder->BindPlot(FName("dataGpuPlot"), GpuHistory.GetSamplesPtr(), nullptr, GpuHistory.Capacity(), GpuHistory.GetHeadPtr(), 0.0f, 100.0f);
-	UIBinder->SetPlotThreshold(FName("dataGpuPlot"), 90.0f);  // GPU utilisation %
+	Hud_.BindPlot(FName("dataCpuPlot"), CpuHistory.GetSamplesPtr(), nullptr, CpuHistory.Capacity(), CpuHistory.GetHeadPtr(), 0.0f, 100.0f);
+	Hud_.SetPlotThreshold(FName("dataCpuPlot"), 80.0f);
+	Hud_.BindPlot(FName("dataGpuPlot"), GpuHistory.GetSamplesPtr(), nullptr, GpuHistory.Capacity(), GpuHistory.GetHeadPtr(), 0.0f, 100.0f);
+	Hud_.SetPlotThreshold(FName("dataGpuPlot"), 90.0f);  // GPU utilisation %
 
-	UIBinder->BindPlot(FName("dataGpuTempPlot"), GpuTempHistory.GetSamplesPtr(), nullptr, GpuTempHistory.Capacity(), GpuTempHistory.GetHeadPtr(), 0.0f, 100.0f);
-	UIBinder->SetPlotThreshold(FName("dataGpuTempPlot"), 83.0f);  // GPU temp °C — throttle onset
+	Hud_.BindPlot(FName("dataGpuTempPlot"), GpuTempHistory.GetSamplesPtr(), nullptr, GpuTempHistory.Capacity(), GpuTempHistory.GetHeadPtr(), 0.0f, 100.0f);
+	Hud_.SetPlotThreshold(FName("dataGpuTempPlot"), 83.0f);  // GPU temp °C — throttle onset
 
 	// The avatar's authority echo. It publishes authority to the orchestrator
 	// inside SceneObjectsMsg every tick, but that is a different socket and a
@@ -709,6 +769,7 @@ void AOperatorPawn::BeginPlay() {
 		if (VideoLogger_) {
 			VideoLogger_->bEnableRawVideo       = Config->Stream.bVideoLogRaw;
 			VideoLogger_->bEnableAttentionVideo = Config->Stream.bVideoLogAttention;
+			VideoLogger_->CaptureFPS            = static_cast<float>(Config->Stream.VideoLogFps);
 		}
 	}
 
@@ -720,13 +781,50 @@ void AOperatorPawn::BeginPlay() {
 			VideoUVSize   = FVector2D(0.5f, 1.0f);
 		}
 		VideoLogger_->bOperatorView = Config->Stream.bVideoLogOperatorView;
-		VideoLogger_->AddLayerSource([this]() -> UTexture* { return VideoFeed->GetVideoTexture(); }, 0, VideoUVOffset, VideoUVSize, true);
+
+		const float LogPlaneD = VideoFeed->PlaneDistance;
+		auto VideoSizeCm = [this]() -> FVector2D { return GetVideoQuadSize(); };
+		auto PanelSizeCm = [LogPlaneD](const UWidgetBinder* B, FVector2D Size) -> FVector2D {
+			const float Dist = B ? B->GetLayerDistance() : 0.f;
+			return Dist > 0.f ? Size * (LogPlaneD / Dist) : FVector2D::ZeroVector;
+		};
+
+		VideoLogger_->AddLayerSource([this]() -> UTexture* { return VideoFeed->GetVideoTexture(); }, 0, VideoUVOffset, VideoUVSize, true, false, VideoSizeCm);
 		if (VideoFeed->IsStereoMode()) {
-			VideoLogger_->AddLayerSource([this]() -> UTexture* { return GhostOverlay->IsGhostVisible() ? static_cast<UTexture*>(GhostOverlay->GetRenderTargetLeft()) : nullptr; }, 1, FVector2D::ZeroVector, FVector2D::UnitVector, true, true);
+			VideoLogger_->AddLayerSource([this]() -> UTexture* { return GhostOverlay->IsGhostVisible() ? static_cast<UTexture*>(GhostOverlay->GetRenderTargetLeft()) : nullptr; }, 1, FVector2D::ZeroVector, FVector2D::UnitVector, true, true, VideoSizeCm);
 		} else {
-			VideoLogger_->AddLayerSource([this]() -> UTexture* { return GhostOverlay->IsGhostVisible() ? static_cast<UTexture*>(GhostOverlay->GetRenderTarget()) : nullptr; }, 1, FVector2D::ZeroVector, FVector2D::UnitVector, true, true);
+			VideoLogger_->AddLayerSource([this]() -> UTexture* { return GhostOverlay->IsGhostVisible() ? static_cast<UTexture*>(GhostOverlay->GetRenderTarget()) : nullptr; }, 1, FVector2D::ZeroVector, FVector2D::UnitVector, true, true, VideoSizeCm);
 		}
-		VideoLogger_->AddLayerSource([this]() -> UTexture* { return static_cast<UTexture*>(UIBinder->GetRenderTarget()); }, 2);
+		VideoLogger_->AddLayerSource(
+			[this]() -> UTexture* { return UIBinder ? static_cast<UTexture*>(UIBinder->GetRenderTarget()) : nullptr; },
+			2, FVector2D::ZeroVector, FVector2D::UnitVector, true, false,
+			[this, PanelSizeCm]() -> FVector2D { return UIBinder ? PanelSizeCm(UIBinder, UIBinder->GetQuadSize()) : FVector2D::ZeroVector; },
+			[this]() -> bool { return !(UIBinder && UIBinder->GetPlacement() == EHudPlacement::HeadLocked && bVideoLayersWorldLocked_); });
+		for (uint8 Arm = 0; Arm < 2; ++Arm) {
+			if (!bWristViewEnabled_ || WristStreamIdx_[Arm] == INDEX_NONE) continue;
+			VideoLogger_->AddLayerSource(
+				[this, Arm]() -> UTexture* { UWristViewComponent* V = WristView(Arm); return (V && V->IsShown()) ? static_cast<UTexture*>(V->GetTexture()) : nullptr; },
+				3, FVector2D::ZeroVector, FVector2D::UnitVector, true, false,
+				[this, Arm]() -> FVector2D { UWristViewComponent* V = WristView(Arm); return V ? V->GetSizeCm() : FVector2D::ZeroVector; },
+				nullptr,
+				[this, Arm]() -> FVector2D { UWristViewComponent* V = WristView(Arm); return V ? FVector2D(V->GetCenterCm().X, -V->GetCenterCm().Y) : FVector2D::ZeroVector; });
+		}
+		if (Hud_.Alerts)
+			VideoLogger_->AddLayerSource(
+				[this]() -> UTexture* { return (AlertBinder && AlertBinder->IsLayerShown()) ? static_cast<UTexture*>(AlertBinder->GetRenderTarget()) : nullptr; },
+				4, FVector2D::ZeroVector, FVector2D::UnitVector, false, false,
+				[this, PanelSizeCm]() -> FVector2D { return AlertBinder ? PanelSizeCm(AlertBinder, AlertBinder->GetQuadSize()) : FVector2D::ZeroVector; },
+				[this]() -> bool { return !bVideoLayersWorldLocked_; });
+
+		{
+			const FVector2D Q = GetVideoQuadSize();
+			FVector2D Half = Q * 0.5;
+			auto Grow = [&Half](FVector2D SizeCm) { Half.X = FMath::Max(Half.X, SizeCm.X * 0.5); Half.Y = FMath::Max(Half.Y, SizeCm.Y * 0.5); };
+			Grow(PanelSizeCm(UIBinder, FrameSize_));
+			if (Hud_.Alerts) Grow(PanelSizeCm(AlertBinder, AlertBinder->GetQuadSize()));
+			const float VideoWidthPx = 1280.f;
+			if (Q.X > 0.0) VideoLogger_->SetCanvas(Half, VideoWidthPx / static_cast<float>(Q.X), VideoWidthPx);
+		}
 
 		VideoLogger_->QuadWidth = VideoQuadWidth_;
 		VideoLogger_->QuadHeight = VideoQuadHeight_;
@@ -841,18 +939,18 @@ void AOperatorPawn::Tick(float DeltaTime) {
 	}
 
 	const FGazeData& GazeData = Gaze->GetGazeData();
-	UIBinder->SetGazeInput(GazeData);
+	Hud_.SetGazeInput(GazeData);
 
-	if (ComLink->GetAvatarState() == ESysState::Engaged) UIBinder->SetImageColor(FName("avatar_torso"), FLinearColor::Green);
+	if (ComLink->GetAvatarState() == ESysState::Engaged) SetDeviceColor(FName("avatar_torso"), FLinearColor::Green);
 	else if (OperatorState_ == ESysState::Homing || OperatorState_ == ESysState::Awaiting)
-		UIBinder->SetImageColor(FName("avatar_torso"), kWarnAmber);
-	else UIBinder->SetImageColor(FName("avatar_torso"), FLinearColor::Red);
+		SetDeviceColor(FName("avatar_torso"), kWarnAmber);
+	else SetDeviceColor(FName("avatar_torso"), FLinearColor::Red);
 
-	UIBinder->SetImageColor(FName("avatar_eye"), VideoFeed->IsReceiving() ? FLinearColor::Green : FLinearColor::Red);
-	UIBinder->SetImageColor(FName("avatar_left_arm"), ComLink->GetArmRemoteState(0) == SysState::ENGAGED ? FLinearColor::Green : FLinearColor::Red);
-	UIBinder->SetImageColor(FName("avatar_right_arm"), ComLink->GetArmRemoteState(1) == SysState::ENGAGED ? FLinearColor::Green : FLinearColor::Red);
-	UIBinder->SetImageColor(FName("avatar_head"), ComLink->IsHeadAlive() ? FLinearColor::Green : FLinearColor::Red);
-	UIBinder->SetVisibility(FName("videoLostInfo"), !VideoFeed->IsReceiving());
+	SetDeviceColor(FName("avatar_eye"), VideoFeed->IsReceiving() ? FLinearColor::Green : FLinearColor::Red);
+	SetDeviceColor(FName("avatar_left_arm"), ComLink->GetArmRemoteState(0) == SysState::ENGAGED ? FLinearColor::Green : FLinearColor::Red);
+	SetDeviceColor(FName("avatar_right_arm"), ComLink->GetArmRemoteState(1) == SysState::ENGAGED ? FLinearColor::Green : FLinearColor::Red);
+	SetDeviceColor(FName("avatar_head"), ComLink->IsHeadAlive() ? FLinearColor::Green : FLinearColor::Red);
+	Hud_.SetVisibility(FName("videoLostInfo"), !VideoFeed->IsReceiving());
 
 	// --- stale-state alarm (Tick) -------------------------------------------
 	// Packets arriving is not the same as the robot being alive. The avatar
@@ -870,9 +968,9 @@ void AOperatorPawn::Tick(float DeltaTime) {
 	// swatches competing with six live numeric plots for attention.
 	{
 		const bool bStale = ComLink->IsArmStateStale(0, kArmStateStaleWarnMs);
-		UIBinder->SetVisibility(FName("armStaleInfo"), bStale);
+		Hud_.SetVisibility(FName("armStaleInfo"), bStale);
 		if (bStale && ComLink->GetArmRemoteState(0) != SysState::FAULT) {
-			UIBinder->SetImageColor(FName("avatar_left_arm"), kWarnAmber);
+			SetDeviceColor(FName("avatar_left_arm"), kWarnAmber);
 		}
 		// Edge-triggered: one warning per stale episode, not one per tick.
 		if (bStale && !bArmStateWasStale_) {
@@ -972,12 +1070,12 @@ void AOperatorPawn::Tick(float DeltaTime) {
 		// Both names are driven. The real one does the work; armFaultInfo stays
 		// in case the asset ever grows a widget by that name, and costs one
 		// failed TMap lookup.
-		UIBinder->SetVisibility(FName("fault_status_canvas"), bFaultLatched);
-		UIBinder->SetVisibility(FName("armFaultInfo"), bFaultLatched);
+		Hud_.SetVisibility(FName("fault_status_canvas"), bFaultLatched);
+		Hud_.SetVisibility(FName("armFaultInfo"), bFaultLatched);
 		if (bFaultLatched) {
 			const bool bLeft  = ComLink->GetArmRemoteState(0) == SysState::FAULT;
 			const bool bRight = ComLink->GetArmRemoteState(1) == SysState::FAULT;
-			UIBinder->SetText(FName("fault_status_text"),
+			Hud_.SetText(FName("fault_status_text"),
 				(bLeft && bRight) ? TEXT("BOTH ARMS FAULTED")
 				: bLeft           ? TEXT("LEFT ARM FAULTED")
 				                  : TEXT("RIGHT ARM FAULTED"));
@@ -985,25 +1083,26 @@ void AOperatorPawn::Tick(float DeltaTime) {
 	}
 
 	const bool bGazeFresh = Gaze->IsGazeFresh();
-	UIBinder->SetImageColor(FName("operator_eye"), bGazeFresh ? FLinearColor::Green : FLinearColor::Red);
-	UIBinder->SetVisibility(FName("gazeOfflineInfo"), !bGazeFresh);
-	UIBinder->SetImageColor(FName("operator_left_arm"), LeftTracked->IsTracking() ? FLinearColor::Green : FLinearColor::Red);
-	UIBinder->SetImageColor(FName("operator_right_arm"), RightTracked->IsTracking() ? FLinearColor::Green : FLinearColor::Red);
-	UIBinder->SetImageColor(FName("operator_head"), bHMDOriginValid_ ? FLinearColor::Green : FLinearColor::Red);
+	SetDeviceColor(FName("operator_eye"), bGazeFresh ? FLinearColor::Green : FLinearColor::Red);
+	Hud_.SetVisibility(FName("gazeOfflineInfo"), !bGazeFresh);
+	SetDeviceColor(FName("operator_left_arm"), LeftTracked->IsTracking() ? FLinearColor::Green : FLinearColor::Red);
+	SetDeviceColor(FName("operator_right_arm"), RightTracked->IsTracking() ? FLinearColor::Green : FLinearColor::Red);
+	SetDeviceColor(FName("operator_head"), bHMDOriginValid_ ? FLinearColor::Green : FLinearColor::Red);
 
 	ESysState av_state = ComLink->GetAvatarState();
-	if (av_state == ESysState::Engaged) UIBinder->SetImageColor(FName("operator_torso"), FLinearColor::Green);
+	if (av_state == ESysState::Engaged) SetDeviceColor(FName("operator_torso"), FLinearColor::Green);
 	else if (av_state == ESysState::Homing || av_state == ESysState::Awaiting)
-		UIBinder->SetImageColor(FName("operator_torso"), kWarnAmber);
-	else UIBinder->SetImageColor(FName("operator_torso"), FLinearColor::Red);
+		SetDeviceColor(FName("operator_torso"), kWarnAmber);
+	else SetDeviceColor(FName("operator_torso"), FLinearColor::Red);
+	UpdateDeviceGraphOpacity(DeltaTime);
 
 	static const TArray<FString> HealthLabels = { TEXT("NO SIGNAL"), TEXT("NORMAL"), TEXT("DEGRADED"), TEXT("CRITICAL"), TEXT("STALE") };
 	static const TArray<FLinearColor> HealthColors = { FLinearColor::Gray, FLinearColor::Green, FLinearColor::Yellow, FLinearColor::Red, FLinearColor::Gray };
 
 	uint8 HealthIdx = Stats.StreamHealthState;
 	if (HealthIdx < HealthLabels.Num()) {
-		UIBinder->SetText(FName("stream_health_value"), *HealthLabels[HealthIdx]);
-		UIBinder->SetTextColor(FName("stream_health_value"), HealthColors[HealthIdx]);
+		Hud_.SetText(FName("stream_health_value"), *HealthLabels[HealthIdx]);
+		Hud_.SetTextColor(FName("stream_health_value"), HealthColors[HealthIdx]);
 	}
 
 	// Before UpdateInfoBar, so the pill renders this frame's authority rather
@@ -1031,24 +1130,24 @@ void AOperatorPawn::Tick(float DeltaTime) {
 			// UpdateSourceTexture. No separate receiver, no extra decode.
 			VideoFeed->UpdateSourceTexture(TwinMainStreamKey_, PiPSharedTwinTexture_);
 			const bool bReceiving = VideoFeed->GetSourceStats(TwinMainStreamKey_).bIsReceiving;
-			UIBinder->SetVisibility(FName("pip_canvas"), bReceiving);
+			Hud_.SetVisibility(FName("pip_canvas"), bReceiving);
 			if (bReceiving && PiPSharedTwinTexture_)
-				UIBinder->SetImageTexture(FName("pip_image"), PiPSharedTwinTexture_);
+				Hud_.SetImageTexture(FName("pip_image"), PiPSharedTwinTexture_);
 		} else {
 			const int32 Idx = PiPSourceNames_.IndexOfByKey(ActivePiPStreamName_);
 			if (Idx != INDEX_NONE && PiPSources_.IsValidIndex(Idx)) {
 				PiPSources_[Idx]->UpdateTexture(PiPTextures_[Idx]);
 				const bool bReceiving = PiPSources_[Idx]->GetStats().bIsReceiving;
-				UIBinder->SetVisibility(FName("pip_canvas"), bReceiving);
+				Hud_.SetVisibility(FName("pip_canvas"), bReceiving);
 				if (bReceiving && PiPTextures_[Idx])
-					UIBinder->SetImageTexture(FName("pip_image"), PiPTextures_[Idx]);
+					Hud_.SetImageTexture(FName("pip_image"), PiPTextures_[Idx]);
 			}
 		}
 	}
 
 	if (!ActivePiPStreamName_.IsEmpty() && PiPNormalSize_.X > 0.f) {
-		const bool bOver    = UIBinder->IsGazeOverWidget(FName("pip_canvas"), PiPGazeInnerMarginPx);
-		const bool bFarAway = !UIBinder->IsGazeOverWidget(FName("pip_canvas"), PiPGazeOuterMarginPx);
+		const bool bOver    = Hud_.IsGazeOverWidget(FName("pip_canvas"), PiPGazeInnerMarginPx);
+		const bool bFarAway = !Hud_.IsGazeOverWidget(FName("pip_canvas"), PiPGazeOuterMarginPx);
 		if (!bPiPExpanded_ && bOver)   { bPiPExpanded_ = true;  PiPDwellTimer_ = 0.f; }
 		if (bPiPExpanded_ && bFarAway) { PiPDwellTimer_ += DeltaTime; if (PiPDwellTimer_ >= PiPShrinkDwellTime) bPiPExpanded_ = false; }
 		else if (bPiPExpanded_)         { PiPDwellTimer_ = 0.f; }
@@ -1059,8 +1158,10 @@ void AOperatorPawn::Tick(float DeltaTime) {
 		// Pivot is derived from ExpandDirection: (1,1)→top-left fixed, (-1,-1)→bottom-right fixed.
 		FVector2D Scale(PiPCurrentSize_.X / FMath::Max(PiPNormalSize_.X, 1.f), PiPCurrentSize_.Y / FMath::Max(PiPNormalSize_.Y, 1.f));
 		FVector2D Pivot = FVector2D(0.5f, 0.5f) - PiPExpandDirection * 0.5f;
-		UIBinder->SetWidgetRenderScale(FName("pip_canvas"), Scale, Pivot);
+		Hud_.SetWidgetRenderScale(FName("pip_canvas"), Scale, Pivot);
 	}
+
+	UpdateWristViews(DeltaTime);
 
 	bool bLeftGrasping  = LeftTracked->IsGraspHeld();
 	bool bRightGrasping = RightTracked->IsGraspHeld();
@@ -1079,12 +1180,12 @@ void AOperatorPawn::Tick(float DeltaTime) {
 		if (LeftGear != PrevLeftGear_) {
 			Logger_->LogEvent(FString::Printf(TEXT("GEAR_CHANGE side=left gear=%.1f"), LeftGear));
 			PrevLeftGear_ = LeftGear;
-			UIBinder->SetText(FName("gear_left_value"), FString::Printf(TEXT("%.1f"), LeftGear));
+			Hud_.SetText(FName("gear_left_value"), FString::Printf(TEXT("%.1f"), LeftGear));
 		}
 		if (RightGear != PrevRightGear_) {
 			Logger_->LogEvent(FString::Printf(TEXT("GEAR_CHANGE side=right gear=%.1f"), RightGear));
 			PrevRightGear_ = RightGear;
-			UIBinder->SetText(FName("gear_right_value"), FString::Printf(TEXT("%.1f"), RightGear));
+			Hud_.SetText(FName("gear_right_value"), FString::Printf(TEXT("%.1f"), RightGear));
 		}
 
 		// --- clutch transition events ---
@@ -1222,8 +1323,8 @@ void AOperatorPawn::UpdateStateMachine() {
 		return;
 	}
 
-	FName ButtonPressed = UIBinder->ConsumePress();
-	FName ButtonRejected = UIBinder->ConsumeRejection();
+	FName ButtonPressed = Hud_.ConsumePress();
+	FName ButtonRejected = Hud_.ConsumeRejection();
 	if (ButtonRejected != FName()) {
 		SoundFeedback->Play(ESoundType::Reject);
 		if (Logger_) Logger_->LogEvent(TEXT("BUTTON_REJECTED button=") + ButtonRejected.ToString());
@@ -1323,18 +1424,18 @@ void AOperatorPawn::UpdateStateMachine() {
 		}
 		else if (ButtonPressed == FName("resetButton")) {
 			if (bResetMenuOpen_) {
-				UIBinder->HideMenu();
-				UIBinder->SetButtonToggled(FName("resetButton"), false);
+				Hud_.HideMenu();
+				Hud_.SetButtonToggled(FName("resetButton"), false);
 				bResetMenuOpen_ = false;
 			} else {
-				UIBinder->ShowResetMenu();
-				UIBinder->SetButtonToggled(FName("resetButton"), true);
+				Hud_.ShowResetMenu();
+				Hud_.SetButtonToggled(FName("resetButton"), true);
 				bResetMenuOpen_ = true;
 			}
 		}
 		else if (ButtonPressed == FName("homeButton") && !bAnnotationPending_) {
 			bAnnotationPending_ = true;
-			UIBinder->SetVisibility(FName("episodeAnnotationCanvas"), true);
+			Hud_.SetVisibility(FName("episodeAnnotationCanvas"), true);
 		}
 		else if (bAvatarConfirmedEngaged_ && AvatarState == ESysState::Awaiting) {
 			CaptureControllerOrigins();
@@ -1372,18 +1473,18 @@ void AOperatorPawn::UpdateStateMachine() {
 		}
 		else if (ButtonPressed == FName("resetButton")) {
 			if (bResetMenuOpen_) {
-				UIBinder->HideMenu();
-				UIBinder->SetButtonToggled(FName("resetButton"), false);
+				Hud_.HideMenu();
+				Hud_.SetButtonToggled(FName("resetButton"), false);
 				bResetMenuOpen_ = false;
 			} else {
-				UIBinder->ShowResetMenu();
-				UIBinder->SetButtonToggled(FName("resetButton"), true);
+				Hud_.ShowResetMenu();
+				Hud_.SetButtonToggled(FName("resetButton"), true);
 				bResetMenuOpen_ = true;
 			}
 		}
 		else if (ButtonPressed == FName("homeButton") && !bAnnotationPending_) {
 			bAnnotationPending_ = true;
-			UIBinder->SetVisibility(FName("episodeAnnotationCanvas"), true);
+			Hud_.SetVisibility(FName("episodeAnnotationCanvas"), true);
 		}
 		break;
 
@@ -1393,12 +1494,12 @@ void AOperatorPawn::UpdateStateMachine() {
 
 	if (ButtonPressed == FName("statisticsButton")) {
 		bStatsVisible_ = !bStatsVisible_;
-		UIBinder->SetVisibility(FName("statsPanel"), bStatsVisible_);
+		Hud_.SetVisibility(FName("statsPanel"), bStatsVisible_);
 	}
 
 	if (ButtonPressed == FName("settingButton")) {
 		bSettingsVisible_ = !bSettingsVisible_;
-		UIBinder->SetVisibility(FName("settings_canvas"), bSettingsVisible_);
+		Hud_.SetVisibility(FName("settings_canvas"), bSettingsVisible_);
 	}
 
 	// Arms or disarms the intervention session. This is the switch that makes
@@ -1416,9 +1517,9 @@ void AOperatorPawn::UpdateStateMachine() {
 	//              before any of this.
 	if (ButtonPressed == FName("interventionButton")) {
 		bInterventionArmed_ = !bInterventionArmed_;
-		UIBinder->SetVisibility(FName("interventionPanel"),     bInterventionArmed_);
-		UIBinder->SetVisibility(FName("authority_pill_canvas"), bInterventionArmed_);
-		UIBinder->SetButtonToggled(FName("interventionButton"), bInterventionArmed_);
+		Hud_.SetVisibility(FName("interventionPanel"),     bInterventionArmed_);
+		Hud_.SetVisibility(FName("authority_pill_canvas"), bInterventionArmed_);
+		Hud_.SetButtonToggled(FName("interventionButton"), bInterventionArmed_);
 
 		const EControlAuthority Target = bInterventionArmed_ ? EControlAuthority::Hold
 		                                                      : EControlAuthority::Human;
@@ -1490,22 +1591,22 @@ void AOperatorPawn::UpdateStateMachine() {
 		SoundFeedback->SetMuted(bSoundMuted_);
 		if (!bSoundMuted_) SoundFeedback->Play(ESoundType::Confirm);
 
-		UIBinder->SetButtonToggled(FName("muteButton"), bSoundMuted_);
-		UIBinder->PushMessage(bSoundMuted_ ? TEXT("SOUND MUTED") : TEXT("SOUND ON"), 2.0f);
+		Hud_.SetButtonToggled(FName("muteButton"), bSoundMuted_);
+		Hud_.PushMessage(bSoundMuted_ ? TEXT("SOUND MUTED") : TEXT("SOUND ON"), 2.0f);
 		if (Logger_) Logger_->LogEvent(FString::Printf(TEXT("MUTE state=%s"),
 			bSoundMuted_ ? TEXT("on") : TEXT("off")));
 	}
 
 	if (ButtonPressed == FName("viewpointButton")) {
 		if (bMenuOpen_) {
-			UIBinder->HideMenu();
+			Hud_.HideMenu();
 			bMenuOpen_ = false;
-			UIBinder->SetButtonToggled(FName("viewpointButton"), !ActivePiPStreamName_.IsEmpty());
+			Hud_.SetButtonToggled(FName("viewpointButton"), !ActivePiPStreamName_.IsEmpty());
 		} else {
 			CurrentMenuStreams_ = PiPSourceNames_;
-			UIBinder->ShowCameraMenu(CurrentMenuStreams_, ActivePiPStreamName_);
+			Hud_.ShowCameraMenu(CurrentMenuStreams_, ActivePiPStreamName_);
 			bMenuOpen_ = true;
-			UIBinder->SetButtonToggled(FName("viewpointButton"), true);
+			Hud_.SetButtonToggled(FName("viewpointButton"), true);
 		}
 	}
 
@@ -1522,8 +1623,8 @@ void AOperatorPawn::UpdateStateMachine() {
 		const FString TargetSourceKey = bCurrentlyAvatar ? TwinMainStreamKey_   : kAvatarMainSourceName;
 		const FString TargetLabel     = bCurrentlyAvatar ? TwinMainStreamLabel_ : kAvatarMainLabel;
 		if (VideoFeed->SetActiveSource(TargetSourceKey)) {
-			UIBinder->SetText(FName("viewmode_label"), *TargetLabel);
-			UIBinder->SetButtonToggled(FName("viewmodeButton"), bCurrentlyAvatar);
+			Hud_.SetText(FName("viewmode_label"), *TargetLabel);
+			Hud_.SetButtonToggled(FName("viewmodeButton"), bCurrentlyAvatar);
 			GhostOverlay->SetGhostVisible(!bCurrentlyAvatar);
 		}
 	}
@@ -1531,8 +1632,8 @@ void AOperatorPawn::UpdateStateMachine() {
 	if (ButtonPressed != FName() && ButtonPressed.ToString().StartsWith(TEXT("__menu_"))) {
 		if (ButtonPressed == FName("__menu_off")) {
 			ActivePiPStreamName_ = TEXT("");
-			UIBinder->SetVisibility(FName("pip_canvas"), false);
-			UIBinder->SetButtonToggled(FName("viewpointButton"), false);
+			Hud_.SetVisibility(FName("pip_canvas"), false);
+			Hud_.SetButtonToggled(FName("viewpointButton"), false);
 		} else {
 			for (int32 i = 0; i < CurrentMenuStreams_.Num(); ++i) {
 				if (ButtonPressed == FName(*FString::Printf(TEXT("__menu_%d"), i))) {
@@ -1540,9 +1641,9 @@ void AOperatorPawn::UpdateStateMachine() {
 					break;
 				}
 			}
-			UIBinder->SetButtonToggled(FName("viewpointButton"), true);
+			Hud_.SetButtonToggled(FName("viewpointButton"), true);
 		}
-		UIBinder->HideMenu();
+		Hud_.HideMenu();
 		bMenuOpen_ = false;
 	}
 
@@ -1565,8 +1666,8 @@ void AOperatorPawn::UpdateStateMachine() {
 			UpdateButtonStates();
 		}
 		bResetMenuOpen_ = false;
-		UIBinder->HideMenu();
-		UIBinder->SetButtonToggled(FName("resetButton"), false);
+		Hud_.HideMenu();
+		Hud_.SetButtonToggled(FName("resetButton"), false);
 	}
 
 	if (bAnnotationPending_ && ButtonPressed != FName() && ButtonPressed.ToString().StartsWith(TEXT("episode_"))) {
@@ -1576,28 +1677,28 @@ void AOperatorPawn::UpdateStateMachine() {
 		else if (ButtonPressed == FName("episode_failure")) Label = TEXT("failure");
 
 		if (!Label.IsEmpty()) {
-			UIBinder->SetButtonToggled(ButtonPressed, false);
-			UIBinder->SetButtonToggled(FName("homeButton"), false);
+			Hud_.SetButtonToggled(ButtonPressed, false);
+			Hud_.SetButtonToggled(FName("homeButton"), false);
 			SendResetAll();
 			if (LeftArmResetState_  == EArmResetState::Idle && ComLink->IsArmAlive(0)) LeftArmResetState_  = EArmResetState::Recovering;
 			if (RightArmResetState_ == EArmResetState::Idle && ComLink->IsArmAlive(1)) RightArmResetState_ = EArmResetState::Recovering;
 			SendEpisodeRestart(Label);
 			++EpisodeCount_;
 			bAnnotationPending_ = false;
-			UIBinder->SetVisibility(FName("episodeAnnotationCanvas"), false);
+			Hud_.SetVisibility(FName("episodeAnnotationCanvas"), false);
 			UpdateButtonStates();
 		}
 	}
 }
 
 void AOperatorPawn::UpdateInfoBar() {
-	UIBinder->SetText(FName("ep_value"), FString::Printf(TEXT("%03d"), EpisodeCount_));
+	Hud_.SetText(FName("ep_value"), FString::Printf(TEXT("%03d"), EpisodeCount_));
 
 	int32 ElapsedSec = static_cast<int32>(FPlatformTime::Seconds() - SessionStartTime_);
 	int32 Hours      = ElapsedSec / 3600;
 	int32 Minutes    = (ElapsedSec % 3600) / 60;
 	int32 Seconds    = ElapsedSec % 60;
-	UIBinder->SetText(FName("session_time_value"), FString::Printf(TEXT("%d:%02d:%02d"), Hours, Minutes, Seconds));
+	Hud_.SetText(FName("session_time_value"), FString::Printf(TEXT("%d:%02d:%02d"), Hours, Minutes, Seconds));
 
 	// One-way NETWORK delay -- the same getter the stats panel's OWD plot
 	// reads. It used to be half the command round trip, which also counted
@@ -1607,16 +1708,16 @@ void AOperatorPawn::UpdateInfoBar() {
 	// link. No fallback now: unknown (no commands flowing) shows "--".
 	const float LatencyMs = ComLink->GetNetworkDelayMs();
 	if (LatencyMs > 0.f)
-		UIBinder->SetText(FName("latency_value"), FString::Printf(TEXT("%.1f ms"), LatencyMs));
+		Hud_.SetText(FName("latency_value"), FString::Printf(TEXT("%.1f ms"), LatencyMs));
 	else
-		UIBinder->SetText(FName("latency_value"), TEXT("-- ms"));
+		Hud_.SetText(FName("latency_value"), TEXT("-- ms"));
 
 	FLinearColor DotColor;
 	if      (LatencyMs <= 0.f) DotColor = FLinearColor::Gray;
 	else if (LatencyMs < 30.f) DotColor = FLinearColor::Green;
 	else if (LatencyMs < 80.f) DotColor = FLinearColor::Yellow;
 	else                       DotColor = FLinearColor::Red;
-	UIBinder->SetTextColor(FName("latency_dot"), DotColor);
+	Hud_.SetTextColor(FName("latency_dot"), DotColor);
 
 	if (!bInterventionArmed_) return;
 
@@ -1670,8 +1771,8 @@ void AOperatorPawn::UpdateInfoBar() {
 			: FString::Printf(TEXT("L%s R%s"), *AuthorityToInitial(L), *AuthorityToInitial(R));
 	}
 
-	UIBinder->SetText(FName("authority_pill_state"), AuthorityLabel);
-	UIBinder->SetTextColor(FName("authority_pill_state"), Accent);
+	Hud_.SetText(FName("authority_pill_state"), AuthorityLabel);
+	Hud_.SetTextColor(FName("authority_pill_state"), Accent);
 	// Dot and fill get all three setters on purpose.
 	//
 	// UWidgetBinder caches by widget TYPE, and each setter silently no-ops when
@@ -1690,7 +1791,7 @@ void AOperatorPawn::UpdateInfoBar() {
 	// Same string as the pill, deliberately. Two readouts of one fact that could
 	// word it differently are two chances to disagree with each other, which is
 	// how the first version ended up with an amber dot next to a green panel.
-	UIBinder->SetText(FName("intervention_authority_text"), AuthorityLabel);
+	Hud_.SetText(FName("intervention_authority_text"), AuthorityLabel);
 
 	// The panel and the pill are the same fact drawn two ways, and the two
 	// ways are deliberately inverted.
@@ -1719,7 +1820,7 @@ void AOperatorPawn::UpdateInfoBar() {
 	if (UTexture2D* Glyph = AuthorityGlyphFor(bWholeBodyAuthority
 			? GetEffectiveAuthority() : GetArmAuthority(0))) {
 		if (Glyph != LastAuthorityGlyph_) {
-			UIBinder->SetImageTexture(FName("authority_glyph"), Glyph);
+			Hud_.SetImageTexture(FName("authority_glyph"), Glyph);
 			LastAuthorityGlyph_ = Glyph;
 			// SetImageTexture replaces the brush wholesale, which resets its
 			// tint. Re-apply, or the new icon renders at the brush default for
@@ -1729,7 +1830,7 @@ void AOperatorPawn::UpdateInfoBar() {
 		}
 	}
 
-	UIBinder->SetText(FName("interv_value"), FString::Printf(TEXT("%d"), InterventionCount_));
+	Hud_.SetText(FName("interv_value"), FString::Printf(TEXT("%d"), InterventionCount_));
 }
 
 void AOperatorPawn::UpdatePolicyStats(float DeltaTime) {
@@ -1752,11 +1853,11 @@ void AOperatorPawn::UpdatePolicyStats(float DeltaTime) {
 	}
 	const int32 AutonPct = AutonEngagedSec_ > 0.0
 		? FMath::RoundToInt(100.0 * AutonPolicySec_ / AutonEngagedSec_) : 0;
-	UIBinder->SetText(FName("auton_value"), FString::Printf(TEXT("%d%%"), AutonPct));
+	Hud_.SetText(FName("auton_value"), FString::Printf(TEXT("%d%%"), AutonPct));
 
 	const bool  bFresh = FPlatformTime::Seconds() - PolicyStatusTime_.load() < kPolicyStatusStaleSec;
 	const float InfMs  = PolicyInferenceMs_.load();
-	UIBinder->SetText(FName("inference_value"),
+	Hud_.SetText(FName("inference_value"),
 		bFresh && InfMs >= 0.f ? FString::Printf(TEXT("%.0fms"), InfMs) : FString(TEXT("--")));
 
 	// The dot beside the DAGGER title. It used to mirror bRecordingActive_,
@@ -1778,6 +1879,14 @@ void AOperatorPawn::UpdatePolicyStats(float DeltaTime) {
 }
 
 void AOperatorPawn::AuditWidgetNames() const {
+	const TArray<FName> Dupes = Hud_.DuplicateNames();
+	if (Dupes.Num()) {
+		TArray<FString> DupeStr;
+		for (const FName& N : Dupes) DupeStr.Add(N.ToString());
+		UE_LOG(LogTemp, Warning,
+			TEXT("OperatorPawn: %d widget name(s) exist in BOTH WBP_HudFrame and WBP_HudAlerts -- only the alerts copy is driven: %s"),
+			Dupes.Num(), *FString::Join(DupeStr, TEXT(", ")));
+	}
 	// One startup report: every widget this class drives that the bound UMG
 	// asset does not contain, plus every ACCENT-driven widget whose type no
 	// colour setter can touch.
@@ -1825,7 +1934,7 @@ void AOperatorPawn::AuditWidgetNames() const {
 	TArray<FString> Missing, Untintable, NotAButton;
 
 	auto CheckPresent = [&](const TCHAR* Name) {
-		if (!UIBinder->HasWidget(FName(Name))) Missing.Add(FString(Name));
+		if (!Hud_.HasWidget(FName(Name))) Missing.Add(FString(Name));
 	};
 	for (const TCHAR* N : ExpectedText)   CheckPresent(N);
 	for (const TCHAR* N : ExpectedPanel)  CheckPresent(N);
@@ -1833,18 +1942,18 @@ void AOperatorPawn::AuditWidgetNames() const {
 	for (const TCHAR* N : ExpectedAccent) CheckPresent(N);
 	for (int32 i = 0; i < kAgreePips; ++i) {
 		const FString Pip = FString::Printf(TEXT("agree_pip_%d"), i);
-		if (!UIBinder->HasWidget(FName(*Pip))) Missing.Add(Pip);
+		if (!Hud_.HasWidget(FName(*Pip))) Missing.Add(Pip);
 	}
 
 	for (const TCHAR* Name : ExpectedButton) {
-		const FString Cls = UIBinder->GetWidgetClassName(FName(Name));
+		const FString Cls = Hud_.GetWidgetClassName(FName(Name));
 		if (!Cls.IsEmpty() && Cls != TEXT("Button"))
 			NotAButton.Add(FString::Printf(TEXT("%s (is %s)"), Name, *Cls));
 	}
 
 	TArray<FString> Tinted;
 	auto CheckTintable = [&](const FString& Name) {
-		const FString Cls = UIBinder->GetWidgetClassName(FName(*Name));
+		const FString Cls = Hud_.GetWidgetClassName(FName(*Name));
 		if (Cls.IsEmpty()) return;   // already reported as missing
 		if (Cls != TEXT("TextBlock") && Cls != TEXT("Image") && Cls != TEXT("Border")) {
 			Untintable.Add(FString::Printf(TEXT("%s (is %s)"), *Name, *Cls));
@@ -1854,7 +1963,7 @@ void AOperatorPawn::AuditWidgetNames() const {
 		// asset's own tint multiplies into every runtime colour. This is the
 		// one that actually bit: a green brush renders green whatever the
 		// accent is, so the light looks stuck rather than broken.
-		const FLinearColor Base = UIBinder->GetDesignTint(FName(*Name));
+		const FLinearColor Base = Hud_.GetDesignTint(FName(*Name));
 		if (!Base.Equals(FLinearColor::White, 0.02f))
 			Tinted.Add(FString::Printf(TEXT("%s (design tint %.2f,%.2f,%.2f)"),
 				*Name, Base.R, Base.G, Base.B));
@@ -1936,9 +2045,9 @@ void AOperatorPawn::SetWidgetAccent(FName WidgetName, const FLinearColor& Color)
 	// One colour, every surface that could be carrying it. UWidgetBinder's
 	// setters are keyed by widget type and no-op on a miss, so this is
 	// type-agnostic by construction rather than by us guessing right.
-	UIBinder->SetTextColor(WidgetName, Color);
-	UIBinder->SetImageColor(WidgetName, Color);
-	UIBinder->SetBorderColor(WidgetName, Color);
+	Hud_.SetTextColor(WidgetName, Color);
+	Hud_.SetImageColor(WidgetName, Color);
+	Hud_.SetBorderColor(WidgetName, Color);
 }
 
 EControlAuthority AOperatorPawn::GetArmAuthority(uint8 ArmIndex) const {
@@ -2078,15 +2187,15 @@ void AOperatorPawn::MaybeAutoArmIntervention() {
 		return;
 
 	bInterventionArmed_ = true;
-	UIBinder->SetVisibility(FName("interventionPanel"),     true);
-	UIBinder->SetVisibility(FName("authority_pill_canvas"), true);
-	UIBinder->SetButtonToggled(FName("interventionButton"), true);
+	Hud_.SetVisibility(FName("interventionPanel"),     true);
+	Hud_.SetVisibility(FName("authority_pill_canvas"), true);
+	Hud_.SetButtonToggled(FName("interventionButton"), true);
 	// Seed the clutch edge detector from reality, exactly as the button does,
 	// so arming cannot synthesise a takeover from a trigger already held.
 	if (LeftTracked)  bPrevAuthClutch_[0] = LeftTracked->IsFullClutch();
 	if (RightTracked) bPrevAuthClutch_[1] = RightTracked->IsFullClutch();
 
-	UIBinder->PushMessage(TEXT("INTERVENTION ARMED - POLICY CONNECTED"), 3.0f);
+	Hud_.PushMessage(TEXT("INTERVENTION ARMED - POLICY CONNECTED"), 3.0f);
 	if (Logger_) Logger_->LogEvent(TEXT("INTERVENTION_ARMED source=avatar_authority"));
 }
 
@@ -2195,11 +2304,11 @@ void AOperatorPawn::ResumePolicy(const TCHAR* Source) {
 	// operator most needs when they are still holding a trigger.
 	if (bAnyRequested) {
 		SoundFeedback->Play(ESoundType::Confirm);
-		UIBinder->PushMessage(TEXT("POLICY RESUMED"), 2.0f);
+		Hud_.PushMessage(TEXT("POLICY RESUMED"), 2.0f);
 	}
 	else {
 		SoundFeedback->Play(ESoundType::Reject);
-		UIBinder->PushMessage(TEXT("STILL HELD - RELEASE TO RESUME"), 2.0f);
+		Hud_.PushMessage(TEXT("STILL HELD - RELEASE TO RESUME"), 2.0f);
 	}
 
 	if (Logger_)
@@ -2259,12 +2368,12 @@ void AOperatorPawn::TransitionTo(ESysState NewState) {
 		ArmResetRequestTime_[0] = 0.0;
 		ArmResetRequestTime_[1] = 0.0;
 		if (bResetMenuOpen_) {
-			UIBinder->HideMenu();
+			Hud_.HideMenu();
 			bResetMenuOpen_ = false;
 		}
 		bAnnotationPending_ = false;
-		UIBinder->SetVisibility(FName("episodeAnnotationCanvas"), false);
-		UIBinder->SetButtonToggled(FName("homeButton"), false);
+		Hud_.SetVisibility(FName("episodeAnnotationCanvas"), false);
+		Hud_.SetButtonToggled(FName("homeButton"), false);
 	}
 	if (OperatorState_ == ESysState::Idle && NewState == ESysState::Homing) {
 		SendRecordingSignal(true);
@@ -2287,15 +2396,15 @@ void AOperatorPawn::UpdateButtonStates() {
 	auto ApplyResetButton = [&](FName Button, FName Label, EArmResetState ResetState, const TCHAR* Side, uint8 Index) {
 		switch (ResetState) {
 		case EArmResetState::Idle:
-			UIBinder->SetButtonToggled(Button, false);
-			UIBinder->SetButtonLocked(Button, !bCanReset || !ComLink->IsArmAlive(Index));
-			UIBinder->SetText(Label, FString::Printf(TEXT("Reset %s"), Side));
+			Hud_.SetButtonToggled(Button, false);
+			Hud_.SetButtonLocked(Button, !bCanReset || !ComLink->IsArmAlive(Index));
+			Hud_.SetText(Label, FString::Printf(TEXT("Reset %s"), Side));
 			break;
 		case EArmResetState::Recovering:
 		case EArmResetState::AwaitingResume:
-			UIBinder->SetButtonToggled(Button, true);
-			UIBinder->SetButtonLocked(Button, true);
-			UIBinder->SetText(Label, FString::Printf(TEXT("Resetting %s..."), Side));
+			Hud_.SetButtonToggled(Button, true);
+			Hud_.SetButtonLocked(Button, true);
+			Hud_.SetText(Label, FString::Printf(TEXT("Resetting %s..."), Side));
 			break;
 		}
 		};
@@ -2305,58 +2414,63 @@ void AOperatorPawn::UpdateButtonStates() {
 
 	bool bBothIdle = LeftArmResetState_ == EArmResetState::Idle && RightArmResetState_ == EArmResetState::Idle;
 	bool bResetting = !bBothIdle;
-	UIBinder->SetButtonToggled(FName("resetButton"), bResetMenuOpen_ || bResetting);
-	UIBinder->SetButtonLocked(FName("resetButton"), !bCanReset || bResetting);
-	UIBinder->SetText(FName("resetLabel"), TEXT("Reset"));
+	Hud_.SetButtonToggled(FName("resetButton"), bResetMenuOpen_ || bResetting);
+	Hud_.SetButtonLocked(FName("resetButton"), !bCanReset || bResetting);
+	Hud_.SetText(FName("resetLabel"), TEXT("Reset"));
 
-	UIBinder->SetButtonLocked(FName("homeButton"), !bCanReset || bAnyRecovering || bAnnotationPending_);
+	Hud_.SetButtonLocked(FName("homeButton"), !bCanReset || bAnyRecovering || bAnnotationPending_);
 
 	switch (OperatorState_) {
 	case ESysState::Offline:
-		UIBinder->SetButtonLocked(FName("startButton"), true);
-		UIBinder->SetButtonLocked(FName("engageButton"), true);
-		UIBinder->SetText(FName("startLabel"), TEXT("Start"));
-		UIBinder->SetText(FName("engageLabel"), TEXT("Engage"));
+		Hud_.SetButtonLocked(FName("startButton"), true);
+		Hud_.SetButtonLocked(FName("engageButton"), true);
+		Hud_.SetText(FName("startLabel"), TEXT("Start"));
+		Hud_.SetText(FName("engageLabel"), TEXT("Engage"));
 		break;
 
 	case ESysState::Idle:
-		UIBinder->SetButtonLocked(FName("startButton"), false);
-		UIBinder->SetButtonLocked(FName("engageButton"), true);
-		UIBinder->SetText(FName("startLabel"), TEXT("Start"));
-		UIBinder->SetText(FName("engageLabel"), TEXT("Engage"));
+		Hud_.SetButtonLocked(FName("startButton"), false);
+		Hud_.SetButtonLocked(FName("engageButton"), true);
+		Hud_.SetText(FName("startLabel"), TEXT("Start"));
+		Hud_.SetText(FName("engageLabel"), TEXT("Engage"));
 		break;
 
 	case ESysState::Homing:
-		UIBinder->SetButtonLocked(FName("startButton"), false);
-		UIBinder->SetButtonLocked(FName("engageButton"), true);
-		UIBinder->SetText(FName("startLabel"), TEXT("Stop"));
-		UIBinder->SetText(FName("engageLabel"), TEXT("Engage"));
+		Hud_.SetButtonLocked(FName("startButton"), false);
+		Hud_.SetButtonLocked(FName("engageButton"), true);
+		Hud_.SetText(FName("startLabel"), TEXT("Stop"));
+		Hud_.SetText(FName("engageLabel"), TEXT("Engage"));
 		break;
 
 	case ESysState::Awaiting:
-		UIBinder->SetButtonLocked(FName("startButton"), false);
-		UIBinder->SetButtonLocked(FName("engageButton"), false);
-		UIBinder->SetText(FName("startLabel"), TEXT("Stop"));
-		UIBinder->SetText(FName("engageLabel"), TEXT("Engage"));
+		Hud_.SetButtonLocked(FName("startButton"), false);
+		Hud_.SetButtonLocked(FName("engageButton"), false);
+		Hud_.SetText(FName("startLabel"), TEXT("Stop"));
+		Hud_.SetText(FName("engageLabel"), TEXT("Engage"));
 		break;
 
 	case ESysState::Engaged:
-		UIBinder->SetButtonLocked(FName("startButton"), bAnyRecovering);
-		UIBinder->SetButtonLocked(FName("engageButton"), bAnyRecovering);
-		UIBinder->SetText(FName("startLabel"), TEXT("Stop"));
-		UIBinder->SetText(FName("engageLabel"), TEXT("Pause"));
+		Hud_.SetButtonLocked(FName("startButton"), bAnyRecovering);
+		Hud_.SetButtonLocked(FName("engageButton"), bAnyRecovering);
+		Hud_.SetText(FName("startLabel"), TEXT("Stop"));
+		Hud_.SetText(FName("engageLabel"), TEXT("Pause"));
 		break;
 
 	case ESysState::Paused:
-		UIBinder->SetButtonLocked(FName("startButton"), bAnyRecovering);
-		UIBinder->SetButtonLocked(FName("engageButton"), bAnyRecovering);
-		UIBinder->SetText(FName("startLabel"), TEXT("Stop"));
-		UIBinder->SetText(FName("engageLabel"), TEXT("Engage"));
+		Hud_.SetButtonLocked(FName("startButton"), bAnyRecovering);
+		Hud_.SetButtonLocked(FName("engageButton"), bAnyRecovering);
+		Hud_.SetText(FName("startLabel"), TEXT("Stop"));
+		Hud_.SetText(FName("engageLabel"), TEXT("Engage"));
 		break;
 
 	default:
 		break;
 	}
+
+	const bool bSessionRunning = OperatorState_ == ESysState::Homing || OperatorState_ == ESysState::Awaiting
+		|| OperatorState_ == ESysState::Engaged || OperatorState_ == ESysState::Paused;
+	Hud_.SetButtonToggled(FName("startButton"), bSessionRunning);
+	Hud_.SetButtonToggled(FName("engageButton"), OperatorState_ == ESysState::Engaged);
 }
 
 bool AOperatorPawn::CheckEmergencyStop() {
@@ -2699,7 +2813,7 @@ void AOperatorPawn::HandleVoiceAnnotation(const FVoiceAnnotation& Ann) {
 			bool bCanAnnotate = (OperatorState_ == ESysState::Engaged || OperatorState_ == ESysState::Paused);
 			if (bCanAnnotate && !bAnnotationPending_) {
 				bAnnotationPending_ = true;
-				UIBinder->SetVisibility(FName("episodeAnnotationCanvas"), true);
+				Hud_.SetVisibility(FName("episodeAnnotationCanvas"), true);
 			}
 		} else if (Ann.Label.Equals(TEXT("success"), ESearchCase::IgnoreCase) ||
 		           Ann.Label.Equals(TEXT("partial"),  ESearchCase::IgnoreCase) ||
@@ -2708,8 +2822,8 @@ void AOperatorPawn::HandleVoiceAnnotation(const FVoiceAnnotation& Ann) {
 			bool bCanAnnotate = (OperatorState_ == ESysState::Engaged || OperatorState_ == ESysState::Paused);
 			if (bCanAnnotate) {
 				FString Label = Ann.Label;  // already "success" / "partial" / "failure"
-				UIBinder->SetButtonToggled(FName("homeButton"), false);
-				UIBinder->SetVisibility(FName("episodeAnnotationCanvas"), false);
+				Hud_.SetButtonToggled(FName("homeButton"), false);
+				Hud_.SetVisibility(FName("episodeAnnotationCanvas"), false);
 				SendResetAll();
 				if (LeftArmResetState_  == EArmResetState::Idle && ComLink->IsArmAlive(0)) LeftArmResetState_  = EArmResetState::Recovering;
 				if (RightArmResetState_ == EArmResetState::Idle && ComLink->IsArmAlive(1)) RightArmResetState_ = EArmResetState::Recovering;
@@ -2720,21 +2834,21 @@ void AOperatorPawn::HandleVoiceAnnotation(const FVoiceAnnotation& Ann) {
 			}
 		} else if (Ann.Label.Equals(TEXT("statistics"), ESearchCase::IgnoreCase)) {
 			bStatsVisible_ = !bStatsVisible_;
-			UIBinder->SetVisibility(FName("statsPanel"), bStatsVisible_);
+			Hud_.SetVisibility(FName("statsPanel"), bStatsVisible_);
 		} else if (Ann.Label.Equals(TEXT("settings"), ESearchCase::IgnoreCase)) {
 			bSettingsVisible_ = !bSettingsVisible_;
-			UIBinder->SetVisibility(FName("settings_canvas"), bSettingsVisible_);
+			Hud_.SetVisibility(FName("settings_canvas"), bSettingsVisible_);
 		} else if (Ann.Label.Equals(TEXT("viewpoint"), ESearchCase::IgnoreCase)) {
 			// Toggle the camera-stream picker menu.
 			if (bMenuOpen_) {
-				UIBinder->HideMenu();
+				Hud_.HideMenu();
 				bMenuOpen_ = false;
-				UIBinder->SetButtonToggled(FName("viewpointButton"), !ActivePiPStreamName_.IsEmpty());
+				Hud_.SetButtonToggled(FName("viewpointButton"), !ActivePiPStreamName_.IsEmpty());
 			} else {
 				CurrentMenuStreams_ = PiPSourceNames_;
-				UIBinder->ShowCameraMenu(CurrentMenuStreams_, ActivePiPStreamName_);
+				Hud_.ShowCameraMenu(CurrentMenuStreams_, ActivePiPStreamName_);
 				bMenuOpen_ = true;
-				UIBinder->SetButtonToggled(FName("viewpointButton"), true);
+				Hud_.SetButtonToggled(FName("viewpointButton"), true);
 			}
 		} else if (Ann.Label.Equals(TEXT("camera-left"),  ESearchCase::IgnoreCase) ||
 		           Ann.Label.Equals(TEXT("camera-right"), ESearchCase::IgnoreCase)) {
@@ -2744,18 +2858,18 @@ void AOperatorPawn::HandleVoiceAnnotation(const FVoiceAnnotation& Ann) {
 			for (const FString& StreamName : PiPSourceNames_) {
 				if (StreamName.Contains(Side, ESearchCase::IgnoreCase)) {
 					ActivePiPStreamName_ = StreamName;
-					UIBinder->SetButtonToggled(FName("viewpointButton"), true);
-					if (bMenuOpen_) { UIBinder->HideMenu(); bMenuOpen_ = false; }
+					Hud_.SetButtonToggled(FName("viewpointButton"), true);
+					if (bMenuOpen_) { Hud_.HideMenu(); bMenuOpen_ = false; }
 					break;
 				}
 			}
 		} else if (Ann.Label.Equals(TEXT("camera-off"), ESearchCase::IgnoreCase)) {
 			// Turn off the picture-in-picture stream.
 			ActivePiPStreamName_ = TEXT("");
-			UIBinder->SetVisibility(FName("pip_canvas"), false);
-			UIBinder->SetButtonToggled(FName("viewpointButton"), false);
+			Hud_.SetVisibility(FName("pip_canvas"), false);
+			Hud_.SetButtonToggled(FName("viewpointButton"), false);
 			if (bMenuOpen_) {
-				UIBinder->HideMenu();
+				Hud_.HideMenu();
 				bMenuOpen_ = false;
 			}
 		}
@@ -2799,6 +2913,19 @@ FFrameBundle AOperatorPawn::BuildFrameBundle() const {
 	Bundle.GazeUV = GazeUV;
 	Bundle.GazeConfidence = GazeData.Confidence;
 	Bundle.bGazeValid = bHit && GazeData.bIsValid;
+	if (GazeData.bIsValid && GazeData.Confidence > 0.f) {
+		const FTransform Quad(VideoQuadWorld_.GetRotation(), VideoQuadWorld_.GetLocation());
+		const FVector O   = Quad.InverseTransformPosition(GazeData.Origin);
+		const FVector Dir = Quad.InverseTransformVectorNoScale(GazeData.Direction).GetSafeNormal();
+		if (!FMath::IsNearlyZero(Dir.X)) {
+			const double T = -O.X / Dir.X;
+			if (T > 0.0) {
+				Bundle.GazePlaneCm  = FVector2D(O.Y + Dir.Y * T, -(O.Z + Dir.Z * T));
+				Bundle.bGazeOnPlane = true;
+			}
+		}
+	}
+	Bundle.bHudWorldLocked = UIBinder && UIBinder->GetPlacement() == EHudPlacement::WorldLocked;
 	Bundle.ViewYawDeg   = ViewYawDeg_;
 	Bundle.ViewPitchDeg = ViewPitchDeg_;
 	{
@@ -2808,6 +2935,9 @@ FFrameBundle AOperatorPawn::BuildFrameBundle() const {
 			Bundle.ViewShiftUV = FVector2D(
 				 D * FMath::Tan(FMath::DegreesToRadians(ViewYawDeg_))   / Q.X,
 				-D * FMath::Tan(FMath::DegreesToRadians(ViewPitchDeg_)) / Q.Y);
+			Bundle.ViewShiftCm = FVector2D(
+				 D * FMath::Tan(FMath::DegreesToRadians(ViewYawDeg_)),
+				-D * FMath::Tan(FMath::DegreesToRadians(ViewPitchDeg_)));
 		}
 	}
 
@@ -2820,6 +2950,82 @@ FVector2D AOperatorPawn::GetVideoQuadSize() const {
 	return FVector2D(VideoQuadWidth_, VideoQuadHeight_);
 }
 
+void AOperatorPawn::UpdateHudFrame(bool bWorldLocked, const FTransform& FramePose) {
+	if (HudPlacement_ != EHudPlacement::WorldLocked || !UIBinder) return;
+	if (bWorldLocked) {
+		UIBinder->SetWorldPose(FramePose);
+		if (UIBinder->GetPlacement() != EHudPlacement::WorldLocked) {
+			UIBinder->SetPlacement(EHudPlacement::WorldLocked);
+			ApplyControlPanelSet(true);
+		}
+	} else if (UIBinder->GetPlacement() != EHudPlacement::HeadLocked) {
+		UIBinder->SetPlacement(EHudPlacement::HeadLocked);
+		ApplyControlPanelSet(false);
+	}
+}
+
+void AOperatorPawn::SetDeviceColor(FName Name, const FLinearColor& Color) {
+	FLinearColor* Prev = DeviceColors_.Find(Name);
+	if (!Prev || !Prev->Equals(Color, 0.01f)) {
+		DeviceColors_.Add(Name, Color);
+		LastDeviceChangeSec_ = FPlatformTime::Seconds();
+	}
+	Hud_.SetImageColor(Name, Color);
+}
+
+void AOperatorPawn::UpdateDeviceGraphOpacity(float DeltaTime) {
+	const bool bArmTrouble =
+		ComLink->GetArmRemoteState(0) == SysState::FAULT || ComLink->GetArmRemoteState(1) == SysState::FAULT
+		|| ComLink->IsArmStateStale(0, kArmStateStaleWarnMs);
+	const bool bRecentChange = FPlatformTime::Seconds() - LastDeviceChangeSec_ < kDeviceGraphHoldSec;
+	const bool bShow = OperatorState_ != ESysState::Engaged || bRecentChange || bArmTrouble;
+	const float Target = bShow ? 1.f : kDeviceGraphDimOpacity;
+	DeviceGraphOpacity_ = bShow ? 1.f : FMath::FInterpTo(DeviceGraphOpacity_, Target, DeltaTime, kDeviceGraphFadeSpeed);
+	Hud_.SetOpacity(FName("status_canvas"), DeviceGraphOpacity_);
+}
+
+void AOperatorPawn::UpdateWristViews(float DeltaTime) {
+	if (!bWristViewEnabled_ || !GhostOverlay || !VideoFeed || !Gaze) return;
+
+	const FVector2D Q = GetVideoQuadSize();
+	const float D = VideoFeed->PlaneDistance;
+	const FGazeData& G = Gaze->GetGazeData();
+	const bool bModeWants = WristViewMode_ == TEXT("always");
+
+	for (uint8 Arm = 0; Arm < 2; ++Arm) {
+		UWristViewComponent* V = WristView(Arm);
+		if (!V) continue;
+
+		UTexture2D* Tex = nullptr;
+		bool bReceiving = false;
+		const int32 Idx = WristStreamIdx_[Arm];
+		if (Idx != INDEX_NONE && PiPSources_.IsValidIndex(Idx) && PiPSources_[Idx]) {
+			PiPSources_[Idx]->UpdateTexture(PiPTextures_[Idx]);
+			Tex = PiPTextures_[Idx];
+			bReceiving = PiPSources_[Idx]->GetStats().bIsReceiving;
+		}
+
+		bool bAnchor = false;
+		FVector2D AnchorCm = FVector2D::ZeroVector;
+		if (ComLink->IsArmAlive(Arm) && Q.X > 0.0 && Q.Y > 0.0) {
+			const ArmStateMsg S = ComLink->PeekArmState(Arm);
+			FVector2D UV;
+			if (GhostOverlay->ProjectProtocolPointToUV(FVector(S.position[0], S.position[1], S.position[2]), UV)) {
+				AnchorCm = FVector2D((UV.X - 0.5) * Q.X, (0.5 - UV.Y) * Q.Y);
+				bAnchor  = true;
+			}
+		}
+
+		V->UpdateView(Tex, bModeWants && bReceiving, bAnchor, AnchorCm, VideoQuadWorld_, D, bVideoLayersWorldLocked_, G, DeltaTime);
+	}
+}
+
+void AOperatorPawn::ApplyControlPanelSet(bool bWorldLocked) {
+	if (!UIBinder || !UIBinder->HasWidget(FName("system_control_tray_near"))) return;
+	UIBinder->SetVisibility(FName("system_control_tray"), bWorldLocked);
+	UIBinder->SetVisibility(FName("system_control_tray_near"), !bWorldLocked);
+}
+
 void AOperatorPawn::UpdateLookAround(float DeltaTime) {
 	if (!VRCamera || !VideoFeed) return;
 
@@ -2827,7 +3033,7 @@ void AOperatorPawn::UpdateLookAround(float DeltaTime) {
 	const FQuat HeadQ = Head.GetRotation();
 	const float D = VideoFeed->PlaneDistance;
 
-	const bool bWantActive = bLookAroundEnabled_ && (!bLookRequireEngaged_ || OperatorState_ == ESysState::Engaged);
+	const bool bWantActive = bLookAroundEnabled_ && OperatorState_ == ESysState::Engaged;
 	if (bWantActive && !bLookActive_) {
 		LookAround_.Anchor(Head);
 		bLookActive_     = true;
@@ -2835,9 +3041,9 @@ void AOperatorPawn::UpdateLookAround(float DeltaTime) {
 		const FRotator Home = LookAround_.HomeRot.Rotator();
 		if (Logger_) Logger_->LogEvent(FString::Printf(TEXT("LOOK_AROUND_ANCHOR yaw=%.1f pitch=%.1f"), Home.Yaw, Home.Pitch));
 	} else if (!bWantActive && bLookActive_) {
-		bLookActive_        = false;
-		LookReturnStartRel_ = HeadQ.Inverse() * VideoQuadWorld_.GetRotation();
-		LookReturnAlpha_    = 0.f;
+		bLookActive_         = false;
+		LookReturnStartRel_  = HeadQ.Inverse() * VideoQuadWorld_.GetRotation();
+		LookReturnAlpha_     = 0.f;
 		if (Logger_) Logger_->LogEvent(FString::Printf(TEXT("LOOK_AROUND_RELEASE view_yaw=%.1f view_pitch=%.1f"), ViewYawDeg_, ViewPitchDeg_));
 	}
 
@@ -2874,4 +3080,7 @@ void AOperatorPawn::UpdateLookAround(float DeltaTime) {
 	FVideoLookAround::ApplyToLayer(VideoFeed->GetMonoLayer(), bWorldLocked, bModeChanged, VideoQuadWorld_, VRCamera, VideoFeed->PlaneDistance, 0);
 	if (GhostOverlay)
 		FVideoLookAround::ApplyToLayer(GhostOverlay->GetMonoLayer(), bWorldLocked, bModeChanged, VideoQuadWorld_, VRCamera, GhostOverlay->PlaneDistance, 1);
+
+	const FQuat FrameRot = VideoQuadWorld_.GetRotation();
+	UpdateHudFrame(bWorldLocked, FTransform(FrameRot, Head.GetLocation() + FrameRot.RotateVector(FVector(HudFrameDistance_, 0.f, 0.f))));
 }

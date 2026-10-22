@@ -119,6 +119,8 @@ public:
     float WorkspaceMinX_ =  0.4f;
     float WorkspaceMaxY_ =  0.4f;
     float WorkspaceMinY_ = -0.4f;
+    float WorkspaceMaxX_ =  10.f;
+    float WorkspaceMaxZ_ =  10.f;
 
     UPROPERTY(EditAnywhere, Category = "Ghost|Latency")
     float LatencyOkMs   =  100.f;   // smoothed threshold — exit Warning → OK
@@ -246,17 +248,19 @@ public:
     USceneComponent* GetRightWristAnchor() const { return GhostMeshComp; }
     USceneComponent* GetLeftWristAnchor()  const { return GhostLeftMeshComp; }
 
-    // World-frame workspace bounds (torso/left/right/floor only — matches the four faces
-    // the ghost itself reacts to). Lets UWorkspaceBoundaryComponent read the same numbers
+    // World-frame workspace bounds (torso/far/left/right/floor/top). Lets UWorkspaceBoundaryComponent read the same numbers
     // GhostOverlayComponent uses for its own past-limit tint, without a second config load.
     float GetWorkspaceMinX()  const { return WorkspaceMinX_; }
     float GetWorkspaceMaxY()  const { return WorkspaceMaxY_; }
     float GetWorkspaceMinY()  const { return WorkspaceMinY_; }
     float GetWorkspaceMinZ()  const { return WorkspaceLowerBoundZ_; }
+    float GetWorkspaceMaxX()  const { return WorkspaceMaxX_; }
+    float GetWorkspaceMaxZ()  const { return WorkspaceMaxZ_; }
 
     // Ghost EE position for the given arm this tick (protocol/world frame), or false if the
     // arm hasn't seeded an intent pose yet.
     bool GetGhostEEPosition(uint8 ArmIndex, float OutPosition[3]) const;
+    bool ProjectProtocolPointToUV(const FVector& PositionM, FVector2D& OutUV) const;
 
     // Anchor to attach additional overlay meshes to so they sit in the same camera-relative
     // capture rig as the ghost itself (this system composites onto the video feed via a

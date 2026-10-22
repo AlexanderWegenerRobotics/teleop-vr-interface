@@ -83,7 +83,7 @@ echo.
 echo --- staging check -----------------------------------------
 call :check "%STAGED%\Config\TeleOp\config.json"          "TeleOp config"
 call :check "%STAGED%\Config\TeleOp\network.json"          "network config"
-call :check "%STAGED%\Config\TeleOp\stream_local.json"     "stream config"
+call :check "%STAGED%\Config\TeleOp\stream.json"           "stream config"
 call :check "%STAGED%\ThirdParty\ffmpeg\ffmpeg.exe"        "bundled ffmpeg"
 call :check "%STAGED%\ThirdParty\voice_annotator\voice_annotator.py"  "voice annotator"
 call :check "%ARCHIVE%\Windows\teleop_vr_interface.exe"    "executable"

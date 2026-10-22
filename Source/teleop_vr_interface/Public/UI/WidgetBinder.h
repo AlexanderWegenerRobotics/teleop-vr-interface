@@ -33,6 +33,8 @@ struct FWidgetRect {
 	FVector2D Size = FVector2D::ZeroVector;
 };
 
+enum class EHudPlacement : uint8 { HeadLocked, WorldLocked };
+
 UCLASS(ClassGroup = (Custom), meta = (BlueprintSpawnableComponent))
 class TELEOP_VR_INTERFACE_API UWidgetBinder : public UActorComponent {
 	GENERATED_BODY()
@@ -60,8 +62,10 @@ public:
 	// Programmatically set or clear the persistent toggled (pressed) visual state.
 	void SetButtonToggled(FName ButtonName, bool bToggled);
 	bool IsButtonToggled(FName ButtonName) const;
+	void SetStateDriven(FName ButtonName) { StateDrivenButtons_.Add(ButtonName); }
 
 	void SetVisibility(FName WidgetName, bool bVisible);
+	void SetOpacity(FName WidgetName, float Opacity);
 
 	// Whether the bound widget tree actually contains this name.
 	//
@@ -115,6 +119,19 @@ public:
 	void ShowCameraMenu(const TArray<FString>& StreamNames, const FString& ActiveStream);
 	void ShowResetMenu();
 	void HideMenu();
+
+	void SetPlacement(EHudPlacement NewPlacement);
+	EHudPlacement GetPlacement() const { return Placement_; }
+	void SetWorldPose(const FTransform& QuadWorld);
+	void SetOccluder(UWidgetBinder* Other);
+	bool HasMessageSink() const { return MessageLog_ != nullptr || MessageText_ != nullptr; }
+	bool IsLayerShown() const { return bLayerShown_; }
+	FVector2D GetQuadSize() const { return QuadSize_; }
+	float GetLayerDistance() const { return LayerDistance_; }
+	void GetWidgetNames(TArray<FName>& Out) const { CachedWidgets_.GetKeys(Out); }
+
+	UPROPERTY(EditAnywhere, Category = "Layout")
+	bool bHideLayerWhenEmpty = false;
 
 	FName GetHoveredButton() const { return HoveredButton_; }
 	FName ConsumePress();
@@ -180,6 +197,16 @@ private:
 	void ApplyButtonStyle(FName Name, const FSlateBrush& Brush);
 	void UpdateMessages(float DeltaTime);
 	void RebuildMessageLog();
+	void UpdateLayerVisibility();
+
+	int32 Priority_ = 1;
+	EHudPlacement Placement_ = EHudPlacement::HeadLocked;
+	FTransform WorldPose_ = FTransform::Identity;
+	bool bLayerShown_ = true;
+	bool bContentVisible_ = true;
+
+	UPROPERTY()
+	TObjectPtr<UWidgetBinder> Occluder_ = nullptr;
 
 	UCameraComponent* Camera_ = nullptr;
 	float LayerDistance_ = 0.0f;
@@ -189,8 +216,8 @@ private:
 	float ExpandedWidth_ = 0.0f;
 	float LayerVerticalOffset_ = 0.0f;
 
-	FVector GazeLocalOrigin_ = FVector::ZeroVector;
-	FVector GazeLocalDirection_ = FVector::ForwardVector;
+	FVector GazeWorldOrigin_ = FVector::ZeroVector;
+	FVector GazeWorldDirection_ = FVector::ForwardVector;
 
 	FGazeData LatestGaze_;
 	FWinkGesture WinkGesture_;
@@ -234,6 +261,7 @@ private:
 
 	TSet<FName> LockedButtons_;
 	TSet<FName> ToggledButtons_;
+	TSet<FName> StateDrivenButtons_;
 
 	// Original button styles cached at discovery time; used to build per-state overrides.
 	TMap<FName, FButtonStyle> OriginalStyles_;

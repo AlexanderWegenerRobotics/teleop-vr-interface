@@ -1,0 +1,40 @@
+{
+    "remote_ip":            "127.0.0.1",    // remote: 172.23.1.1
+    "port":                 5004,
+    "feedback_port":        5005,
+    "status_port":          5007,
+    "report_interval_ms":   500,
+    "stereo":               true,           // zed, bimanual, overhead: true; desk: false
+    "jitterbuffer_ms":      50,
+    "video_log_enabled":    false,          // remote: true
+    "video_log_raw":        true,
+    "video_log_fps":        30,             // sync tests: 60
+    "video_log_attention":  true,           // remote: false
+    "video_log_operator_view": false,       // false: video + HUD frame stay fixed in the recording, alerts and gaze move with the head; true: recording follows the head
+    "audio": {
+        "enabled":        false,            // remote: true
+        "port":           5020,
+        "output_device":  "",
+        "sync_to_video":  true,
+        "extra_delay_ms": 0,
+        "gain_db":        20,               // playback only, logs stay raw
+        "safety_margin_ms": 5,              // extra audio buffer on top of measured jitter; raise if you hear crackles
+        "output_buffer_ms": 20,             // Windows output buffer; raise if you hear crackles
+        "log":            true
+    },
+    "pip_streams": [
+        { "name": "camera right", "enabled": false, "port": 5010, "feedback_port": 5011, "status_port": 5012 },   // bimanual: true
+        { "name": "camera left",  "enabled": true,  "port": 5013, "feedback_port": 5014, "status_port": 5015 },   // desk wrist cam + bimanual
+        { "name": "operator",     "port": 5016, "local_preview": true }
+    ],
+
+    // twin head cam as second main-view source, ports = avatar + 900; false when the twin isn't running
+    "twin_stream": {
+        "enabled": true,
+        "name": "TWIN",
+        "remote_ip": "127.0.0.1",
+        "port": 5904,
+        "feedback_port": 5905,
+        "status_port": 5907
+    }
+}

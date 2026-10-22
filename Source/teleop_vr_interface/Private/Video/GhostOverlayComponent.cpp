@@ -492,9 +492,24 @@ void UGhostOverlayComponent::CacheArmStates() {
 bool UGhostOverlayComponent::IsWithinWorkspace(const float Pos[3]) const {
     const float Margin = WorkspaceBoundaryMarginM_;
     return Pos[0] >= WorkspaceMinX_ + Margin
+        && Pos[0] <= WorkspaceMaxX_ - Margin
         && Pos[1] <= WorkspaceMaxY_ - Margin
         && Pos[1] >= WorkspaceMinY_ + Margin
-        && Pos[2] >= WorkspaceLowerBoundZ_ + Margin;
+        && Pos[2] >= WorkspaceLowerBoundZ_ + Margin
+        && Pos[2] <= WorkspaceMaxZ_ - Margin;
+}
+
+bool UGhostOverlayComponent::ProjectProtocolPointToUV(const FVector& PositionM, FVector2D& OutUV) const {
+    FVector p_C; FQuat R_HW;
+    ResolveCameraPose(p_C, R_HW);
+    const FVector c = R_HW.Inverse().RotateVector(PositionM - p_C);
+    if (c.X <= KINDA_SMALL_NUMBER) return false;
+    const double HalfTan = FMath::Tan(FMath::DegreesToRadians(static_cast<double>(bStereo_ ? StereoCaptureFOV : CaptureFOV)) * 0.5);
+    if (HalfTan <= 0.0) return false;
+    const double Aspect = (RenderTargetSize.Y > 0) ? static_cast<double>(RenderTargetSize.X) / RenderTargetSize.Y : 4.0 / 3.0;
+    OutUV.X = 0.5 - (c.Y / c.X) / (2.0 * HalfTan);
+    OutUV.Y = 0.5 - (c.Z / c.X) * Aspect / (2.0 * HalfTan);
+    return true;
 }
 
 bool UGhostOverlayComponent::GetGhostEEPosition(uint8 ArmIndex, float OutPosition[3]) const {
@@ -588,9 +603,9 @@ void UGhostOverlayComponent::UpdateIntentPoses() {
 
         if (bClampGhostToWorkspace && P.bPastBounds) {
             const float Margin = WorkspaceBoundaryMarginM_;
-            Target[0] = FMath::Max(Target[0], WorkspaceMinX_ + Margin);
+            Target[0] = FMath::Clamp(Target[0], WorkspaceMinX_ + Margin, WorkspaceMaxX_ - Margin);
             Target[1] = FMath::Clamp(Target[1], WorkspaceMinY_ + Margin, WorkspaceMaxY_ - Margin);
-            Target[2] = FMath::Max(Target[2], WorkspaceLowerBoundZ_ + Margin);
+            Target[2] = FMath::Clamp(Target[2], WorkspaceLowerBoundZ_ + Margin, WorkspaceMaxZ_ - Margin);
         }
         for (int i = 0; i < 3; ++i) P.Position[i] = Target[i];
 

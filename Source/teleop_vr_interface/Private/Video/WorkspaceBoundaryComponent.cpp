@@ -25,15 +25,17 @@ void UWorkspaceBoundaryComponent::Initialize(UGhostOverlayComponent* Ghost, uint
     static const float kYWallQuat[4]     = { 0.7071f, -0.7071f, 0.f, 0.f };
     static const float kTorsoWallQuat[4] = { 0.7071f, 0.f, 0.7071f, 0.f };
     static const float kIdentQuat[4]     = { 1.f, 0.f, 0.f, 0.f };
-    const TCHAR* Names[kNumFaces] = { TEXT("BoundaryTorso"), TEXT("BoundaryLeft"), TEXT("BoundaryRight"), TEXT("BoundaryFloor") };
+    const TCHAR* Names[kNumFaces] = { TEXT("BoundaryTorso"), TEXT("BoundaryLeft"), TEXT("BoundaryRight"), TEXT("BoundaryFloor"), TEXT("BoundaryFar"), TEXT("BoundaryTop") };
 
     for (int32 i = 0; i < kNumFaces; ++i) {
         FFaceState& F = Faces_[i];
         switch (static_cast<EFace>(i)) {
-            case EFace::Torso: FMemory::Memcpy(F.PlaneQuat, kTorsoWallQuat, sizeof(F.PlaneQuat)); break;
+            case EFace::Torso:
+            case EFace::Far:   FMemory::Memcpy(F.PlaneQuat, kTorsoWallQuat, sizeof(F.PlaneQuat)); break;
             case EFace::Left:
             case EFace::Right: FMemory::Memcpy(F.PlaneQuat, kYWallQuat, sizeof(F.PlaneQuat)); break;
-            case EFace::Floor: FMemory::Memcpy(F.PlaneQuat, kIdentQuat, sizeof(F.PlaneQuat)); break;
+            case EFace::Floor:
+            case EFace::Top:   FMemory::Memcpy(F.PlaneQuat, kIdentQuat, sizeof(F.PlaneQuat)); break;
         }
 
         const FName CompName = MakeUniqueObjectName(Owner, UStaticMeshComponent::StaticClass(), Names[i]);
@@ -101,6 +103,14 @@ void UWorkspaceBoundaryComponent::FaceGeometry(EFace Face, const float EEPositio
         case EFace::Right:
             OutDistance = EEPosition[1] - GhostRef_->GetWorkspaceMinY();
             OutClosestPoint[0] = EEPosition[0]; OutClosestPoint[1] = GhostRef_->GetWorkspaceMinY(); OutClosestPoint[2] = EEPosition[2];
+            break;
+        case EFace::Far:
+            OutDistance = GhostRef_->GetWorkspaceMaxX() - EEPosition[0];
+            OutClosestPoint[0] = GhostRef_->GetWorkspaceMaxX(); OutClosestPoint[1] = EEPosition[1]; OutClosestPoint[2] = EEPosition[2];
+            break;
+        case EFace::Top:
+            OutDistance = GhostRef_->GetWorkspaceMaxZ() - EEPosition[2];
+            OutClosestPoint[0] = EEPosition[0]; OutClosestPoint[1] = EEPosition[1]; OutClosestPoint[2] = GhostRef_->GetWorkspaceMaxZ();
             break;
         case EFace::Floor:
         default:

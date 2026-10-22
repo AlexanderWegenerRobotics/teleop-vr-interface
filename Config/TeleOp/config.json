@@ -1,10 +1,10 @@
 {
-    "network":      "network_remote.json",
+    "network":      "network.json",
     "network_twin": "network_twin.json",
-    "stream":  "stream_remote.json",
-    "hud":     "hud.json",
-    "robot":   "robot_bimanual.json",
-    "overlay": "overlay.json",
+    "stream":       "stream.json",
+    "hud":          "hud.json",
+    "robot":        "robot_overhead.json",     // robot_desk, robot_bimanual, robot_overhead
+    "overlay":      "overlay_overhead.json",   // overlay_desk, overlay_bimanual, overlay_overhead
 
     "command_thread_enabled": true,
     "gaze_enabled":           true

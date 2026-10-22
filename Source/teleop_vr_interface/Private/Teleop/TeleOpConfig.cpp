@@ -45,10 +45,7 @@ bool UTeleOpConfig::Load(const FString& RootConfigPath) {
     UE_LOG(LogTemp, Log, TEXT("TeleOpConfig: Loaded successfully"));
     UE_LOG(LogTemp, Log, TEXT("  Network  � remote: %s  avatar: %d/%d"), *Network.RemoteIP, Network.Avatar.Send, Network.Avatar.Receive);
     UE_LOG(LogTemp, Log, TEXT("  NetworkTwin � remote: %s  avatar: %d/%d"), *NetworkTwin.RemoteIP, NetworkTwin.Avatar.Send, NetworkTwin.Avatar.Receive);
-    UE_LOG(LogTemp, Log, TEXT("  Stream(right)  stereo: %s  port: %d  feedback: %d  status: %d"),
-        Stream.bStereo ? TEXT("true") : TEXT("false"),
-        Stream.RightPort, Stream.RightFeedbackPort, Stream.RightStatusPort);
-    UE_LOG(LogTemp, Log, TEXT("  Stream� %s:%d  feedback: %d  timestamp: %d  status: %d"), *Stream.RemoteIP, Stream.Port, Stream.FeedbackPort, Stream.TimestampPort, Stream.StatusPort);
+    UE_LOG(LogTemp, Log, TEXT("  Stream� %s:%d  feedback: %d  status: %d"), *Stream.RemoteIP, Stream.Port, Stream.FeedbackPort, Stream.StatusPort);
     UE_LOG(LogTemp, Log, TEXT("  HUD      � latency: %.0fms  loss: %.3f%%  fps: %.0f"), Hud.LatencyWarningMs, Hud.LossWarningPercent, Hud.FpsWarningFloor);
 
     return true;
@@ -62,13 +59,7 @@ bool UTeleOpConfig::LoadNetworkTwin(const FString& Path) {
     return LoadNetworkInto(Path, NetworkTwin, TEXT("network_twin.json"));
 }
 
-// Shared parser for both the avatar link (network.json / network_local.json,
-// swapped between local/robot per deployment) and the twin link
-// (network_twin.json, expected to stay fixed/local -- see ComLink's Twin*
-// fields). Same on-disk shape either way; recording_port is only meaningful
-// for the avatar file today (the recorder is driven off the avatar link) but
-// is still required in both for schema consistency -- point network_twin.json's
-// recording_port at the same local recorder if/when that becomes relevant.
+// Shared parser for the avatar link (network.json) and the local twin link (network_twin.json).
 bool UTeleOpConfig::LoadNetworkInto(const FString& Path, FNetworkConfig& OutNetwork, const FString& Context) {
     TSharedPtr<FJsonObject> Obj;
     if (!ReadJsonFile(Path, Obj))
@@ -108,7 +99,6 @@ bool UTeleOpConfig::LoadStream(const FString& Path) {
     if (!RequireString(Obj, TEXT("remote_ip"), Stream.RemoteIP, Context)) return false;
     if (!RequireInt(Obj, TEXT("port"), Stream.Port, Context)) return false;
     if (!RequireInt(Obj, TEXT("feedback_port"), Stream.FeedbackPort, Context)) return false;
-    if (!RequireInt(Obj, TEXT("timestamp_port"), Stream.TimestampPort, Context)) return false;
     if (!RequireInt(Obj, TEXT("report_interval_ms"), Stream.ReportIntervalMs, Context)) return false;
     if (!RequireInt(Obj, TEXT("status_port"), Stream.StatusPort, Context)) return false;
 
@@ -116,13 +106,12 @@ bool UTeleOpConfig::LoadStream(const FString& Path) {
     Obj->TryGetNumberField(TEXT("jitterbuffer_ms"), Stream.JitterBufferMs);
     Stream.JitterBufferMs = FMath::Clamp(Stream.JitterBufferMs, 0, 500);
     UE_LOG(LogTemp, Log, TEXT("TeleOpConfig: jitterbuffer %d ms"), Stream.JitterBufferMs);
-    Obj->TryGetNumberField(TEXT("right_port"),          Stream.RightPort);
-    Obj->TryGetNumberField(TEXT("right_feedback_port"), Stream.RightFeedbackPort);
-    Obj->TryGetNumberField(TEXT("right_status_port"),   Stream.RightStatusPort);
     Obj->TryGetBoolField(TEXT("video_log_enabled"), Stream.bVideoLogEnabled);
     Obj->TryGetBoolField(TEXT("video_log_raw"), Stream.bVideoLogRaw);
     Obj->TryGetBoolField(TEXT("video_log_attention"), Stream.bVideoLogAttention);
     Obj->TryGetBoolField(TEXT("video_log_operator_view"), Stream.bVideoLogOperatorView);
+    Obj->TryGetNumberField(TEXT("video_log_fps"), Stream.VideoLogFps);
+    Stream.VideoLogFps = FMath::Clamp(Stream.VideoLogFps, 5.0, 90.0);
     UE_LOG(LogTemp, Log, TEXT("TeleOpConfig: video logging %s (raw=%d attention=%d)"),
         Stream.bVideoLogEnabled ? TEXT("ENABLED") : TEXT("DISABLED (\"video_log_enabled\": false)"),
         Stream.bVideoLogRaw ? 1 : 0, Stream.bVideoLogAttention ? 1 : 0);
@@ -134,6 +123,9 @@ bool UTeleOpConfig::LoadStream(const FString& Path) {
             const TSharedPtr<FJsonObject>* Entry = nullptr;
             if (!Val->TryGetObject(Entry) || !Entry) continue;
             FPiPStreamConfig S;
+            bool bPiPEnabled = true;
+            (*Entry)->TryGetBoolField(TEXT("enabled"), bPiPEnabled);
+            if (!bPiPEnabled) continue;
             (*Entry)->TryGetStringField(TEXT("name"),          S.Name);
             (*Entry)->TryGetNumberField(TEXT("port"),          S.Port);
             (*Entry)->TryGetNumberField(TEXT("feedback_port"), S.FeedbackPort);
@@ -178,6 +170,11 @@ bool UTeleOpConfig::LoadStream(const FString& Path) {
         (*AudioObj)->TryGetStringField(TEXT("output_device"), Stream.Audio.OutputDevice);
         (*AudioObj)->TryGetBoolField(TEXT("sync_to_video"),   Stream.Audio.bSyncToVideo);
         (*AudioObj)->TryGetNumberField(TEXT("extra_delay_ms"), Stream.Audio.ExtraDelayMs);
+        (*AudioObj)->TryGetNumberField(TEXT("gain_db"),        Stream.Audio.GainDb);
+        (*AudioObj)->TryGetNumberField(TEXT("safety_margin_ms"), Stream.Audio.SafetyMarginMs);
+        (*AudioObj)->TryGetNumberField(TEXT("output_buffer_ms"), Stream.Audio.OutputBufferMs);
+        Stream.Audio.SafetyMarginMs = FMath::Clamp(Stream.Audio.SafetyMarginMs, 0, 200);
+        Stream.Audio.OutputBufferMs = FMath::Clamp(Stream.Audio.OutputBufferMs, 10, 200);
         (*AudioObj)->TryGetBoolField(TEXT("log"),             Stream.Audio.bLog);
     }
     UE_LOG(LogTemp, Log, TEXT("TeleOpConfig: audio %s (port %d)"),
@@ -205,6 +202,36 @@ bool UTeleOpConfig::LoadHud(const FString& Path) {
     if (!RequireFloat(Obj, TEXT("ui_widget_height"),   Hud.UIWidgetHeight,   Context)) return false;
     if (!RequireFloat(Obj, TEXT("ui_plane_distance"),  Hud.UIPlaneDistance,  Context)) return false;
 
+    Obj->TryGetStringField(TEXT("placement"),             Hud.Placement);
+    Obj->TryGetNumberField(TEXT("alerts_widget_width"),   Hud.AlertsWidgetWidth);
+    Obj->TryGetNumberField(TEXT("alerts_widget_height"),  Hud.AlertsWidgetHeight);
+    Obj->TryGetNumberField(TEXT("alerts_plane_distance"), Hud.AlertsPlaneDistance);
+
+    const TSharedPtr<FJsonObject>* WristObj = nullptr;
+    if (Obj->TryGetObjectField(TEXT("wrist_view"), WristObj) && WristObj) {
+        (*WristObj)->TryGetBoolField(TEXT("enabled"),          Hud.bWristViewEnabled);
+        (*WristObj)->TryGetStringField(TEXT("mode"),           Hud.WristViewMode);
+        (*WristObj)->TryGetNumberField(TEXT("width_cm"),       Hud.WristViewWidthCm);
+        (*WristObj)->TryGetNumberField(TEXT("gap_cm"),         Hud.WristViewGapCm);
+        (*WristObj)->TryGetNumberField(TEXT("up_cm"),          Hud.WristViewUpCm);
+        (*WristObj)->TryGetNumberField(TEXT("follow_tau_s"),   Hud.WristViewFollowTauS);
+        (*WristObj)->TryGetNumberField(TEXT("expand_scale"),   Hud.WristViewExpandScale);
+        (*WristObj)->TryGetNumberField(TEXT("shrink_delay_s"), Hud.WristViewShrinkDelayS);
+        const TArray<TSharedPtr<FJsonValue>>* Streams = nullptr;
+        if ((*WristObj)->TryGetArrayField(TEXT("streams"), Streams) && Streams) {
+            for (const TSharedPtr<FJsonValue>& V : *Streams) {
+                FString S;
+                if (V.IsValid() && V->TryGetString(S)) Hud.WristViewStreams.Add(S);
+            }
+        }
+        Hud.WristViewMode = Hud.WristViewMode.ToLower();
+    }
+    Hud.Placement = Hud.Placement.ToLower();
+    if (Hud.Placement != TEXT("auto") && Hud.Placement != TEXT("head") && Hud.Placement != TEXT("world")) {
+        UE_LOG(LogTemp, Warning, TEXT("TeleOpConfig: hud.json placement \"%s\" unknown, using \"auto\""), *Hud.Placement);
+        Hud.Placement = TEXT("auto");
+    }
+
     return true;
 }
 
@@ -222,6 +249,8 @@ bool UTeleOpConfig::LoadRobot(const FString& Path) {
     Obj->TryGetNumberField(TEXT("workspace_min_x"), Robot.WorkspaceMinX);
     Obj->TryGetNumberField(TEXT("workspace_max_y"), Robot.WorkspaceMaxY);
     Obj->TryGetNumberField(TEXT("workspace_min_y"), Robot.WorkspaceMinY);
+    Obj->TryGetNumberField(TEXT("workspace_max_x"), Robot.WorkspaceMaxX);
+    Obj->TryGetNumberField(TEXT("workspace_max_z"), Robot.WorkspaceMaxZ);
 
     Obj->TryGetNumberField(TEXT("boundary_ttc_horizon_s"),         Robot.BoundaryTtcHorizonS);
     Obj->TryGetNumberField(TEXT("boundary_dist_floor_m"),          Robot.BoundaryDistFloorM);
@@ -374,7 +403,6 @@ bool UTeleOpConfig::LoadOverlay(const FString& Path) {
     if (Obj->TryGetObjectField(TEXT("look_around"), LookObj) && LookObj)
     {
         (*LookObj)->TryGetBoolField(TEXT("enabled"),         Overlay.bLookAroundEnabled);
-        (*LookObj)->TryGetBoolField(TEXT("require_engaged"), Overlay.bLookAroundRequireEngaged);
         (*LookObj)->TryGetNumberField(TEXT("max_yaw_deg"),   Overlay.LookAroundMaxYawDeg);
         (*LookObj)->TryGetNumberField(TEXT("max_pitch_deg"), Overlay.LookAroundMaxPitchDeg);
         (*LookObj)->TryGetNumberField(TEXT("knee_deg"),      Overlay.LookAroundKneeDeg);
@@ -391,13 +419,37 @@ bool UTeleOpConfig::LoadOverlay(const FString& Path) {
     return true;
 }
 
+// Drops // comments outside string literals, so config files can note alternative values.
+static FString StripTeleOpJsonComments(const FString& In) {
+    FString Out;
+    Out.Reserve(In.Len());
+    bool bInString = false;
+    for (int32 i = 0; i < In.Len(); ++i) {
+        const TCHAR C = In[i];
+        if (bInString) {
+            Out.AppendChar(C);
+            if (C == TEXT('\\') && i + 1 < In.Len()) Out.AppendChar(In[++i]);
+            else if (C == TEXT('"')) bInString = false;
+        } else if (C == TEXT('"')) {
+            bInString = true;
+            Out.AppendChar(C);
+        } else if (C == TEXT('/') && i + 1 < In.Len() && In[i + 1] == TEXT('/')) {
+            while (i < In.Len() && In[i] != TEXT('\n')) ++i;
+            if (i < In.Len()) Out.AppendChar(TEXT('\n'));
+        } else {
+            Out.AppendChar(C);
+        }
+    }
+    return Out;
+}
+
 bool UTeleOpConfig::ReadJsonFile(const FString& Path, TSharedPtr<FJsonObject>& OutObject) {
     FString Raw;
     if (!FFileHelper::LoadFileToString(Raw, *Path)) {
         return false;
     }
 
-    TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Raw);
+    TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(StripTeleOpJsonComments(Raw));
     return FJsonSerializer::Deserialize(Reader, OutObject) && OutObject.IsValid();
 }
 

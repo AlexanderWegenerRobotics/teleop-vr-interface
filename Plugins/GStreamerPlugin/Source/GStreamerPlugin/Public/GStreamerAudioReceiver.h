@@ -21,7 +21,9 @@ struct FAudioReceiverConfig
     FString OutputDevice;
     bool    bSyncToVideo      = true;
     int32   ExtraDelayMs      = 0;
-    int32   SafetyMarginMs    = 20;
+    float   GainDb            = 20.f;
+    int32   SafetyMarginMs    = 5;
+    int32   OutputBufferMs    = 20;
     int32   MaxHoldMs         = 400;
     int32   NoSignalTimeoutMs = 2000;
 };

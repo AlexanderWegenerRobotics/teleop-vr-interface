@@ -52,6 +52,9 @@ struct FAudioStreamConfig
     FString OutputDevice;
     bool    bSyncToVideo = true;
     int32   ExtraDelayMs = 0;
+    double  GainDb       = 20.0;
+    int32   SafetyMarginMs = 5;
+    int32   OutputBufferMs = 20;
     bool    bLog         = true;
 };
 
@@ -65,17 +68,14 @@ struct FStreamConfig
     bool    bVideoLogRaw       = true;
     bool    bVideoLogAttention = true;
     bool    bVideoLogOperatorView = true;
+    double  VideoLogFps      = 30.0;
     int32   Port             = 5004;
     int32   FeedbackPort     = 5005;
-    int32   TimestampPort    = 5006;
     int32   StatusPort       = 5007;
     int32   ReportIntervalMs = 500;
     // Optional "jitterbuffer_ms" in stream.json; applies to every GStreamer
     // receiver (main, twin, PiP). 50 = the old hardcoded value.
     int32   JitterBufferMs   = 50;
-    int32   RightPort             = 5006;
-    int32   RightFeedbackPort     = 5008;
-    int32   RightStatusPort       = 5009;
     TArray<FPiPStreamConfig> PiPStreams;
 
     // Twin's head-cam feed, registered as a second *main-view* source (see
@@ -111,6 +111,19 @@ struct FHudConfig
     float UIWidgetWidth = 1280.0f;
     float UIWidgetHeight = 800.0f;
     float UIPlaneDistance = 690.0f;
+    FString Placement = TEXT("auto");
+    float AlertsWidgetWidth = 1280.0f;
+    float AlertsWidgetHeight = 800.0f;
+    float AlertsPlaneDistance = 680.0f;
+    bool  bWristViewEnabled = false;
+    FString WristViewMode = TEXT("always");
+    TArray<FString> WristViewStreams;
+    float WristViewWidthCm      = 200.0f;
+    float WristViewGapCm        = 40.0f;
+    float WristViewUpCm         = 0.0f;
+    float WristViewFollowTauS   = 0.15f;
+    float WristViewExpandScale  = 1.6f;
+    float WristViewShrinkDelayS = 0.6f;
 };
 
 USTRUCT()
@@ -122,6 +135,8 @@ struct FRobotConfig
     float WorkspaceMinX =  0.4f;   // torso boundary
     float WorkspaceMaxY =  0.4f;   // left workspace edge
     float WorkspaceMinY = -0.4f;   // right workspace edge
+    float WorkspaceMaxX =  10.f;   // far workspace edge, default off
+    float WorkspaceMaxZ =  10.f;   // upper workspace edge, default off
     FVector WristPivotRight = FVector(-5.9f,  2.1f, 3.4f);
     FVector WristPivotLeft  = FVector(-5.9f, -2.1f, 3.4f);
 
@@ -242,7 +257,6 @@ struct FOverlayConfig
     float BoundaryPlaneHeightM = 0.96f;
 
     bool  bLookAroundEnabled    = false;
-    bool  bLookAroundRequireEngaged = true;
     float LookAroundMaxYawDeg   = 25.0f;
     float LookAroundMaxPitchDeg = 15.0f;
     float LookAroundKneeDeg     = 5.0f;
