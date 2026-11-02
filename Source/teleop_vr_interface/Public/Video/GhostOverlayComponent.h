@@ -81,15 +81,11 @@ public:
     UPROPERTY(EditAnywhere, Category = "Ghost|Intent")
     bool bClampGhostToWorkspace = false;
 
-    // Slow correction of the command origin toward the measured arm origin (arm EE ⊖
-    // delta). This is what makes the ghost ease onto the real end-effector once everything
-    // has settled, closing the static offset that the command alone never closes — the arm
-    // is a compliant spring and sits a steady-state deflection (load / stiffness) short of
-    // its setpoint, biggest during contact/manipulation. The correction is gated on
-    // operator-at-rest AND arm-settled AND in-bounds, so it never fights the catch-up
-    // (ghost holds while the arm flies in) and never erases a deliberate over-command into
-    // a limit. Per-fresh-state lerp factor (0 = off, ~0.05–0.15 = ease over a fraction of
-    // a second once settled).
+    // Slow correction of the command origin toward the measured arm origin (arm EE
+    // minus delta), so the ghost eases onto the real end-effector once settled; the
+    // compliant arm sits a steady-state deflection short of its setpoint. Gated on
+    // operator at rest, arm settled and in bounds, so it never fights catch-up or
+    // erases an over-command into a limit. Per-state lerp factor, 0 = off.
     UPROPERTY(EditAnywhere, Category = "Ghost|Intent")
     float OriginConvergeRate = 0.0f;
 
@@ -239,11 +235,9 @@ public:
     UPROPERTY(EditAnywhere, Category = "Ghost|Assets")
     TObjectPtr<UStaticMesh> GhostLeftHandMesh;
 
-    // ---- Overlay hooks for other VR-drawn indicators (e.g. grasp indicator) --------- //
-    // Additive-only: lets an external component register a primitive so it renders inside
-    // the ghost's SceneCapture(s), and get an anchor to attach to so it inherits the ghost
-    // mesh's per-tick pose via normal USceneComponent attachment. Does not touch any of the
-    // ghost's own rendering/pose logic.
+    // ---- Overlay hooks for other VR-drawn indicators (e.g. grasp indicator) ----
+    // Lets an external component render inside the ghost's SceneCapture and attach to
+    // an anchor that follows the ghost mesh. Does not touch the ghost's own logic.
     void RegisterOverlayComponent(UPrimitiveComponent* Comp);
     USceneComponent* GetRightWristAnchor() const { return GhostMeshComp; }
     USceneComponent* GetLeftWristAnchor()  const { return GhostLeftMeshComp; }
@@ -293,13 +287,9 @@ private:
                           UTrackedControllerComponent* Tracked);
     FQuat UpdateCaptureTransforms(const FQuat& R_HW_Protocol);
 
-    // Resolves this tick's video-camera extrinsics in the protocol frame:
-    // OutCamPos = camera position in world, OutCamRot = camera->world rotation
-    // (camera looks down its own +X, +Y left, +Z up).
-    //
-    // This is the single place the viewpoint enters the overlay. Everything
-    // drawn into the capture -- both ghosts, fingers, grasp indicator, workspace
-    // boundary -- is reprojected through ApplyArmPoseToMesh, which uses this.
+    // Video-camera extrinsics in the protocol frame: OutCamPos in world, OutCamRot
+    // camera-to-world (camera looks along +X, +Y left, +Z up). Everything drawn into
+    // the capture is reprojected through this, via ApplyArmPoseToMesh.
     void ResolveCameraPose(FVector& OutCamPos, FQuat& OutCamRot) const;
 
     // One-shot startup log of the resolved viewpoint, so a misaligned overlay is
@@ -395,17 +385,10 @@ private:
     float SmoothedLatencyMs_ = 0.f;
     uint8 LatencyLevel_      = 0;   // 0 = OK  |  1 = Warning  |  2 = Bad
 
-    // Intent pose storage — one slot per arm (index 0 = left, 1 = right).
-    //
-    // Raw command-target display: the ghost shows where the operator is commanding the
-    // arm to go, so it LEADS the arm and reveals intent that is past a limit (e.g. into
-    // the table):
-    //     ghost = Origin ⊕ command delta
-    // To still settle back onto the real arm in reachable space, Origin is nudged toward
-    // the measured arm origin (arm EE ⊖ delta) ONLY while the operator is at rest and the
-    // command is in-bounds — so the live lead is never dragged back during motion and a
-    // deliberate over-command into a limit is preserved. All quaternions are stored
-    // w, x, y, z (protocol order).
+    // Intent pose per arm (0 = left, 1 = right). The ghost shows the commanded
+    // target, ghost = Origin + command delta, so it leads the arm and shows intent
+    // past a limit. Origin is nudged toward the measured arm only while the operator
+    // is at rest and in bounds. Quaternions stored w, x, y, z (protocol order).
     struct FIntentPose
     {
         // Command origin (protocol/world frame). Seeded at engage with the arm EE pose;

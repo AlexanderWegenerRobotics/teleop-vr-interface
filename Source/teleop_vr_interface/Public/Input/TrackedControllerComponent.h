@@ -48,28 +48,24 @@ public:
     bool IsClutching() const { return bFullClutch; }
     void ConsumeMenuPress() { bMenuPressed = false; }
 
-    // Latched HAND GRIP TAP -- pressed and released without touching the pad.
-    // This is the handover shortcut; see OnHandGripReleased for why a tap and
-    // not a press, and PollResumeButton for what it does.
+    // Latched hand-grip tap, the handover shortcut. See OnHandGripReleased and
+    // PollResumeButton.
     bool IsResumeRequested() const { return bResumeRequested; }
     void ConsumeResumePress() { bResumeRequested = false; }
 
-    // Force the grasp toggle to a known value. Used on a takeover to re-sync
-    // this latch with the gripper the operator is actually inheriting -- see
-    // AOperatorPawn::RequestArmAuthority.
+    // Force the grasp toggle to a known value, used on a takeover (see
+    // AOperatorPawn::RequestArmAuthority).
     void SetGraspHeld(bool bHeld) { bGripHeld = bHeld; }
 
     float GetScaleFactor() const { return ScaleFactor; }
 
-    // Arm a one-shot wrist-pivot calibration. While armed, the NEXT grip hold captures
-    // poses instead of toggling grasp; releasing grip solves for ControlPointOffset,
-    // applies it, and logs a ready-to-paste value. Auto-disarms after a timeout.
+    // One-shot wrist-pivot calibration: the next grip hold captures poses, the
+    // release solves for ControlPointOffset and logs the value. Auto-disarms after a
+    // timeout.
     void ArmPivotCalibration();
 
-    // Local-frame offset (cm) from the controller's tracked origin to the operator's
-    // wrist pivot. Applied to translation integration so rotating in place no longer
-    // produces parasitic translation ("the arc"). Found via ArmPivotCalibration, or set
-    // by hand. Zero = use the raw tracked origin (legacy behaviour).
+    // Offset (cm) from the controller's tracked origin to the wrist pivot, so
+    // rotating in place does not produce translation. Zero = raw tracked origin.
     UPROPERTY(EditAnywhere, Category = "Controller|Calibration")
     FVector ControlPointOffset = FVector::ZeroVector;
 
@@ -128,44 +124,13 @@ public:
     UPROPERTY(EditAnywhere, Category = "Controller|Tracking")
     float MaxGuardWindow = 0.1f;
 
-    // One-euro filter on the tracked control point. The cutoff rises with speed,
-    // so standing jitter is smoothed hard while real motion passes with little
-    // added lag. MinCutoff sets the smoothing at rest, Beta how fast the cutoff
-    // opens up. 0 disables the filter.
-    //
-    // These values are read by the command thread as well (mirrored into
-    // FOperatorInputSnapshot each tick), so this is the one place to tune them.
-    //
-    // History: off until 2026-09-19. At the ~26 Hz game-thread rate the
-    // tracker's jitter was already ALIASED into the signal band and no causal
-    // filter could separate it from real motion; the best non-absurd setting
-    // (0.8 Hz) removed 35% of the >4 Hz jitter on x and 3% on y. Sampling now
-    // runs at 90 Hz on its own thread, so the noise is no longer aliased and
-    // the filter can do its job.
-    //
-    // Correcting a claim the old note made: raising the sample rate does NOT
-    // reduce the filter's lag. A first-order low-pass has group delay
-    // tau = 1/(2*pi*fc) whatever the sample rate -- 1.5 Hz is 106 ms. What the
-    // rate buys is that the noise is real rather than aliased. The lag is
-    // managed by Beta instead, which opens the cutoff with hand speed
-    // (cm/s here): fc = MinCutoff + Beta * speed.
-    //
-    //     speed      fc (1.5 + 0.4*v)    tau
-    //     at rest        1.5 Hz         106 ms   (nothing is moving)
-    //      10 cm/s       5.5 Hz          29 ms
-    //      30 cm/s      13.5 Hz          12 ms
-    //     100 cm/s      41.5 Hz           4 ms
-    //
-    // Beta 0.4 rather than the paper's small values because the measured noise
-    // floor above 15 Hz is only 0.06-0.18 mm rms per axis (session 2026-09-19),
-    // so there is little to smooth and lag is the expensive side of the trade.
-    // DerivCutoff 5 Hz rather than 1 Hz for the same reason: at 1 Hz the speed
-    // estimate itself lags 160 ms, so the cutoff stays shut through the first
-    // part of every movement and smears its onset.
-    //
-    // Set MinCutoff to 0 to disable. Do that when measuring the runtime's true
-    // pose update rate -- the filter erases exactly the kinks that measurement
-    // looks for.
+    // One-euro filter on the tracked control point: fc = MinCutoff + Beta * speed
+    // (cm/s), so jitter at rest is smoothed hard while real motion passes with little
+    // lag. Mirrored into FOperatorInputSnapshot for the command thread, so tune here
+    // only.
+    // Beta 0.4 because the noise floor above 15 Hz is small and lag is the expensive
+    // side; DerivCutoff 5 Hz so the speed estimate does not delay movement onset.
+    // MinCutoff 0 disables it, e.g. when measuring the runtime's pose update rate.
     UPROPERTY(EditAnywhere, Category = "Controller|Tracking")
     float FilterMinCutoff = 1.5f;
 
@@ -178,9 +143,8 @@ public:
     int32 GetRejectedTrackingJumps() const { return RejectedTrackingJumps; }
     int32 GetInertialOnlyFrames() const { return InertialOnlyFrames; }
 
-    // Binary clutch with hysteresis. Engage above the first, release at or
-    // below the second. Raised from 0.08/0.04: those were only safe because
-    // the old quadratic gain made a light touch worth ~0.1% of full scale.
+    // Binary clutch with hysteresis: engage above the first threshold, release at or
+    // below the second.
     UPROPERTY(EditAnywhere, Category = "Controller|Clutch")
     float ClutchEngageThreshold = 0.55f;
 

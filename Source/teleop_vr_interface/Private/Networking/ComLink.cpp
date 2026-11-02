@@ -275,16 +275,9 @@ void UComLink::SendStateRequest(SysState RequestedState) {
 void UComLink::SendAuthorityRequest(uint8 DeviceIndex, EControlAuthority Requested, bool bAllDevices) {
     if (!CmdLink_) return;
 
-    // The avatar keys on "device": present names ONE arm, absent means EVERY
-    // arm. Which one is sent is the whole difference between the two authority
-    // models, and it lives here rather than being spread through the caller.
-    //
-    // "source" is what Avatar::applyAuthorityRequest arbitrates on: an operator
-    // claim outranks an orchestrator one.
-    //
-    // Packed field by field rather than through a std::map because the values
-    // are not all the same type -- a map<string, uint8_t> cannot carry the
-    // strings, and msgpack has no heterogeneous map helper.
+    // "device" present names one arm, absent means every arm. "source" is what
+    // Avatar::applyAuthorityRequest arbitrates on: an operator claim outranks an
+    // orchestrator one. Packed field by field because the values have mixed types.
     msgpack::sbuffer Buf;
     msgpack::packer<msgpack::sbuffer> Packer(&Buf);
     Packer.pack_map(bAllDevices ? 2 : 3);

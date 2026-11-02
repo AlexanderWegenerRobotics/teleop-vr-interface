@@ -67,19 +67,10 @@ extern "C" bool GStreamerStartPipeline(void* pipeline)
     return (ret != GST_STATE_CHANGE_FAILURE);
 }
 
-// Blocks until the pipeline actually reaches PLAYING (or fails/times out).
-//
-// NOTE: this is no longer used to choose between GPU and CPU decode. On a live RTP
-// pipeline "has not reached PLAYING" mostly means "the sender has not sent a keyframe
-// yet", which says nothing about decoder health -- see FGStreamerVideoReceiver::Start.
-// Kept as a general utility; do not reintroduce it as a capability probe.
-//
-// NOTE: our receive pipelines are driven by udpsrc, which is a *live* source, so they
-// never preroll. GStreamer signals that with GST_STATE_CHANGE_NO_PREROLL, which is a
-// success return for live pipelines -- not a failure. Treating it as failure (as this
-// did originally) made the nvh264dec path look broken 100% of the time: every Start()
-// burned the full timeout here and then fell back to CPU decode. Accept both returns
-// and let `state` be the real verdict.
+// Blocks until the pipeline reaches PLAYING, fails or times out. Not a GPU/CPU decode
+// probe: a live RTP pipeline only reaches PLAYING after the sender's first keyframe
+// (see FGStreamerVideoReceiver::Start). udpsrc pipelines never preroll, so
+// GST_STATE_CHANGE_NO_PREROLL counts as success and `state` is the verdict.
 extern "C" bool GStreamerWaitForPlaying(void* pipeline, int timeout_ms)
 {
     if (!pipeline) return false;

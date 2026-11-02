@@ -172,13 +172,9 @@ void UWidgetBinder::DiscoverWidgets() {
 	}
 }
 
-// True only when the widget AND every ancestor up to the root is drawn.
-// UWidget::IsVisible() reports the widget's own flag, so a button inside a
-// collapsed panel still answers "visible" -- which is how a hidden panel's
-// buttons stayed in ButtonRects_ and remained gaze-hoverable over dead space.
-// Walking the parent chain is deliberate rather than reading cached geometry:
-// geometry is only valid after Slate has ticked, and rects are recomputed on
-// the same frame a panel is shown.
+// True only when the widget and every ancestor are drawn; IsVisible() only reports
+// the widget's own flag. Walks the parent chain because cached geometry is not valid
+// yet on the frame a panel is shown.
 static bool IsEffectivelyVisible(const UWidget* W) {
 	for (const UWidget* Cur = W; Cur; Cur = Cur->GetParent()) {
 		const ESlateVisibility Vis = Cur->GetVisibility();
@@ -197,10 +193,7 @@ void UWidgetBinder::CacheWidgetRects() {
 	Widget_->WidgetTree->ForEachWidget([this](UWidget* W) {
 		FName Name = W->GetFName();
 
-		// A collapsed subtree contributes no hit-test rects. Without this the
-		// only thing keeping hidden buttons out of ButtonRects_ is the
-		// zero-geometry check in the nested-button branch below, which does not
-		// apply to a button parented directly to a canvas panel.
+		// A collapsed subtree contributes no hit-test rects.
 		if (!IsEffectivelyVisible(W)) return;
 
 		if (UCanvasPanelSlot* Slot = Cast<UCanvasPanelSlot>(W->Slot)) {
@@ -377,10 +370,8 @@ void UWidgetBinder::TickComponent(float DeltaTime, ELevelTick TickType, FActorCo
 	FVector2D UV;
 	bool bGazeOnPanel = ProjectGazeToUV(UV);
 
-	// Hover follows trusted gaze only; through a wink or a brief tracker
-	// dropout it holds the last trusted target (see BlinkHoverHoldSec).
-	// IsBlinking() also covers the short "open" flickers WinkGesture bridges,
-	// so a one-frame open reading mid-wink cannot retarget the hover.
+	// Hover follows trusted gaze only and holds the last trusted target through a
+	// wink or brief dropout (see BlinkHoverHoldSec).
 	const bool bGazeTrusted = LatestGaze_.bIsValid && !LatestGaze_.bIsRightBlinking
 		&& !WinkGesture_.IsBlinking();
 	FName NewHovered;
@@ -430,26 +421,11 @@ void UWidgetBinder::TickComponent(float DeltaTime, ELevelTick TickType, FActorCo
 		bStaticRectsDirty_ = true;
 	}
 
-	// ── HUD raster rate ──────────────────────────────────────────────────────
-	// RenderWidget rasterises the ENTIRE UMG tree into a render target through
-	// FWidgetRenderer, on the game thread. It ran every tick, once per binder,
-	// and there are two of them -- so at 26 FPS that is 52 full Slate layout +
-	// paint passes a second for a panel whose fastest-moving content is a
-	// latency number.
-	//
-	// The interface's own metrics say this is the right place to look: game_ms
-	// median 38.0 against render_ms 0.35. The GPU render thread is idle; the
-	// cost is CPU-side Slate work, which is exactly what this call is.
-	//
-	// Dropping to RenderRateHz does not make the HUD feel slower, because the
-	// two things that must feel instant -- hover highlight and click -- set
-	// bRenderDirty_ and are drawn on the same tick they happen. Only the
-	// numbers and plots move to the slower clock, and nobody reads a latency
-	// readout at 26 Hz.
-	//
-	// Gaze hit-testing is unaffected: FindButtonAtUV above still runs every
-	// tick, so dwell detection keeps full temporal resolution. This throttles
-	// what is DRAWN, never what is SENSED.
+	// -- HUD raster rate --
+	// RenderWidget rasterises the whole UMG tree on the game thread, which is
+	// CPU-heavy, so the HUD is drawn at RenderRateHz. Hover and click set
+	// bRenderDirty_ and are drawn immediately. Gaze hit-testing still runs every
+	// tick.
 	RenderAccum_ += DeltaTime;
 	const float RenderPeriod = (RenderRateHz > 0.f) ? (1.f / RenderRateHz) : 0.f;
 	if (bRenderDirty_ || (bLayerShown_ && RenderAccum_ >= RenderPeriod)) {
@@ -514,10 +490,8 @@ bool UWidgetBinder::ProjectGazeToUV(FVector2D& OutUV) const {
 FName UWidgetBinder::FindButtonAtUV(const FVector2D& UV) const {
 	FVector2D PixelPos = UV * RenderSize_;
 
-	// Pass 1: pixel-exact. A gaze that is genuinely inside a button always
-	// resolves to that button, whatever the margin would have pulled in -- so
-	// widening the hit rects can never steal a hit from the control the
-	// operator is actually looking at.
+	// Pass 1: pixel-exact. A gaze inside a button always resolves to that button, so
+	// the margin can never steal a hit.
 	for (const auto& Pair : ButtonRects_) {
 		const FWidgetRect& R = Pair.Value;
 		if (PixelPos.X >= R.Position.X && PixelPos.X <= R.Position.X + R.Size.X &&
@@ -528,24 +502,13 @@ FName UWidgetBinder::FindButtonAtUV(const FVector2D& UV) const {
 
 	if (GazeHitMarginPx <= 0.f) return FName();
 
-	// Pass 2: near-miss. Every rect grows by GazeHitMarginPx and the CLOSEST
-	// one wins, measured to the rect's edge rather than its centre so a small
-	// button beside a large one is not perpetually outvoted.
-	//
-	// Nearest, not first: expanded rects overlap, and TMap iteration is hash
-	// order, so "first match" would make which button a near-miss lands on
-	// depend on the widget names in the asset -- a rule that works for months
-	// and then changes because someone renamed something.
+	// Pass 2: near-miss. Rects grow by GazeHitMarginPx and the closest one wins,
+	// measured to the edge, not the centre. Nearest rather than first, since TMap
+	// order is not stable.
 	FName Best     = FName();
 	float BestDist = TNumericLimits<float>::Max();
-	// Written out rather than through FMath::Max3, and deliberately so.
-	//
-	// FVector2D is FVector2d in UE5, so its components are doubles. Mixing a
-	// 0.f literal into Max3 left its single template parameter ambiguous
-	// between float and double -- it cannot widen one argument to match the
-	// others, it has to deduce one T for all three. Plain comparisons have no
-	// T to deduce, so this compiles the same whatever precision FVector2D
-	// carries now or later.
+	// Plain comparisons instead of FMath::Max3: FVector2D components are doubles in
+	// UE5, which makes Max3's template argument ambiguous with a float literal.
 	const double PX = PixelPos.X;
 	const double PY = PixelPos.Y;
 	for (const auto& Pair : ButtonRects_) {
@@ -701,11 +664,8 @@ void UWidgetBinder::ShowCameraMenu(const TArray<FString>& StreamNames, const FSt
 			ButtonRects_.Add(Name, Rect);
 			Y += Rect.Size.Y + SlotV;
 		}
-		// Keep dirty: on the FIRST menu open of a session the freshly created buttons
-		// have no valid desired/cached size yet, so the analytic rects above are only a
-		// rough first estimate. Leaving the flag set lets the Tick path (which uses real
-		// GetCachedGeometry and waits for bAllReady) finalize the hit-rects within a frame.
-		// Clearing it here was the bug that made the first menu selection of a session miss.
+		// Keep dirty: on the first menu open the new buttons have no valid size yet,
+		// so the Tick path finalises the rects with real cached geometry.
 		bMenuRectsDirty_ = true;
 	} else {
 		bMenuRectsDirty_ = true;
@@ -879,15 +839,11 @@ void UWidgetBinder::SetVisibility(FName WidgetName, bool bVisible)
 			const ESlateVisibility NewVis = bVisible ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed;
 			if ((*Found)->GetVisibility() != NewVis) {
 				(*Found)->SetVisibility(NewVis);
-				// Dirty on hide as well as on show. Hiding used to leave the
-				// panel's buttons in ButtonRects_ with their last-known rects,
-				// so gaze kept hovering controls that were no longer drawn. The
-				// recache drops them, FindButtonAtUV then returns None, and the
-				// existing hover-change path clears the stale highlight.
+				// Dirty on hide as well as show, so hidden buttons drop out of the
+				// hit rects.
 				bStaticRectsDirty_ = true;
-				// A panel appearing or disappearing is an interaction result,
-				// not a readout -- draw it on this tick rather than up to a
-				// render slot later.
+				// Showing or hiding a panel is an interaction result, so draw it this
+				// tick.
 				bRenderDirty_ = true;
 			}
 		}
@@ -913,9 +869,8 @@ FString UWidgetBinder::GetWidgetClassName(FName Name) const {
 }
 
 FLinearColor UWidgetBinder::GetDesignTint(FName Name) const {
-	// Both layers, because both multiply: the widget's own colour AND the
-	// brush's tint underneath it. Either one being non-white is enough to
-	// swallow a runtime accent.
+	// Both layers multiply (widget colour and brush tint), so either being non-white
+	// swallows an accent.
 	if (UImage* const* Img = CachedImages_.Find(Name)) {
 		if (*Img) {
 			const FLinearColor Widget = (*Img)->GetColorAndOpacity();

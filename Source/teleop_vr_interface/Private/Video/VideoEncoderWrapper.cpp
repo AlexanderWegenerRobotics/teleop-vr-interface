@@ -6,10 +6,8 @@
 #include "Windows/AllowWindowsPlatformTypes.h"
 #include <Windows.h>
 #include "Windows/HideWindowsPlatformTypes.h"
-// Hide...Types.h restores types but leaves the A/W function macros defined, and
-// under unity builds they leak into every .cpp compiled after this one. See the
-// header for the failure this produces. All Windows calls below use the
-// explicit ...W forms, so nothing here depends on the macros.
+// Windows A/W macros leak through the unity build; all Windows calls below use the
+// explicit ...W forms. See WindowsMacroCleanup.h.
 #include "Shared/WindowsMacroCleanup.h"
 
 struct FEncoderHandle
@@ -31,38 +29,12 @@ static FString FindFfmpeg()
 // ---------------------------------------------------------------------------
 // Encoder selection
 // ---------------------------------------------------------------------------
-// VideoLogger runs two of these concurrently (raw + attention), both 1280x720
-// at 30 fps. In software that is two sustained real-time x264 encodes competing
-// with the game thread for cores, which is the single largest CPU consumer in
-// the process. On an NVIDIA card NVENC does the same work on dedicated silicon
-// for effectively nothing.
-//
-// NVENC's option names changed between ffmpeg generations: older builds take
-// -preset llhq / -rc vbr_hq, newer ones take -preset p1..p7 / -tune ll. The
-// bundled ThirdParty/ffmpeg.exe is an older one. Rather than hardcode a guess,
-// we probe candidates in order and keep the first that this binary actually
-// accepts -- so upgrading ffmpeg later doesn't silently drop us back to
-// software encoding.
-//
-// The probe runs the *exact* argument string we will use. Probing merely for
-// "h264_nvenc exists" and then passing preset flags the build doesn't
-// understand would fail at record time, where the symptom is an empty mp4.
-// Hardware encoder candidates, tried in order; the first that survives a real
-// end-to-end probe wins.
-//
-// NVENC is listed first even though it currently fails on this rig: the bundled
-// ffmpeg is built against nvenc SDK 13.0, which needs NVIDIA driver >= 570, and
-// the machine is on 566.14. That is a driver-version problem, not a capability
-// one -- decode (NVDEC) has a lower floor, which is why nvh264dec works fine.
-// Keeping NVENC at the top means that if the driver is ever updated, video logs
-// silently move to it with no code change.
-//
-// h264_mf is the fallback that works today. It encodes through the Windows
-// MediaFoundation H.264 MFT, which on an NVIDIA card is NVENC underneath but is
-// reached via the OS rather than ffmpeg's bundled SDK headers -- so it is not
-// gated on the SDK/driver pairing above. hw_encoding=true is important: without
-// it MediaFoundation may quietly select its *software* MFT, which would defeat
-// the entire point.
+// VideoLogger runs two 720p30 encodes at once, which in software is the largest CPU
+// consumer in the process, so hardware encoders are tried first.
+// Candidates are probed in order with the exact argument string used for recording;
+// NVENC option names differ between ffmpeg versions. NVENC needs a driver matching
+// the bundled ffmpeg's SDK; h264_mf (MediaFoundation, hw_encoding=true) is the
+// fallback that reaches the same hardware through the OS.
 struct FEncoderCandidate { const TCHAR* Name; const TCHAR* Args; };
 
 static const FEncoderCandidate kHwCandidates[] = {
@@ -72,16 +44,9 @@ static const FEncoderCandidate kHwCandidates[] = {
     { TEXT("h264_mf"),    TEXT("-c:v h264_mf -hw_encoding true -b:v 8M -pix_fmt yuv420p") },
     { TEXT("h264_mf"),    TEXT("-c:v h264_mf -b:v 8M -pix_fmt yuv420p") },
 };
-// Software fallback. Two things here are deliberate and worth not "tidying":
-//
-//   -threads 4  x264 defaults to ~1.5x logical cores, which on a 24-thread part
-//               means ~36 worker threads PER encoder. With two encoders that is
-//               ~70 threads contending with the game and render threads, and the
-//               damage shows up as frame-time jitter rather than as total CPU%.
-//               Capping costs a little throughput we do not need at 720p30.
-//
-//   veryfast    ~2-3x cheaper than 'fast' at the same CRF. Quality target is
-//               unchanged (still -crf 23); files come out somewhat larger.
+// Software fallback. -threads 4 caps x264's worker threads (default ~1.5x logical
+// cores per encoder), which otherwise shows up as frame-time jitter. veryfast is
+// ~2-3x cheaper than fast at the same CRF.
 static const TCHAR* kX264Args = TEXT("-c:v libx264 -preset veryfast -crf 23 -threads 4 -pix_fmt yuv420p");
 
 static TAutoConsoleVariable<int32> CVarVideoLogEncoder(
@@ -91,9 +56,8 @@ static TAutoConsoleVariable<int32> CVarVideoLogEncoder(
     TEXT("1 = prefer hardware, 2 = force software x264."),
     ECVF_Default);
 
-// Runs ffmpeg to completion, capturing its combined stdout/stderr. UE points
-// both child handles at the same pipe, and we drain while it runs so a chatty
-// failure can't fill the pipe buffer and deadlock the child.
+// Runs ffmpeg to completion and captures stdout/stderr, draining while it runs so a
+// full pipe cannot deadlock the child.
 static bool RunFfmpeg(const FString& Args, FString& OutOutput, int32& OutReturnCode)
 {
     const FString Ffmpeg = FindFfmpeg();
@@ -130,23 +94,14 @@ static bool RunFfmpeg(const FString& Args, FString& OutOutput, int32& OutReturnC
     return true;
 }
 
-// Runs a short real encode with the given argument string; exit code 0 means
-// this ffmpeg build and this machine accept it end to end. On failure the
-// reason is logged -- "Unknown encoder", "Cannot load nvEncodeAPI64.dll" and
-// "No capable devices found" are very different problems and we cannot tell
-// them apart from an exit code alone.
+// Short real encode with the given arguments; exit code 0 means this build and
+// machine accept them. The failure reason is logged, since the exit code alone does
+// not distinguish them.
 static bool TryEncoderArgs(const TCHAR* Args)
 {
-    // 256x256 rather than something tiny: NVENC rejects very small frames on some
-    // driver/SDK combinations, and a false negative here would silently cost us
-    // the hardware path for the whole session.
-    //
-    // -nostdin is load-bearing. UE's CreateProc sets STARTF_USESTDHANDLES so it can
-    // redirect the child's stdout/stderr into our pipe, but it leaves hStdInput NULL.
-    // ffmpeg reads stdin for interactive keyboard commands by default, and against an
-    // invalid handle that fails immediately -- for EVERY probe, whatever the encoder.
-    // Without this the probe reports "no NVENC variant accepted" on a machine where
-    // NVENC is perfectly fine.
+    // 256x256 because NVENC rejects very small frames on some driver/SDK
+    // combinations. -nostdin is required: CreateProc leaves the child's stdin handle
+    // NULL, and ffmpeg's keyboard handling would make every probe fail.
     const FString FullArgs = FString::Printf(
         TEXT("-hide_banner -nostdin -loglevel error -f lavfi -i color=c=black:s=256x256:d=0.1 -r 30 %s -f null -"),
         Args);
@@ -166,20 +121,15 @@ static bool TryEncoderArgs(const TCHAR* Args)
     return true;
 }
 
-// Returns the encoder argument string and its name, honouring the CVar override.
-// Result is cached: it is a property of the machine and ffmpeg build, not of any
-// one recording, and both VideoLogger encoders ask for it.
+// Encoder arguments and name, honouring the CVar override. Cached, since it depends
+// on the machine and the ffmpeg build only.
 static const TCHAR* SelectEncoderArgs(const TCHAR*& OutName)
 {
     const int32 Override = CVarVideoLogEncoder.GetValueOnAnyThread();
     if (Override == 2) { OutName = TEXT("libx264 (forced)"); return kX264Args; }
 
-    // NOTE: this cache lives for the whole editor process, not the PIE session.
-    // A Live Coding patch cannot reset an already-initialised static, so once the
-    // probe has run, editing this file and hot-patching will NOT re-probe -- the
-    // old verdict silently persists and no probe lines appear at all. Restart the
-    // editor to force a fresh probe. The "(cached ...)" log below exists so that
-    // situation is visible rather than looking like the code never compiled.
+    // Lives for the whole editor process: a Live Coding patch does not reset it, so
+    // restart the editor to re-probe.
     static const TCHAR* Cached = nullptr;
     static const TCHAR* CachedName = nullptr;
 
@@ -210,12 +160,8 @@ static const TCHAR* SelectEncoderArgs(const TCHAR*& OutName)
             Cached     = kX264Args;
             CachedName = TEXT("libx264");
 
-            // Control probe: if even x264 fails here, the harness is at fault
-            // (ffmpeg not found, lavfi/color filter missing, pipe/exit-code
-            // plumbing wrong) and the NVENC rejections above say nothing about
-            // NVENC. Worth one extra process launch to avoid chasing the wrong
-            // problem -- this branch only runs once, and only when we already
-            // decided to fall back.
+            // Control probe: if x264 fails too, the probe harness is at fault, not
+            // NVENC.
             if (TryEncoderArgs(kX264Args))
             {
                 UE_LOG(LogTemp, Warning,

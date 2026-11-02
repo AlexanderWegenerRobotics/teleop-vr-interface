@@ -85,16 +85,10 @@ void UVideoFeedComponent::EndPlay(const EEndPlayReason::Type EndPlayReason) {
 void UVideoFeedComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) {
     Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
-    // ---- Per-source auto-reconnect -----------------------------------------
-    // Runs for every registered source, not just the active one (stats reads
-    // are cheap -- no texture copy involved), so a source currently off-screen
-    // still gets recovered if it drops instead of only starting its timer once
-    // someone switches to it.
-    //
-    // The restart is dispatched to a worker thread and this tick returns
-    // immediately: Start() blocks inside GStreamer's state change (seconds, in
-    // the worst case), and running that inline here stalled the game thread
-    // hard enough to stop frame submission to the compositor.
+    // ---- Per-source auto-reconnect ----
+    // Runs for every registered source, not only the active one. The restart goes to
+    // a worker thread, because Start() blocks inside GStreamer's state change and
+    // would stop frame submission to the compositor.
     for (auto& Pair : Sources_)
     {
         IVideoSource* Src = Pair.Value.Get();
@@ -216,12 +210,8 @@ bool UVideoFeedComponent::SetActiveSource(const FString& Name)
         return false;
     }
 
-    // Deliberately no Stop()/Initialize()/Start() here: every registered
-    // source is already running continuously since BeginPlay (see above), so
-    // switching the active view is just repointing which one feeds the
-    // texture -- no pipeline teardown, no reconnect hitch. Safe to call
-    // often and repeatedly (e.g. from a future autonomous view-selection
-    // policy).
+    // No Stop()/Initialize()/Start(): every source runs continuously, so switching
+    // only repoints which one feeds the texture.
     ActiveSourceName_ = Name;
     ActiveSource_ = Found->Get();
 

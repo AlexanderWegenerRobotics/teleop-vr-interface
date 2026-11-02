@@ -85,17 +85,10 @@ public:
     float  GetStateLatencyMs() const { return LatencyMs_; }
     float  GetMsgRateHz()      const { return MsgRateHz_; }
 
-    // Age of the newest received sample, in milliseconds: how long ago the
-    // REMOTE actually read its hardware, not how long the packet spent on the
-    // wire. GetStateLatencyMs() answers the second question and is blind to
-    // the first, because a sender whose control loop has died keeps emitting
-    // packets with fresh send timestamps.
-    //
-    // Returns -1 if the sender does not populate sample_time_ns (older build),
-    // so callers can distinguish "unknown" from "fresh". Callers should treat
-    // negative as unknown and NOT alarm on it.
-    // Measured on this machine's clock only: time since a packet carrying a
-    // NEW sample_time_ns arrived. Independent of the clock offset between hosts.
+    // Age of the newest received sample in ms: how long ago the remote read its
+    // hardware, not transport time, which stays healthy when a sender's control loop
+    // has died. Measured on this machine's clock only. -1 if the sender does not set
+    // sample_time_ns; treat negative as unknown.
     float GetStateAgeMs() const {
         uint64 AdvanceNs;
         {

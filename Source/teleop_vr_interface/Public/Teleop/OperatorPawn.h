@@ -34,8 +34,7 @@
 #include "Teleop/EpisodeEventReceiver.h"
 #include "GStreamerAudioReceiver.h"
 // UPROPERTY(TObjectPtr<UTexture2D>) needs the complete type for the generated
-// reflection code; the existing TArray<UTexture2D*> below is a plain member and
-// got away with whatever the include chain happened to provide.
+// reflection code.
 #include "Engine/Texture2D.h"
 
 #include <atomic>
@@ -142,17 +141,15 @@ private:
 	void SendOperatorState();
 	void HandleVoiceAnnotation(const FVoiceAnnotation& Ann);
 
-	// Remote arm reported FAULT in its message header. Called from ComLink's
-	// receive thread, so it only records intent; the audible cue and HUD work
-	// happen on the game thread in Tick.
+	// Remote arm reported FAULT. Called from ComLink's receive thread, so it only
+	// records intent; cue and HUD run on the game thread in Tick.
 	void HandleArmFault(uint8 DeviceIndex, FaultCode Code);
 	// Set by HandleArmFault, consumed and cleared in Tick. One slot per arm.
 	TAtomic<int32> PendingArmFault_[2];    // -1 = none, else FaultCode value
 	FFrameBundle BuildFrameBundle() const;
 
-	// Tells the local operator-side RealSense recorder to start/stop, in step with the
-	// startButton toggle (Idle<->Homing). Same-machine loopback, so no clock sync needed —
-	// the receiver just uses the ts_ns in the message as its own recording clock reference.
+	// Starts/stops the local RealSense recorder with the startButton toggle.
+	// Same-machine loopback, so the message ts_ns is the recorder's clock reference.
 	void SendRecordingSignal(bool bStart);
 	TUniquePtr<UdpSocket> RecordingSocket_;
 	bool bRecordingActive_ = false;
@@ -169,9 +166,8 @@ private:
 	// Stale-state alarm, see UpdateHudIndicators. Edge-triggered so the
 	// operator gets one warning per episode rather than a continuous tone.
 	bool bArmStateWasStale_ = false;
-	// 5x the avatar's 200 Hz state publish period. Tight enough to catch a
-	// dead control loop within ~25 ms, loose enough not to fire on ordinary
-	// scheduling jitter or a single dropped packet.
+	// 5x the avatar's 200 Hz state period: catches a dead control loop within ~25 ms
+	// without firing on jitter or a single dropped packet.
 	static constexpr float kArmStateStaleWarnMs = 25.f;
 
 	bool bPendingVoiceReengage_   = false;
@@ -218,52 +214,31 @@ private:
 
 	void UpdateInfoBar();
 
-	// ── Intervention / control authority ────────────────────────────────────
-	// Watches each trigger for a clutch edge and claims or releases that arm.
-	// Per arm on purpose: the clutch already is, so the operator can correct one
-	// hand while the policy keeps driving the other.
-	//
-	// Does nothing unless the intervention session is armed. That is the whole
-	// safety story for ordinary teleoperation: unarmed, not a single authority
-	// request goes out, the avatar's gate stays UNSET, and every command path
-	// behaves exactly as it did before any of this existed.
+	// --- intervention / control authority ---
+	// Watches each trigger for a clutch edge and claims or releases that arm, so the
+	// operator can correct one hand while the policy drives the other. Does nothing
+	// unless the session is armed, so ordinary teleoperation never sends an authority
+	// request.
 	void UpdateAuthority();
-	// Arms the intervention session when the avatar reports authority already
-	// in use -- i.e. when the orchestrator has claimed it. Without this, an
-	// intervention run starts with both arms in HOLD and no way for the
-	// operator to take them, because UpdateAuthority is inert while unarmed.
+	// Arms the session when the avatar reports authority already in use (claimed by
+	// the orchestrator), since UpdateAuthority is inert while unarmed.
 	void MaybeAutoArmIntervention();
 	// Sends one arm's request and, on a takeover, re-anchors that arm's
 	// retarget at the same instant the avatar re-origins it.
 	void RequestArmAuthority(uint8 ArmIndex, EControlAuthority Requested);
-	// Authority as the AVATAR last reported it (authority_state on the command
-	// channel), NOT as we requested it. Everything the HUD draws comes from
-	// here, so the pill can never claim an arm whose request the avatar refused.
+	// Authority as the avatar last reported it, not as requested, so the HUD never
+	// shows a claim the avatar refused.
 	EControlAuthority GetArmAuthority(uint8 ArmIndex) const;
-	// The one authority the operator is actually working under.
-	//
-	// Whole-body: both arms move together by construction, so this is simply
-	// their shared value -- and if they ever disagree (a refused claim, a
-	// packet lost on one channel) it reports the SAFER of the two rather than
-	// averaging them, because the HUD saying POLICY while a hand drives an arm
-	// is the worst sentence this interface could write.
-	//
-	// Per-limb: the arms are legitimately independent, so there is no single
-	// answer and this returns Unset, which is the caller's cue to render the
+	// The authority the operator is working under. Whole-body: the shared value, or
+	// the safer one if the arms disagree. Per-limb: Unset, the cue to render the
 	// split form.
 	EControlAuthority GetEffectiveAuthority() const;
-	// Re-seeds the grasp toggle from the measured gripper width at a takeover,
-	// so the operator inherits the gripper the policy left rather than the one
-	// they last set before handing over. ArmIndex -1 = both arms.
+	// Re-seeds the grasp toggle from the measured gripper width at a takeover.
+	// ArmIndex -1 = both arms.
 	void SyncGraspToMeasured(int32 ArmIndex);
 
-	// Glyph shown inside the DAGGER panel, one per authority state. Colour
-	// alone cannot say WHO is driving -- a green block and a blue block differ
-	// only if you have learnt the palette -- so the icon carries the meaning
-	// and the colour reinforces it.
-	//
-	// EditAnywhere so they can be reassigned without a rebuild; BeginPlay
-	// falls back to loading them by name if they are left unset (see
+	// Glyph per authority state inside the DAGGER panel; the icon says who is
+	// driving, the colour reinforces it. Falls back to loading by name if unset (see
 	// ResolveAuthorityGlyphs).
 	UPROPERTY(EditAnywhere, Category = "Teleop|Intervention")
 	TObjectPtr<UTexture2D> AuthorityIconHuman = nullptr;
@@ -277,29 +252,21 @@ private:
 	// Last glyph pushed, so the brush is rebuilt only on a state change rather
 	// than every tick -- SetImageTexture allocates a whole FSlateBrush.
 	UPROPERTY() TObjectPtr<UTexture2D> LastAuthorityGlyph_ = nullptr;
-	// True while the operator's HMD is allowed to drive the neck. False means
-	// the policy owns the head and SendHeadCommand sends nothing at all --
-	// silence, not a held pose, so the operator's HMD motion cannot leak into
-	// the observations the policy is conditioning on.
+	// True while the operator's HMD drives the neck. False means the policy owns the
+	// head and SendHeadCommand sends nothing, so HMD motion cannot leak into the
+	// policy's observations.
 	bool IsOperatorHoldingHead() const;
-	// Hands back every arm no hand is currently on. Shared by the RESUME button
-	// and the controller chord so the two can never diverge; Source is for the
-	// event log only.
+	// Hands back every arm no hand is on. Shared by the RESUME button and the
+	// controller chord; Source is for the event log.
 	void ResumePolicy(const TCHAR* Source);
-	// Drains the left Menu button latch. The shortcut exists
-	// because RESUME is the most frequent action in an intervention session and
-	// gaze-dwelling a button at the edge of the panel costs a glance away from
-	// the thing being corrected, every single time.
+	// Drains the left menu button latch, a shortcut for RESUME without looking away
+	// from the task.
 	void PollResumeButton();
-	// Applies one colour to a widget without knowing whether it is a TextBlock,
-	// an Image or a Border. UWidgetBinder's per-type setters no-op on a miss, so
-	// calling all three is type-agnostic by construction -- which is what stops a
-	// widget silently keeping its design-time colour when its type in UMG is not
-	// the one the C++ guessed.
+	// Applies one colour whether the widget is a TextBlock, Image or Border; the
+	// per-type setters no-op on a miss.
 	void SetWidgetAccent(FName WidgetName, const FLinearColor& Color) const;
-	// Logs, once at startup, every widget name this class drives that the bound
-	// UMG asset does not contain. UWidgetBinder no-ops silently on a miss, so
-	// without this a renamed or absent widget looks like broken C++.
+	// Logs once at startup every widget name this class drives that the bound UMG
+	// asset does not contain.
 	void AuditWidgetNames() const;
 	void SendEpisodeRestart(const FString& Label);
 
@@ -314,13 +281,11 @@ private:
 	uint64 LastAudioSyncFrameId_  = 0;
 	float LastHeadPan_   = 0.f;
 	float LastHeadTilt_  = 0.f;
-	// Head authority as SendHeadCommand last acted on it, for edge detection.
-	// Starts true so an unarmed session never sees an edge and behaves exactly
-	// as it did before the head joined the handover.
+	// Head authority as SendHeadCommand last acted on it, for edge detection. Starts
+	// true so an unarmed session never sees an edge.
 	bool  bHeadHeld_     = true;
-	// Neck angles at the instant the operator took the head back. Every
-	// command is this plus the HMD delta since the re-anchor, so a takeover
-	// continues from where the policy was looking instead of snapping.
+	// Neck angles when the operator took the head back. Commands are this plus the
+	// HMD delta since the re-anchor.
 	float HeadBasePan_   = 0.f;
 	float HeadBaseTilt_  = 0.f;
 	float PrevLeftGear_  = -1.0f;
@@ -329,48 +294,29 @@ private:
 	bool  bPrevRightClutch_ = false;
 	bool  bStatsVisible_       = false;
 	bool  bSettingsVisible_    = false;
-	// Intervention (DAgger) session armed. Drives the authority pill and the
-	// intervention panel, which are one feature and appear together, AND gates
-	// the authority requests themselves.
-	//
-	// The button arms the SESSION; the trigger takes the ROBOT. Keeping those
-	// apart is what lets ordinary teleoperation stay untouched: while this is
-	// false no authority request is ever sent, so the avatar never leaves
-	// UNSET and never gates anything.
+	// Intervention (DAgger) session armed. Drives the authority pill and panel and
+	// gates the authority requests. The button arms the session, the trigger takes
+	// the robot; while false the avatar stays UNSET.
 	bool  bInterventionArmed_ = false;
 	// Set from the command-link receive thread the first time the avatar
 	// reports any arm as not-UNSET. Consumed on the game thread.
 	std::atomic<bool> bAuthorityLiveSeen_{ false };
-	// Whole-body handover: one trigger takes the WHOLE robot -- both arms and
-	// the head -- and one RESUME hands all of it back.
-	//
-	// The per-arm machinery underneath is untouched and still does the actual
-	// work; this only decides how many arms a single request covers and whether
-	// the HUD is allowed to say "left" and "right" at all. Flipping it to false
-	// restores per-limb handover with no code changes, which is the point:
-	// session 002 showed per-limb yields no trainable chunks under ACT's joint
-	// action vector, but that is a property of the current policy head, not a
-	// permanent verdict, so the path back stays open.
-	//
-	// The head follows this flag rather than carrying its own: a head that
-	// keeps taking operator input while the arms are policy-driven would put
-	// the policy's camera somewhere the policy did not choose, and the images
-	// it is conditioning on stop matching what it asked for.
+	// Whole-body handover: one trigger takes both arms and the head, one RESUME hands
+	// them back. The per-arm machinery underneath is unchanged; false restores
+	// per-limb handover. The head follows this flag so the policy's camera is never
+	// moved by the operator while the policy drives.
 	UPROPERTY(EditAnywhere, Category = "Teleop|Intervention")
 	bool  bWholeBodyAuthority = true;
 	// Authority as the avatar last reported it, one per arm. Written from the
 	// command-link receive thread, read on the game thread.
 	TAtomic<uint8> LeftAuthority_{ static_cast<uint8>(EControlAuthority::Unset) };
 	TAtomic<uint8> RightAuthority_{ static_cast<uint8>(EControlAuthority::Unset) };
-	// Clutch level last seen by the authority edge detector. Deliberately not
-	// bPrevLeftClutch_/bPrevRightClutch_: those belong to the periodic stream-row
-	// block and only advance when that block runs, which would put an unknown
-	// number of frames between a trigger pull and the takeover.
+	// Clutch level last seen by the authority edge detector. Separate from
+	// bPrevLeftClutch_/bPrevRightClutch_, which only advance on the stream-row
+	// cadence.
 	bool  bPrevAuthClutch_[2] = { true, true };
-	// Takeovers this episode, for the panel's INTERV readout. Counted on the
-	// request rather than on the avatar's echo so a refused claim still shows
-	// the operator tried. Reset with the other per-episode stats in
-	// UpdatePolicyStats; the session total is in the event log.
+	// Takeovers this episode for the INTERV readout, counted on the request so a
+	// refused claim still shows. Reset in UpdatePolicyStats.
 	int32 InterventionCount_ = 0;
 	// Policy readouts relayed from the orchestrator through the avatar
 	// (policy_status). Written on the command-link receive thread.
@@ -383,10 +329,8 @@ private:
 	double AutonEngagedSec_  = 0.0;
 	// Resets per-episode stats and draws INF, AUTON and the AGREE pips.
 	void UpdatePolicyStats(float DeltaTime);
-	// Operator-chosen global mute. USoundFeedback is the only thing in this
-	// interface that plays audio, so this silences everything the operator
-	// hears. Controller haptics are deliberately NOT affected -- they are the
-	// only feedback channel left once audio is off.
+	// Global mute for USoundFeedback, the only audio source. Controller haptics stay
+	// on.
 	bool  bSoundMuted_         = false;
 	int32 PerfSampleCounter_ = 0;
 
@@ -397,9 +341,7 @@ private:
 	TArray<FString>          CurrentMenuStreams_;
 	bool                     bMenuOpen_            = false;
 
-	// Cached out of Config (a BeginPlay-local, not a member -- see
-	// AOperatorPawn::BeginPlay) so the viewmodeButton handler in
-	// UpdateStateMachine can use them without holding onto UTeleOpConfig.
+	// Cached from Config (BeginPlay-local) for the viewmodeButton handler.
 	bool    bHasTwinMainStream_ = false;
 	bool    bOverlayEnabled_    = true;
 
@@ -407,9 +349,8 @@ private:
 	// the command rate stops being whatever the renderer happens to manage.
 	TUniquePtr<FTeleopCommandThread> CommandThread_;
 
-	// 120 rather than 90: above the display rate, comfortably inside the
-	// tracker's demonstrated >=90 Hz update rate, and 12% of a core in the
-	// pacing spin. Higher buys under a millisecond against a 70 ms link.
+	// 120 rather than 90: above the display rate and within the tracker's >=90 Hz, at
+	// ~12% of a core in the pacing spin.
 	UPROPERTY(EditAnywhere, Category = "Teleop")
 	float CommandThreadRateHz = 120.f;
 
@@ -417,12 +358,9 @@ private:
 	FString TwinMainStreamLabel_; // viewmode_label text when twin is active ("TWIN", as configured)
 	FString TwinPiPEntryName_;    // PiP menu entry text (TwinMainStreamLabel_.ToLower(), e.g. "twin")
 
-	// PiP's "TWIN" entry shares the already-running main-view TWIN source's
-	// decode (VideoFeedComponent::UpdateSourceTexture) instead of opening a
-	// second receiver -- two independent GStreamer receivers can't both bind
-	// the same UDP port anyway, and a second decode would cost GPU we don't
-	// have spare. Own texture pointer since PiPTextures_ is only for entries
-	// that own their own IVideoSource.
+	// PiP's TWIN entry shares the main-view twin decode; two receivers cannot bind
+	// the same UDP port. Own texture pointer, since PiPTextures_ is for entries with
+	// their own IVideoSource.
 	UTexture2D* PiPSharedTwinTexture_ = nullptr;
 
 	// PiP gaze-driven expand.

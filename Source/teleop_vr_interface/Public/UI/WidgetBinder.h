@@ -67,37 +67,17 @@ public:
 	void SetVisibility(FName WidgetName, bool bVisible);
 	void SetOpacity(FName WidgetName, float Opacity);
 
-	// Whether the bound widget tree actually contains this name.
-	//
-	// Every setter on this class is keyed by name and silently no-ops on a
-	// miss, which is the right behaviour at runtime -- a HUD must not crash
-	// because an artist renamed a label -- and a very poor one at bring-up:
-	// the widget simply keeps whatever it was given at design time and the
-	// code looks like it is not working. That has now cost three separate
-	// debugging sessions (armFaultInfo, fault_status_canvas, and the authority
-	// dot/fill). AOperatorPawn::AuditWidgetNames turns it into one startup
-	// line naming exactly what is missing.
+	// Whether the bound widget tree contains this name. Setters no-op on a miss, so
+	// AOperatorPawn::AuditWidgetNames uses this to report missing widgets at startup.
 	bool HasWidget(FName Name) const { return CachedWidgets_.Contains(Name); }
 
-	// UMG class of a bound widget, or empty if the name is not in the tree.
-	//
-	// Existence is only half the contract. The colour setters are keyed by TYPE
-	// as well as by name, so a widget can be present, correctly named, and
-	// still immune to every one of them -- indistinguishable from a missing
-	// name from the outside.
+	// UMG class of a bound widget, or empty if the name is not in the tree. The
+	// colour setters are keyed by type as well as name.
 	FString GetWidgetClassName(FName Name) const;
 
-	// The design-time tint an accent would be MULTIPLIED BY, as set in UMG.
-	//
-	// This is the trap that cost the 2026-09-27 session. SetColorAndOpacity on
-	// a UImage and SetBrushColor on a UBorder do not REPLACE the colour, they
-	// multiply into whatever the asset already carries. A widget whose brush is
-	// tinted green at design time can therefore only ever render green, however
-	// the runtime tints it -- amber x green is dark olive, blue x green is dark
-	// green, and the operator sees a light that never changes.
-	//
-	// White (1,1,1,1) is the only design-time tint that lets a runtime accent
-	// show as itself. Returns white for types with no brush.
+	// Design-time tint that a runtime accent is multiplied by. Image and border
+	// colours multiply into the asset's tint, so only white lets an accent show as
+	// itself. Returns white for types without a brush.
 	FLinearColor GetDesignTint(FName Name) const;
 	UTextureRenderTarget2D* GetRenderTarget() const { return RenderTarget_; }
 	void SetImageColor(FName WidgetName, const FLinearColor& Color);
@@ -143,45 +123,22 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Debug")
 	bool bPrintDebugInfo = false;
 
-	// How often the widget tree is rasterised into the stereo layer, in Hz.
-	// Deliberately not the frame rate -- see the throttle in TickComponent.
-	// Hover and click bypass it, so this paces only the numbers and plots.
-	// <= 0 renders every tick, i.e. the previous behaviour.
+	// Rate (Hz) at which the widget tree is rasterised into the stereo layer. Hover
+	// and click bypass it. <= 0 renders every tick.
 	UPROPERTY(EditAnywhere, Category = "Performance", meta = (ClampMin = "0.0"))
 	float RenderRateHz = 10.0f;
 
-	// Invisible slack added around every button's hit rect, in render-target
-	// pixels. Gaze is not a mouse: the ray carries tracker noise, a calibration
-	// offset and the operator's own microsaccades, so a button that is exactly
-	// as big as it looks is harder to hold than it appears -- the wink lands in
-	// the two-pixel gap between the rect and where the eye actually was.
-	//
-	// This grows the target without growing the graphic, which is the whole
-	// point: the HUD sits over the video and every pixel of panel is a pixel of
-	// workspace the operator cannot see. Making a button easier to hit by
-	// drawing it bigger costs sight; making its hit rect bigger costs nothing
-	// until two rects start to overlap, which is what the exact-hit-first rule
-	// in FindButtonAtUV handles.
-	//
-	// 0 restores the previous pixel-exact behaviour.
+	// Invisible slack (render-target px) around every button's hit rect. Gaze carries
+	// tracker noise and calibration offset, so this makes buttons easier to hold
+	// without drawing them bigger over the video. Overlaps are resolved in
+	// FindButtonAtUV. 0 = pixel-exact.
 	UPROPERTY(EditAnywhere, Category = "Gaze", meta = (ClampMin = "0.0"))
 	float GazeHitMarginPx = 12.0f;
 
-	// How long the hovered button is held while the gaze is untrustworthy --
-	// reported invalid, or the right eye (the wink eye) closed.
-	//
-	// A wink is exactly the moment the gaze goes bad: the lid covers the
-	// pupil, the tracker drops validity or reports a ray that slides down with
-	// the lid, and the press fires 150 ms into that. Hover used to be
-	// recomputed from that ray every tick, so by the time the wink fired the
-	// hovered button was often gone (no press) or, worse, a different one.
-	// Now hover only follows TRUSTED gaze; through an untrusted stretch it
-	// holds the last trusted target for up to this long, and the wink lands
-	// on what the operator was looking at when they started it.
-	//
-	// Beyond this the hover clears, so a gaze that is genuinely lost still
-	// cannot press anything. Must exceed the wink threshold (0.15 s) plus the
-	// tracker's reacquire time. 0 restores the old untrusted-ray behaviour.
+	// How long the hovered button is held while gaze is untrusted (invalid, or the
+	// right/wink eye closed), so a wink lands on what the operator was looking at
+	// when it started. Beyond this the hover clears. Must exceed the wink threshold
+	// (0.15 s) plus reacquire time.
 	UPROPERTY(EditAnywhere, Category = "Gaze", meta = (ClampMin = "0.0"))
 	float BlinkHoverHoldSec = 0.5f;
 
@@ -243,12 +200,8 @@ private:
 	UPROPERTY() TMap<FName, UImage*> CachedImages_;
 	UPROPERTY() TMap<FName, UBorder*> CachedBorders_;
 
-	// Message sink. Bound by explicit widget name only -- an earlier version
-	// claimed the first unnamed VerticalBox in tree order, which silently
-	// captured whatever panel happened to come first (the START/ENGAGE stack)
-	// and then destroyed its children on the first RebuildMessageLog.
-	// MessageText_ is the fallback for widgets that carry a single TextBlock
-	// instead of a list. Both null is legal: messages then expire unseen.
+	// Message sink, bound by explicit widget name only. MessageText_ is the fallback
+	// for a single TextBlock; both null is legal.
 	UVerticalBox* MessageLog_      = nullptr;
 	UTextBlock*   MessageText_     = nullptr;
 	bool          bMessageSinkWarned_ = false;
@@ -277,9 +230,8 @@ private:
 	bool bIsBound_ = false;
 	double LastLogTime_ = 0.0;
 
-	// HUD raster pacing (see TickComponent). RenderAccum_ carries time toward
-	// the next slot; bRenderDirty_ forces a draw on the tick something the
-	// operator interacted with changed, so input never waits for the clock.
+	// HUD raster pacing (see TickComponent). bRenderDirty_ forces a draw when an
+	// interaction changed something.
 	float RenderAccum_  = 0.0f;
 	bool  bRenderDirty_ = true;   // the first tick after binding always draws
 };

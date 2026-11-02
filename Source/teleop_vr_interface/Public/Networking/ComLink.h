@@ -30,13 +30,10 @@ public:
     UPROPERTY() int32 HeadSendPort      = 7003;
     UPROPERTY() int32 HeadReceivePort   = 8003;
 
-    // --- twin configuration (set before BeginPlay, independent of the
-    // avatar fields above -- see docs/twin_concept.md and network_twin.json).
-    // Twin is a second, independent peer: commands mirror to it (the "local
-    // tee" the twin's predictive display relies on), but avatar-facing state
-    // getters below (GetAvatarState/IsAvatarAlive/etc.) are untouched -- they
-    // keep reflecting the avatar only. Use IsTwinAlive()/GetTwinState() etc.
-    // to query the twin's link independently. ---
+    // --- twin configuration ---
+    // The twin is a second, independent peer: commands are mirrored to it, but the
+    // avatar getters below keep reflecting the avatar only. Use
+    // IsTwinAlive()/GetTwinState() for the twin link.
     UPROPERTY() FString TwinIP = TEXT("127.0.0.1");
     UPROPERTY() int32 TwinSendPort    = 7500;
     UPROPERTY() int32 TwinReceivePort = 8500;
@@ -53,9 +50,8 @@ public:
     UPROPERTY() int32 LocalPort = 0;
 
     // --- device streams ---
-    // Sends to both the avatar and the twin (when twin channels are open --
-    // see BeginPlay). Avatar-facing reads (HasNewArmState/ReadArmState/...)
-    // are unaffected: they still read from the avatar streams only.
+    // Sends to the avatar and, if open, the twin. Reads come from the avatar streams
+    // only.
     void SendArmCommand(ArmCommandMsg& Msg, uint8 DeviceIndex = 0);
     void SendHeadCommand(HeadCommandMsg& Msg);
 
@@ -64,34 +60,19 @@ public:
     ArmStateMsg ReadArmState(uint8 DeviceIndex = 0);
     ArmStateMsg PeekArmState(uint8 DeviceIndex = 0) const;
     HeadStateMsg ReadHeadState();
-    // Latest head state without consuming the new-data flag. The head handover
-    // needs the neck's current angles to re-anchor onto, and it needs them at
-    // an arbitrary moment that has nothing to do with whoever else is draining
-    // this stream -- Read() there would clear a flag that is not ours.
+    // Latest head state without consuming the new-data flag, used by the head
+    // handover to re-anchor.
     HeadStateMsg PeekHeadState() const;
 
-    // --- command link (avatar system channel) ---
-    // SendStateRequest/SendReliable also mirror to the twin's CommandLink
-    // (independent sequence numbers/retries/ack tracking per peer -- exactly
-    // what's wanted since avatar and twin are separate machines/processes).
-    // RegisterHandler is intentionally avatar-only: it drives existing app
-    // state/HUD logic that should keep reflecting the avatar, not double-fire
-    // per peer. Use the Twin* status accessors below for twin-specific reads.
+    // --- command link ---
+    // SendStateRequest/SendReliable are mirrored to the twin with separate sequence
+    // numbers and acks. RegisterHandler is avatar-only, so handlers do not fire
+    // twice.
     void SendStateRequest(SysState RequestedState);
-    // Claims or releases one arm for the operator. DeviceIndex 0 = left,
-    // 1 = right; the avatar arbitrates per arm (Avatar::applyAuthorityRequest).
-    //
-    // Sent with AckRequested so a lost claim is retried rather than leaving the
-    // operator pulling a trigger against an arm the avatar still thinks the
-    // policy owns. The avatar echoes the result in SceneObjectsMsg, which is
-    // what the HUD renders -- never the local request, so the pill shows what
-    // was granted rather than what was asked for.
-    //
-    // NOT mirrored to the twin: the twin has no second operator and no policy
-    // contending for its arms, so there is nothing there to arbitrate.
-    // bAllDevices omits the "device" key, which the avatar reads as "every
-    // arm" -- that single flag is the whole difference between whole-body and
-    // per-limb handover on the wire.
+    // Claims or releases one arm (0 = left, 1 = right); the avatar arbitrates per
+    // arm. Sent with an ack request so a lost claim is retried. The HUD renders the
+    // avatar's echo, not this request. Not mirrored to the twin. bAllDevices omits
+    // the device key, which the avatar reads as all arms.
     void SendAuthorityRequest(uint8 DeviceIndex, EControlAuthority Requested, bool bAllDevices = false);
     void SendReliable(const std::string& MsgType, const msgpack::sbuffer& Payload, bool AckRequested = false);
     void RegisterHandler(const std::string& MsgType, FMsgHandler Handler);
@@ -138,53 +119,38 @@ public:
     UFUNCTION(BlueprintCallable, Category = "ComLink")
     int32 GetArmDroppedPackets(uint8 DeviceIndex = 0) const;
 
-    // Round trip on this machine's clock: command send time -> first state
-    // packet echoing that command in applied_cmd_sequence. 0 = no sample yet.
-    // Includes up to one avatar state period (5 ms) of waiting on the robot side.
+    // Round trip on this machine's clock: command send to the first state packet
+    // echoing it in applied_cmd_sequence. Includes up to one avatar state period (5
+    // ms). 0 = no sample yet.
     UFUNCTION(BlueprintCallable, Category = "ComLink")
     float GetArmRttMs(uint8 DeviceIndex = 0) const;
     float GetArmLastRttMs(uint8 DeviceIndex = 0) const;
 
-    // THE network delay: one-way, interface <-> avatar, with the avatar's own
-    // dwell taken out -- ((recv - send(echo_cmd_sequence)) - echo_hold_us) / 2.
-    // Clock-offset free (one clock per difference), unlike
-    // GetArmStateLatencyMs, which differences the two hosts' wall clocks and
-    // so reads true only if they are synced to well under a millisecond.
-    //
-    // Only measurable while commands are flowing (the interface sends arm
-    // commands only to an ENGAGED arm). Returns 0 = unknown when the last
-    // sample is older than kNetDelayStaleSec; callers show "--", never 0 ms.
+    // Network one-way delay with the avatar's dwell removed: ((recv -
+    // send(echo_cmd_sequence)) - echo_hold_us) / 2. Clock-offset free, unlike
+    // GetArmStateLatencyMs. Only measurable while commands flow; 0 = unknown, shown
+    // as "--".
     UFUNCTION(BlueprintCallable, Category = "ComLink")
     float GetArmNetworkDelayMs(uint8 DeviceIndex = 0) const;   // EWMA, for display
     float GetArmLastNetworkDelayMs(uint8 DeviceIndex = 0) const;  // raw last sample, for logs; -1 = unknown
 
-    // The one number the HUD shows and stream.csv logs: the worse of the two
-    // arms' fresh values (both ride the same link, so they normally agree).
-    // 0 = unknown. Pill and panel both read THIS, so they cannot disagree.
+    // The value the HUD shows and stream.csv logs: the worse of the two arms' fresh
+    // values. 0 = unknown.
     UFUNCTION(BlueprintCallable, Category = "ComLink")
     float GetNetworkDelayMs() const;
 
     ArmStateMsg PeekArmStateWithRecvTime(uint8 DeviceIndex, uint64& OutRecvNs) const;
 
-    // True when packets are still arriving but the payload has stopped
-    // changing -- the failure mode that looked like a perfectly healthy link
-    // on 2026-08-09. Threshold defaults to 5x the 200 Hz publish period.
+    // True when packets still arrive but the payload stopped changing. Threshold
+    // defaults to 5x the 200 Hz publish period.
     UFUNCTION(BlueprintCallable, Category = "ComLink")
     bool IsArmStateStale(uint8 DeviceIndex = 0, float ThresholdMs = 25.f) const;
 
     UPROPERTY(BlueprintAssignable) FOnConnectionChanged OnAvatarConnectionChanged;
 
-    // Fires when an arm stream ENTERS FAULT, or reports a different fault code
-    // without having left FAULT -- not once per packet. A latched fault on the
-    // avatar holds SysState::FAULT in every header until an operator reset, so
-    // a per-packet delegate is a 200 Hz event stream, not an alarm.
-    //
-    // TDeviceStream has broadcast OnFaultDetected since the fault path was
-    // written, but nothing ever bound to it, so a remote fault reached the
-    // operator only as a small colour swatch that had to be noticed. This
-    // re-exposes it at ComLink level where the pawn can actually subscribe.
-    // Fires from the receive thread -- handlers must be cheap and thread-safe,
-    // or marshal to the game thread.
+    // Fires when an arm stream enters FAULT or reports a different fault code, not
+    // once per packet. Fires from the receive thread, so handlers must be cheap and
+    // thread-safe.
     DECLARE_MULTICAST_DELEGATE_TwoParams(FOnArmFault, uint8 /*DeviceIndex*/, FaultCode);
     FOnArmFault OnArmFault;
 
@@ -193,9 +159,8 @@ private:
     TUniquePtr<HeadStream>  HeadStream_;
     TUniquePtr<CommandLink>  CmdLink_;
 
-    // Twin's own set of peers -- separate sockets/streams, opened only if
-    // TwinIP/Twin*Port are non-zero (see BeginPlay). Mirrors of the avatar
-    // set above, never merged with it.
+    // Twin peers: separate sockets and streams, opened only if the twin ports are
+    // set.
     TUniquePtr<ArmStream>   TwinArmStreams_[2];
     TUniquePtr<HeadStream>  TwinHeadStream_;
     TUniquePtr<CommandLink>  TwinCmdLink_;

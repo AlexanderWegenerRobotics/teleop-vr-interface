@@ -123,11 +123,8 @@ void FArmRetarget::Advance(const FTransform& Pose, float Dt,
     {
         const FVector Step = ControlPoint - PrevControlPoint;
 
-        // A step implying more than MaxTrackedSpeed is a tracker discontinuity,
-        // not an operator. Integrating one verbatim is how a single-frame glitch
-        // became a 143 mm command step and faulted the arm on 2026-09-16.
-        // Re-seed and skip: the operator loses this sample's motion, which at
-        // 90 Hz is 11 ms of it.
+        // A step implying more than MaxTrackedSpeed is a tracker discontinuity, not
+        // the operator. Re-seed and skip; at 90 Hz that loses 11 ms of motion.
         const float GuardDt = FMath::Min(Dt, In.MaxGuardWindow[Index]);
         const float MaxStep = In.MaxTrackedSpeed[Index] * GuardDt;
         if (GuardDt > KINDA_SMALL_NUMBER && In.MaxTrackedSpeed[Index] > 0.f && Step.Size() > MaxStep)

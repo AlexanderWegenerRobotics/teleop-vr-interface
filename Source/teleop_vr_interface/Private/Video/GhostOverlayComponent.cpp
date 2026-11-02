@@ -428,13 +428,8 @@ FQuat UGhostOverlayComponent::UpdateCaptureTransforms(const FQuat& R_HW_Protocol
     return CamRotUE;
 }
 
-// ---------------------------------------------------------------------------
-// SetIntentPose — called by OperatorPawn::SendArmCommands() every tick.
-// Freezes the stored pose (no-op) while the clutch is active so the ghost
-// holds position during operator repositioning.
-// ---------------------------------------------------------------------------
-// Seed the command origin with the engage-time arm EE pose and zero the deltas, so the
-// ghost starts exactly on the arm and leads from there.
+// Seed the command origin with the engage-time EE pose and zero the deltas, so the
+// ghost starts on the arm and leads from there.
 void UGhostOverlayComponent::SeedIntentPose(uint8 ArmIndex, const float Position[3], const float Quaternion[4]) {
     if (ArmIndex > 1) return;
     FIntentPose& P = IntentPoses_[ArmIndex];
@@ -522,15 +517,10 @@ bool UGhostOverlayComponent::GetGhostEEPosition(uint8 ArmIndex, float OutPositio
     return true;
 }
 
-// Raw command-target intent display:
-//   ghost = Origin ⊕ command delta            (R_cmd·Origin for orientation, world frame)
-// This leads the arm and shows the full operator intent, including driving past a
-// workspace limit (e.g. into the table) so the operator can see and correct it.
-//
-// To still settle back onto the real arm in reachable space, the Origin is nudged toward
-// the measured arm origin (arm EE ⊖ command delta) — but ONLY while the operator is at
-// rest and the command is in-bounds. That gate keeps the live lead intact during motion
-// and prevents a deliberate over-command into a limit from being "corrected" away.
+// Raw command-target display: ghost = Origin + command delta (R_cmd * Origin for
+// orientation, world frame). It leads the arm and shows intent past a workspace
+// limit. Origin is nudged toward the measured arm origin only while the operator is
+// at rest and the command is in bounds.
 void UGhostOverlayComponent::UpdateIntentPoses() {
     bGhostPastBounds_ = false;
 
@@ -649,16 +639,10 @@ void UGhostOverlayComponent::ResolveCameraPose(FVector& OutCamPos, FQuat& OutCam
         return;
     }
 
-    // ---- HeadTracked ------------------------------------------------------ //
-    // Camera rides a pan/tilt head: orientation is the head's, position is the
-    // head base plus the camera's mount offset rotated into world.
-    //
-    // This reduces to the original formulation exactly. The old code computed
-    //     p_cam = R_HW^-1 (p_EE - HeadBase) - CamOffsetInHead
-    // and the generic transform below computes
-    //     p_cam = R_C^-1 (p_EE - p_C)  with  p_C = HeadBase + R_HW*CamOffset
-    //           = R_HW^-1 (p_EE - HeadBase) - CamOffsetInHead
-    // i.e. the same expression, not merely an equivalent one.
+    // ---- HeadTracked ----
+    // The camera rides the pan/tilt head: orientation from the head, position = head
+    // base + mount offset rotated into world. p_cam = R_C^-1 (p_EE - p_C) with p_C =
+    // HeadBase + R_HW * CamOffset.
     float Pan = 0.f, Tilt = 0.f;
     if (ComLinkRef && ComLinkRef->IsHeadAlive()) {
         const HeadStateMsg H = ComLinkRef->ReadHeadState();

@@ -34,15 +34,10 @@ public:
     UPROPERTY(EditAnywhere, Category = "VoiceAnnotator")
     FString PythonExe = TEXT("C:\\Users\\ceti\\miniconda3\\envs\\voice-control\\python.exe");
 
-    // Relative to the project directory: the repo in the editor, and
-    // <Package>/teleop_vr_interface/ in a packaged build, where the folder is
-    // staged by DirectoriesToAlwaysStageAsNonUFS. An absolute path set on the
-    // pawn is still honoured.
-    //
-    // This used to be an absolute path into the repo, so a packaged build ran
-    // whatever happened to be in the working tree -- editing the script changed
-    // the behaviour of a build that was supposed to be frozen, and the package
-    // could not be moved to another machine at all.
+    // Relative to the project directory: the repo in the editor,
+    // <Package>/teleop_vr_interface/ in a packaged build (staged via
+    // DirectoriesToAlwaysStageAsNonUFS). An absolute path set on the pawn is still
+    // honoured.
     UPROPERTY(EditAnywhere, Category = "VoiceAnnotator")
     FString VoiceScriptPath = TEXT("ThirdParty/voice_annotator/voice_annotator.py");
 

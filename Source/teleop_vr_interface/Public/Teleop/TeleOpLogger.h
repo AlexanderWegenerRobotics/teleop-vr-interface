@@ -66,10 +66,9 @@ struct FStreamRow
     float  VideoLossPct   = 0.f;
     int32  VideoFps       = 0;
 
-    // Data stream stats (arm state stream, avatar → operator)
-    // DataLatencyMs is (our receive clock - avatar send clock): it carries the
-    // hosts' clock offset as an unknown additive error. For network delay use
-    // NetDelayMs; DataLatencyMs - NetDelayMs is then an estimate of that offset.
+    // Data stream stats (arm state, avatar -> operator). DataLatencyMs is receive
+    // clock minus avatar send clock and includes the clock offset; NetDelayMs is the
+    // network delay.
     float  DataLatencyMs  = 0.f;
     float  DataMsgRateHz  = 0.f;
 
@@ -80,89 +79,53 @@ struct FStreamRow
     float  RightGripperWidth     = 0.f;
     uint8  RightGripperGraspState = 0;
 
-    // ---- Remote (avatar) health -------------------------------------------
-    // The avatar's OWN view of itself, as carried in MsgHeader. Distinct from
-    // everything above, which describes the LINK. The 2026-08-09 desk test
-    // showed why that distinction has to be logged: the avatar's control
-    // thread faulted, its 200 Hz state thread kept transmitting the last known
-    // pose, and every link metric stayed healthy. GetArmRemoteState() already
-    // drives a HUD indicator, but nothing wrote it to disk, so afterwards
-    // there was no way to establish whether the fault had ever been signalled.
+    // ---- Remote (avatar) health ----
+    // The avatar's own state from MsgHeader, as opposed to the link metrics above. A
+    // faulted control thread can leave every link metric healthy.
     uint8  ArmRemoteState   = 0;   // SysState as reported by the avatar
     uint8  ArmRemoteFault   = 0;   // FaultCode as reported by the avatar
     uint32 ArmDroppedPackets = 0;  // cumulative gaps in header.sequence
 
-    // Age of the newest arm state sample at the moment this row was written:
-    //     receive_wall_clock - header.sample_time_ns
-    // sample_time_ns is stamped when the control loop READ the robot, while
-    // timestamp_ns is stamped at send time. DataLatencyMs (built from the
-    // latter) therefore measures transport and cannot see a frozen control
-    // loop; this field can. Negative or absurd values mean the two hosts'
-    // clocks disagree -- treat large constant offsets with suspicion.
+    // Age of the newest arm sample when this row was written: receive_wall_clock -
+    // header.sample_time_ns. Stamped when the control loop read the robot, so it
+    // catches a frozen loop that transport latency cannot.
     float  ArmStateAgeMs    = 0.f;
 
-    // ---- Operator-side frame budget ---------------------------------------
-    // SendArmCommands runs once per game-thread tick, so the command rate IS
-    // the frame rate: 25.6 Hz in session 002, i.e. 39 ms of quantisation on
-    // every command before it reaches the wire. Which thread is responsible
-    // decides whether that is a renderer-settings problem or a Tick problem,
-    // and a `stat unit` overlay does not composite under stereo rendering.
-    // Logging it also lets a command jump be lined up against the frame it
-    // happened in.
+    // ---- Operator-side frame budget ----
+    // SendArmCommands runs once per game tick, so the command rate is the frame rate.
+    // Logged to see which thread limits it.
     float  FrameMs        = 0.f;
     float  GameThreadMs   = 0.f;
     float  RenderThreadMs = 0.f;
     float  GpuMs          = 0.f;
 
-    // EControllerTrackingState per side: 0 Tracking / 1 Lost / 2 Stale.
-    // Stale now includes inertial-only -- the runtime handed us a pose it
-    // dead-reckoned off the IMU rather than one it optically tracked. Logged so
-    // a command jump can be lined up against the frames the wand had no lock.
+    // EControllerTrackingState per side: 0 Tracking / 1 Lost / 2 Stale (includes
+    // IMU-only dead reckoning).
     uint8  LeftTrackState  = 0;
     uint8  RightTrackState = 0;
 
-    // Which video source the main view is showing ("avatar", "TWIN", ...).
-    // Without this the viewmode toggle silently changes what
-    // VideoLatencyMs refers to -- in the desk test it dropped 91 ms -> 14 ms
-    // for six seconds because the operator switched to the loopback twin feed,
-    // which is only recoverable by cross-referencing events.log.
+    // Which source the main view shows ("avatar", "TWIN", ...); VideoLatencyMs
+    // depends on it.
     FString VideoSourceName;
 
-    // Command thread health, sampled at the HUD rate. CommandDuplicatePct is
-    // the field that decides whether decoupling the send from the tick achieved
-    // anything: the fraction of located poses bit-identical to the previous
-    // one, i.e. how often the runtime handed back a cached sample instead of a
-    // fresh prediction. Near zero means genuinely faster sampling; near
-    // (1 - frame_rate/command_rate) means the same pose sent repeatedly.
+    // Command thread health at the HUD rate. CommandDuplicatePct is the fraction of
+    // located poses identical to the previous one, i.e. cached samples instead of
+    // fresh predictions.
     float  CommandRateHz       = 0.f;
     float  CommandJitterMs     = 0.f;
     float  CommandDuplicatePct = 0.f;
     // Cumulative, both arms: tracker discontinuities the jump guard discarded.
     int32  CommandRejectedJumps = 0;
 
-    // One-way NETWORK delay, interface <-> avatar, exactly the value the HUD
-    // pill and the panel's OWD plot show (UComLink::GetNetworkDelayMs):
-    // ((recv - send(echo_cmd_sequence)) - echo_hold_us) / 2, worse of the two
-    // arms, EWMA. Clock-offset free. -1 = unknown (no commands flowing).
+    // Network one-way delay, same value as the HUD pill
+    // (UComLink::GetNetworkDelayMs): ((recv - send) - echo_hold_us) / 2, worse arm,
+    // EWMA. -1 = unknown.
     float  NetDelayMs = -1.f;
 };
 
-// One row per arm command actually placed on the wire.
-//
-// stream.csv is written on the HUD cadence -- about 26 Hz in the 2026-08-09
-// session -- while commands go out at the tick rate and the link runs at
-// 200 Hz. That sampling is well below Nyquist for the delays being measured:
-// nothing faster than ~76 ms is resolvable, and the operator-hand-to-robot lag
-// (expected to be tens of ms) came out unmeasurable, with zero of seven
-// clutch-stable segments producing a usable cross-correlation.
-//
-// Logging here, at the send site, fixes that. It records the exact payload
-// that went out together with the sequence number, so the hand-to-command lag
-// becomes a direct join against the avatar's arm.csv rather than a correlation
-// against a heavily undersampled proxy.
-//
-// Rows are small and the writer is the same background-thread CSV writer used
-// for stream.csv, so this costs a struct copy on the game thread.
+// One row per arm command placed on the wire, with its sequence number, so
+// hand-to-robot lag is a direct join against the avatar's arm.csv. stream.csv runs at
+// the HUD rate and is too coarse for that.
 struct FCommandRow
 {
     uint64 TimestampNs = 0;    // when the command was handed to the socket
@@ -175,10 +138,8 @@ struct FCommandRow
     float  Qw = 1.f, Qx = 0.f, Qy = 0.f, Qz = 0.f;
     float  Gripper = 0.f;
 
-    // Clutch at send time. The hand-to-robot mapping is re-indexed on every
-    // clutch edge, so any correlation has to be computed within a segment of
-    // constant clutch -- without this the segmentation has to be reconstructed
-    // from events.log at 1 ms resolution and guessed at in between.
+    // Clutch at send time. The mapping re-indexes on every clutch edge, so
+    // correlations are computed per constant-clutch segment.
     float  ClutchFactor = 0.f;
     bool   bFullClutch  = false;
 
@@ -224,9 +185,9 @@ public:
     FString Open(const FString& BaseDir);
     void    Close();
 
-    // Episode boundary (avatar EpisodeEventMsg): closes the current files and reopens
-    // them under Dir, so stream/command/events line up with the avatar's episode folder.
-    // Safe against the command thread writing concurrently.
+    // Episode boundary: closes the files and reopens them under Dir, aligned with the
+    // avatar's episode folder. Safe against concurrent writes from the command
+    // thread.
     FString Rotate(const FString& Dir);
 
     void WriteStreamRow(const FStreamRow& Row);

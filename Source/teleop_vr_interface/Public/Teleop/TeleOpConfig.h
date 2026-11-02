@@ -78,20 +78,14 @@ struct FStreamConfig
     int32   JitterBufferMs   = 50;
     TArray<FPiPStreamConfig> PiPStreams;
 
-    // Twin's head-cam feed, registered as a second *main-view* source (see
-    // VideoFeedComponent's Sources_ / SetActiveSource) alongside the avatar
-    // stream above -- not a PiP entry. Optional: bHasTwinStream is false when
-    // "twin_stream" is absent from stream.json, so older configs keep working
-    // with the avatar-only main view. TwinStream.Name doubles as both the
-    // internal source-registration key and the on-screen label text.
+    // Optional twin head-cam, registered as a second main-view source (not PiP).
+    // False when twin_stream is absent from stream.json. TwinStream.Name is both
+    // registration key and on-screen label.
     bool             bHasTwinStream = false;
     FPiPStreamConfig TwinStream;
 
-    // Twin frequently runs on a *different* host than the avatar (e.g. avatar
-    // on remote hardware, twin on the operator's own machine) -- unlike
-    // PiPStreams, which all assume the avatar's RemoteIP above. Optional in
-    // twin_stream's JSON; empty means "same host as avatar" (the local
-    // dual-run test case, where they happen to coincide).
+    // The twin often runs on a different host than the avatar. Empty means the same
+    // host as the avatar.
     FString TwinRemoteIP;
 
     FAudioStreamConfig Audio;
@@ -142,10 +136,8 @@ struct FRobotConfig
 
     bool bSwapControllers = false;
 
-    // Controller->EE orientation retarget (protocol frame), per arm. Must match the
-    // arm's controller_axis_map (R_ctrl_to_ee_) so ghost orientation tracks the arm.
-    // Stored as FQuat(X,Y,Z,W); JSON supplies [w, x, y, z]. Defaults reproduce the
-    // values previously hardcoded in GhostOverlayComponent::SetIntentPose.
+    // Controller-to-EE orientation retarget (protocol frame) per arm; must match the
+    // arm's controller_axis_map. Stored as FQuat(X,Y,Z,W), JSON gives [w, x, y, z].
     FQuat ControllerToEEQuatRight = FQuat(0.5f, -0.5f, 0.5f,  0.5f);
     FQuat ControllerToEEQuatLeft  = FQuat(0.5f,  0.5f, 0.5f, -0.5f);
 
@@ -165,12 +157,8 @@ struct FRobotConfig
     float BoundaryGridSpacingCm      = 5.0f;
 };
 
-// Which camera the ghost overlay is reprojected through.
-//
-// Both modes feed the same 6-DoF extrinsics used by
-// UGhostOverlayComponent::ResolveCameraPose(); they differ only in where those
-// extrinsics come from. HeadTracked derives them each tick from the avatar's
-// measured head servo angles, Static reads a fixed pose from config.
+// Camera the ghost overlay is reprojected through. HeadTracked derives the extrinsics
+// each tick from the measured head angles, Static reads a fixed pose from config.
 UENUM()
 enum class EOverlayViewpointMode : uint8
 {
@@ -250,12 +238,9 @@ struct FOverlayConfig
     FVector StaticCamLookAt = FVector(0.65f, 0.f, 0.73f);
     FVector StaticCamUp     = FVector(0.f, 0.f, 1.f);
 
-    // HORIZONTAL FOV of the video camera, in degrees. MuJoCo specifies cameras
-    // by VERTICAL fovy, so convert on the way in:
-    //     hfov = 2*atan( tan(fovy/2) * width/height )
-    // e.g. the head cams' fovy=60 at 1280x960 -> 2*atan(tan(30)*4/3) = 75.2.
-    // Getting this wrong keeps the overlay aligned at the image centre while it
-    // drifts progressively toward the edges -- reads like a calibration error.
+    // Horizontal FOV of the video camera in degrees. MuJoCo uses vertical fovy: hfov
+    // = 2*atan(tan(fovy/2) * width/height), e.g. fovy 60 at 1280x960 gives 75.2. A
+    // wrong value drifts the overlay toward the image edges.
     float CaptureFOV         = 75.2f;
     float CaptureFPS         = 30.0f;
     float StereoCaptureFOV   = 75.2f;
@@ -269,9 +254,7 @@ struct FOverlayConfig
     float PlaneDistance      = 700.0f;
     float FOVCoverage        = 0.85f;
 
-    // HMD horizontal FOV in degrees, used to size those quads. Vive Pro / Pro
-    // Eye is ~110. Was hardcoded separately in VideoFeedComponent and
-    // GhostOverlayComponent; single source of truth now.
+    // HMD horizontal FOV (deg) used to size the quads; Vive Pro Eye is ~110.
     float HmdHFovDeg         = 110.0f;
     float BoundaryPlaneWidthM  = 1.8f;
     float BoundaryPlaneHeightM = 0.96f;

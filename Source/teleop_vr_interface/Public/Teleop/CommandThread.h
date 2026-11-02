@@ -125,12 +125,9 @@ public:
     void PublishInput(const FOperatorInputSnapshot& In);
     FCommandThreadOutput ReadOutput() const;
 
-    // Posted by the game thread, applied by the loop at a tick boundary so a
-    // re-anchor can never land mid-integration.
-    //
-    // ArmIndex -1 re-anchors both arms (engage); 0 or 1 re-anchors that arm
-    // alone. Per-arm matters after a single-arm reset: zeroing the other arm
-    // there would make IT jump instead.
+    // Posted by the game thread and applied at a tick boundary, so a re-anchor never
+    // lands mid-integration. -1 re-anchors both arms (engage), 0 or 1 only that arm,
+    // e.g. after a single-arm reset.
     void RequestCaptureOrigin(int32 ArmIndex = -1);
 
     void SetSwapHands(bool bSwap) { bSwapHands_ = bSwap; }

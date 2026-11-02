@@ -54,20 +54,12 @@ inline uint64_t timestamp_ns() {
 struct MsgHeader {
     uint32_t  sequence;
     uint64_t  timestamp_ns;
-    // Wall-clock instant at which the DATA in this message was sampled, as
-    // opposed to timestamp_ns, which is stamped at send time.
-    //
-    // MUST stay byte-identical to MsgHeader in the simulator repo's
-    // include/common.hpp -- this is a raw memcpy wire format with no
-    // versioning, so a mismatch is silent corruption, not a parse error.
-    //
-    // Rationale: on the avatar, arm state is published by the 200 Hz state
-    // thread but sampled by the 1 kHz control thread. A dead control thread
-    // still yields perfectly healthy transport metrics, because the state
-    // thread keeps resending the last pose with a fresh timestamp_ns. Compute
-    // staleness as (now - sample_time_ns), not from timestamp_ns.
-    //
-    // Zero means the sender predates this field: unknown, not stale.
+    // Wall-clock time the data was sampled, as opposed to timestamp_ns (send time).
+    // The 200 Hz state thread resends the last pose with a fresh timestamp even if
+    // the 1 kHz control thread is dead, so compute staleness from this field. 0 =
+    // unknown.
+    // Must stay byte-identical to MsgHeader in the avatar repo's include/common.hpp:
+    // raw memcpy wire format, no versioning.
     uint64_t  sample_time_ns;
     SysState  state;
     FaultCode fault_code;
@@ -79,19 +71,9 @@ struct ArmCommandMsg {
     float     position[3];
     float     quaternion[4];
     float     gripper;
-    // Operator clutch, 1 = CLUTCHED. While clutched the operator's hand is
-    // decoupled from the setpoint: the retarget origin follows the hand, the
-    // commanded pose stops advancing, and the operator is repositioning their
-    // arm rather than demonstrating anything. Commands are still sent, so the
-    // sequence numbering stays continuous through a clutch.
-    //
-    // On the wire purely so the avatar can log it. Reconstructing it later
-    // means joining the avatar's per-episode files against one continuous
-    // operator-side stream recorded on another continent's clock, which is
-    // not a join worth trusting for training data.
-    //
-    // Senders that are never clutched (orchestrator playback, the autonomous
-    // policy path) send 0.
+    // Operator clutch, 1 = clutched: the hand is decoupled from the setpoint and the
+    // operator is repositioning, not demonstrating. On the wire so the avatar can log
+    // it with the episode. Senders that never clutch (playback, policy) send 0.
     uint8_t   clutch;
 };
 
@@ -104,23 +86,16 @@ struct ArmStateMsg {
     uint8_t     recovering;
     float       gripper_width;
     GraspState  grasp_state;
-    // Sequence number of the ArmCommandMsg this arm actually consumed, echoed
-    // back so round-trip time can be measured against a single clock: compare
-    // it to the send time this side recorded for that sequence, rather than
-    // differencing two hosts' wall clocks.
-    //
-    // Zero means the sender predates this field: unknown, not "command 0".
+    // Sequence number of the command this arm consumed, echoed for single-clock
+    // round-trip time. 0 = unknown.
     uint32_t  applied_cmd_sequence;
-    // Network-delay echo -- see common.hpp for the full rationale.
-    //   echo_cmd_sequence  newest ArmCommandMsg sequence the avatar RECEIVED
-    //   echo_hold_us       avatar-clock time from that command's arrival to
-    //                      this packet's send
-    // network one-way delay = ((recv_now - send_time(echo)) - hold) / 2, all on
-    // this machine's clock except the hold, which is a same-clock duration on
-    // the avatar. 0 / 0 = unknown.
+    // Network-delay echo (see common.hpp):
+    // echo_cmd_sequence: newest command sequence the avatar received. echo_hold_us:
+    // avatar time from that command's arrival to this send. One-way delay =
+    // ((recv_now - send_time(echo)) - hold) / 2. 0 / 0 = unknown.
     uint32_t  echo_cmd_sequence;
     uint32_t  echo_hold_us;
-    // Estimated external wrench at the EE, base frame (fx fy fz tx ty tz). 2026-10-13.
+    // Estimated external wrench at the EE, base frame (fx fy fz tx ty tz).
     float     F_ext[6];
 };
 
@@ -138,17 +113,8 @@ struct HeadStateMsg {
 
 #pragma pack(pop)
 
-// These numbers are the wire contract, not a description of the structs above.
-// They must equal the sizes in the simulator repo's include/common.hpp and the
-// formats in teleop_orchestrator/live/wire.py. Changing a struct here without
-// changing all three is the 2026-09-14 failure: packets are silently dropped on
-// size, the arm reads as absent rather than misconfigured, and everything else
-// (msgpack channels, state machine, logging) keeps looking healthy.
-//
-//   MsgHeader       15 ->  23   (+ sample_time_ns, 2026-08-09)
-//   ArmStateMsg    105 -> 117 -> 125 -> 149   (+ sample_time_ns, + applied_cmd_sequence,
-//                                       + echo_cmd_sequence, echo_hold_us, + F_ext)
-//   ArmCommandMsg   47 ->  55 ->  56   (+ sample_time_ns, + clutch)
+// Wire contract: these sizes must equal the avatar repo's include/common.hpp and
+// teleop_orchestrator/live/wire.py. A mismatch drops packets silently on size.
 static_assert(sizeof(MsgHeader)      == 23,  "MsgHeader size mismatch");
 static_assert(sizeof(ArmCommandMsg)  == 56,  "ArmCommandMsg size mismatch");
 static_assert(sizeof(ArmStateMsg)    == 149, "ArmStateMsg size mismatch");

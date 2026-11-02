@@ -148,12 +148,8 @@ bool UTeleOpConfig::LoadStream(const FString& Path) {
         // FStreamConfig::TwinRemoteIP).
         (*TwinObj)->TryGetStringField(TEXT("remote_ip"),     Stream.TwinRemoteIP);
 
-        // "enabled" lets a session opt out of the twin without deleting the
-        // block, for the common case where the twin process simply isn't
-        // running. Disabled means the source is never registered at all --
-        // no socket, no decode thread, no reconnect timer, and no twin entry
-        // in the main-view toggle. Absent defaults to true so existing
-        // configs behave as before.
+        // "enabled" lets a session opt out of the twin without deleting the block;
+        // disabled means the source is never registered. Absent defaults to true.
         bool bTwinEnabled = true;
         (*TwinObj)->TryGetBoolField(TEXT("enabled"), bTwinEnabled);
 

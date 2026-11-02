@@ -2,18 +2,10 @@
 
 #include "CoreMinimal.h"
 
-// Right-eye wink detector: fires once when the eye has been reported closed
-// for BlinkThreshold seconds, then waits CooldownDuration before it can fire
-// again.
-//
-// DropoutTolerance: the tracker's per-eye "closed" flag is thresholded eye
-// openness, and during a deliberate wink the lid sits near that threshold,
-// so the flag flickers open for a frame or two. Previously a single "open"
-// frame reset the accumulator, the 150 ms had to start over, and the wink
-// usually ended before it got there -- a press that simply didn't happen.
-// Open gaps shorter than DropoutTolerance are now bridged; only a sustained
-// open (> DropoutTolerance) counts as the eye actually reopening.
-// 0 restores the old reset-on-any-open-frame behaviour.
+// Right-eye wink detector: fires once the eye has been reported closed for
+// BlinkThreshold seconds, then waits CooldownDuration. Open gaps shorter than
+// DropoutTolerance are bridged, since the closed flag flickers while the lid sits
+// near the threshold. 0 = reset on any open frame.
 struct FWinkGesture {
 	float BlinkThreshold   = 0.15f;
 	float CooldownDuration = 0.4f;

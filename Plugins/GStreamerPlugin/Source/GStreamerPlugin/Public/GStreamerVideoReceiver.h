@@ -66,8 +66,7 @@ struct FReceiverConfig
     FString SenderIP = TEXT("127.0.0.1");
     int32   ReportIntervalMs = 500;
     // rtpjitterbuffer latency: how long it waits for a missing or reordered packet.
-    // In-order packets pass straight through (glass-to-glass bench, 2026-10-15: 0 vs 50 ms
-    // made no difference on localhost), so this only costs time when packets go missing.
+    // In-order packets pass straight through, so it only costs time on loss.
     int32   JitterBufferMs = 50;
 };
 

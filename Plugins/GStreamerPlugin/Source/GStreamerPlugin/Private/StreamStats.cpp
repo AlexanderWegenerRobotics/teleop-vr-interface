@@ -41,7 +41,6 @@ uint32 FReportRunnable::Run() {
         NextSec += PeriodSec;
     }
 
-    //UE_LOG(LogTemp, Log, TEXT("StreamStats: report thread stopped"));
     return 0;
 }
 

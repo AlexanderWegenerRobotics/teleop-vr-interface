@@ -73,13 +73,7 @@ void UTrackedControllerComponent::TickComponent(float DeltaTime, ELevelTick Tick
         FColor RayColor = bFullClutch ? FColor::Orange : (bOriginValid ? FColor::Green : FColor::Yellow);
         //DrawDebugLine(GetWorld(), Pos, Pos + Fwd * DebugRayLength, RayColor, false, -1.0f, 0, 0.5f);
 
-        //DrawDebugLine(GetWorld(), Pos, Pos + MotionController->GetForwardVector() * 10.f, FColor::Red, false, -1.f, 0, 0.3f);
-        //DrawDebugLine(GetWorld(), Pos, Pos + MotionController->GetRightVector() * 10.f, FColor::Green, false, -1.f, 0, 0.3f);
-        //DrawDebugLine(GetWorld(), Pos, Pos + MotionController->GetUpVector() * 10.f, FColor::Blue, false, -1.f, 0, 0.3f);
 
-        //if (bOriginValid) {
-        //    DrawDebugPoint(GetWorld(), Origin.GetLocation(), 8.0f, FColor::Red, false, -1.0f);
-        //}
     }
 
     if (bPrintDebugInfo && FPlatformTime::Seconds() - LastLogTime > 0.5) {
@@ -142,15 +136,9 @@ void UTrackedControllerComponent::OnGripPressed(const FInputActionValue& Value) 
 #if WITH_PIVOT_CALIBRATION
     if (bCalibCapturing) return;
 #endif
-    // HandGrip held suppresses the grasp toggle, so Pad up/down can step the
-    // motion scale without opening the gripper.
-    //
-    // This branch was briefly RESUME as well. It cannot be, on this hardware:
-    // the IMC binds IA_Grip to the Vive TRACKPAD BUTTON, and the trackpad also
-    // raises IA_PadUp/IA_PadDown from the same physical press. So HandGrip +
-    // Grip and HandGrip + Pad are the same gesture, and the 2026-09-23 session
-    // log shows it -- every RESUME_POLICY from the chord carries a GEAR_CHANGE
-    // at the identical nanosecond. Resume lives on its own button instead.
+    // Hand grip held suppresses the grasp toggle, so Pad up/down can step the motion
+    // scale without opening the gripper. On the Vive the grasp button and the pad
+    // directions are the same physical press, so resume has its own gesture.
     if (bHandGripHeld) return;
     bGripHeld = !bGripHeld;
 }
@@ -165,21 +153,10 @@ void UTrackedControllerComponent::OnHandGripPressed(const FInputActionValue& Val
 
 void UTrackedControllerComponent::OnHandGripReleased(const FInputActionValue& Value) {
     bHandGripHeld = false;
-    // A TAP -- pressed and released without touching the pad -- is RESUME.
-    // A hold with a pad press in it was a scale change, and resumes nothing.
-    //
-    // Fires on release rather than press so the two gestures can share this
-    // button at all: on press there is no way yet to know which one it will
-    // turn out to be. A tap completes in well under a tenth of a second, so
-    // the operator does not feel the difference.
-    //
-    // The hand grip is the only input on a Vive controller that is under the
-    // hand at rest and not already carrying a per-tick job: the trigger is the
-    // clutch, the trackpad button is the gripper, the trackpad directions are
-    // the gear, and the menu button is out at the top where reaching it means
-    // moving the hand. Handover has to be reachable without moving the hand,
-    // or its cost biases when the operator chooses to hand back -- and that
-    // shows up in the dataset, not just in comfort.
+    // A tap (pressed and released without touching the pad) is RESUME; a hold with a
+    // pad press was a scale change. Fires on release, since only then is the gesture
+    // known. The hand grip is the only input under the hand at rest that has no other
+    // job.
     if (!bPadUsedThisHold) bResumeRequested = true;
     bPadUsedThisHold = false;
 }
@@ -217,14 +194,9 @@ float UTrackedControllerComponent::GetClutchFactor() const {
     return bFullClutch ? 0.0f : 1.0f;
 }
 
-// One-euro filter (Casiez et al.). A fixed low-pass would trade jitter against
-// lag at a single operating point; this one raises its cutoff with speed, so a
-// stationary hand is smoothed hard and a moving one is barely delayed.
-//
-// The tracker is the dominant noise source in this system: in session 002 the
-// operator command carried 3.0 mm rms above 4 Hz on x, with 28% of its velocity
-// power above 6 Hz -- above anything a hand produces, and doubled on the way out
-// by ScaleFactor. See claude/arm-fault-root-cause-001.md.
+// One-euro filter (Casiez et al.): the cutoff rises with speed, so a still hand is
+// smoothed hard and a moving one barely delayed. Tracker noise is the dominant noise
+// source in the command path.
 FVector UTrackedControllerComponent::FilterOneEuro(const FVector& Raw, float DeltaTime) {
     if (FilterMinCutoff <= 0.f || DeltaTime <= KINDA_SMALL_NUMBER) return Raw;
 
@@ -255,9 +227,8 @@ void UTrackedControllerComponent::ResetOneEuro() {
 }
 
 void UTrackedControllerComponent::UpdateScaledTranslation(float DeltaTime) {
-    // Any frame we do not integrate invalidates the reference: leaving
-    // PrevTrackedLocation standing across a dropout or a clutch makes the first
-    // frame afterwards integrate the whole gap in one step.
+    // Any frame that is not integrated invalidates the reference, otherwise the first
+    // frame afterwards integrates the whole gap.
     if (!bOriginValid || !MotionController || TrackingState != EControllerTrackingState::Tracking || bFullClutch) {
         bPrevLocationValid = false;
         ResetOneEuro();
@@ -275,11 +246,8 @@ void UTrackedControllerComponent::UpdateScaledTranslation(float DeltaTime) {
 
     FVector TickDelta = CurrentLocation - PrevTrackedLocation;
 
-    // A tracked step implying more than MaxTrackedSpeed is a tracker
-    // discontinuity, not an operator. Integrating it verbatim is how a
-    // single-frame glitch became a 143 mm command step and faulted the arm on
-    // 2026-09-16 -- see claude/arm-fault-root-cause-001.md. Re-seed and skip the
-    // frame: the operator loses this frame's motion, which is the cheaper error.
+    // A step implying more than MaxTrackedSpeed is a tracker discontinuity, not the
+    // operator. Re-seed and skip the frame rather than send it as a command step.
     const float GuardDt = FMath::Min(DeltaTime, MaxGuardWindow);
     if (GuardDt > KINDA_SMALL_NUMBER && MaxTrackedSpeed > 0.f) {
         const float StepCm = TickDelta.Size();
@@ -399,9 +367,8 @@ void UTrackedControllerComponent::UpdateClutch() {
 
     if (bFullClutch && MotionController) {
         Origin = MotionController->GetComponentTransform();
-        // ControlPointLocation, not GetLocation: everywhere else seeds this from
-        // the control point, and mixing the two leaves a ControlPointOffset-sized
-        // step waiting to be integrated.
+        // ControlPointLocation, not GetLocation, to match how this is seeded
+        // elsewhere.
         PrevTrackedLocation = ControlPointLocation(Origin);
     }
 
@@ -414,25 +381,11 @@ void UTrackedControllerComponent::UpdateTrackingState() {
         return;
     }
 
-    // IsTracked() returns bTracked, which UMotionControllerComponent sets from
-    // whether GetControllerOrientationAndPosition() produced a pose at all --
-    // not from whether that pose is optically tracked. OpenXR reports position
-    // as VALID for an inferred pose and only clears _TRACKED_BIT, so a wand
-    // SteamVR is dead-reckoning off its IMU still answers IsTracked() == true.
-    // CurrentTrackingStatus, set from GetControllerTrackingStatus(), is the
-    // field that separates the two.
-    //
-    // This matters with one base station: the wand drops below the sensor count
-    // the solver needs without any visible occlusion, position then comes from a
-    // double-integrated accelerometer and drifts tens of mm in a fraction of a
-    // second, and the snap back when optical lock returns lands in one frame.
-    // Integrating that is indistinguishable from the operator moving their hand
-    // 70 mm in 39 ms -- which is what the command log showed while the operator
-    // was holding still. See claude/session-002-findings.md.
-    //
-    // Treat inertial-only as Stale: UpdateScaledTranslation stops integrating
-    // and drops its reference, so the recovery snap is discarded rather than
-    // accumulated, and SendArmCommands withholds the command for those frames.
+    // IsTracked() is also true for an IMU dead-reckoned pose; OpenXR only clears the
+    // tracked bit, which CurrentTrackingStatus exposes. With one base station this
+    // happens without visible occlusion and the pose drifts, then snaps back.
+    // Treat inertial-only as Stale: integration stops and drops its reference, so the
+    // snap is discarded, and no command is sent for those frames.
     const bool bOpticallyTracked = MotionController->IsTracked()
         && MotionController->CurrentTrackingStatus == ETrackingStatus::Tracked;
 

@@ -2,7 +2,7 @@
 
 Immersive bimanual robot teleoperation in Unreal Engine 5.4. An operator wearing an HTC Vive Pro Eye drives two Franka arms and a pan-tilt head over the public internet, sees the robot's cameras as a stereo layer in the headset, and works through a UI driven by gaze and voice — because both hands are already busy holding the robot.
 
-This repository is the **operator side**. The robot-side backend — control loops, MuJoCo simulation, video streamer — lives in [teleop-simulator](https://github.com/AlexanderWegenerRobotics/teleop-simulator).
+This repository is the **operator side**. The robot-side backend — control loops, MuJoCo simulation, video streamer — lives in [teleop-avatar](https://github.com/AlexanderWegenerRobotics/teleop-avatar).
 
 ![Bimanual sorting task: both arms driven from the headset while the operator moves, with the live HUD showing measured one-way latency](docs/gifs/sorting_bimanual.gif)
 
@@ -76,7 +76,7 @@ Generate project files for `teleop_vr_interface.uproject` and build the `teleop_
 
 ### Run
 
-Start the robot-side backend first (see [teleop-simulator](https://github.com/AlexanderWegenerRobotics/teleop-simulator)), then launch this project in VR preview or as a packaged build. You are connected when video appears in the headset and the avatar state walks `IDLE → HOMING → AWAITING`; engaging from the tray moves it to `ENGAGED` and the arms begin following the controllers.
+Start the robot-side backend first (see [teleop-avatar](https://github.com/AlexanderWegenerRobotics/teleop-avatar)), then launch this project in VR preview or as a packaged build. You are connected when video appears in the headset and the avatar state walks `IDLE → HOMING → AWAITING`; engaging from the tray moves it to `ENGAGED` and the arms begin following the controllers.
 
 ### Without a robot
 

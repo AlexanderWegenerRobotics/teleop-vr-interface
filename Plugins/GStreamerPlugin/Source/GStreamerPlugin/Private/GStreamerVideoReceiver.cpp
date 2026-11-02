@@ -12,12 +12,10 @@
 #include <string>
 
 // ---------------------------------------------------------------------------
-// GPU decode verdict — process-wide, decided once
+// GPU decode verdict, decided once per process
 // ---------------------------------------------------------------------------
-// Whether nvh264dec actually works is a property of the machine, not of any
-// individual stream, so it is settled once and reused. Previously every stream
-// re-ran its own 4 s probe; with four streams that was 16 s of startup spent
-// re-answering the same question.
+// Whether nvh264dec works is a property of the machine, so every stream reuses one
+// answer.
 namespace {
     enum class EGpuVerdict : int32 { Unknown = 0, Good = 1, Bad = -1 };
     std::atomic<int32> GGpuVerdict{ static_cast<int32>(EGpuVerdict::Unknown) };
@@ -81,12 +79,9 @@ namespace {
 // ---------------------------------------------------------------------------
 // Render-thread upload
 // ---------------------------------------------------------------------------
-// Frames are copied into their textures on the render thread right before the
-// view family is rendered, instead of from the game-thread tick. The game thread
-// runs a frame ahead of the render thread, so picking up the frame here should
-// show it roughly one display frame earlier. High priority so it runs before
-// other extensions (the HMD's stereo layer copy included, if that copy happens
-// in its own PreRenderViewFamily).
+// Frames are copied into their textures on the render thread just before the view
+// family renders, about one display frame earlier than from the game-thread tick.
+// High priority so it runs before other extensions such as the HMD stereo layer copy.
 
 class FVideoUploadExtension : public FSceneViewExtensionBase
 {
@@ -430,12 +425,9 @@ bool FGStreamerVideoReceiver::Initialize(const FReceiverConfig& Config)
 
     Config_ = Config;
 
-    // Prefer GPU decode (nvh264dec) when present; if its pipeline can't be built (missing
-    // CUDA elements) fall back to CPU here, and if the decoder reports a hard error that
-    // is caught and recovered in Start().
-    //
-    // Once any stream in this process has proven the GPU decoder broken, later streams
-    // skip the attempt entirely rather than each rediscovering it.
+    // Prefer GPU decode (nvh264dec); fall back to CPU if its pipeline cannot be
+    // built, or on a hard decoder error (recovered in Start()). Once a stream has
+    // found the GPU decoder broken, later streams skip it.
     UploadState_ = MakeShared<FVideoUploadState, ESPMode::ThreadSafe>();
 
     bUsingGpuDecode_  = GStreamerNvdecAvailable() && GetGpuVerdict() != EGpuVerdict::Bad;
@@ -535,20 +527,10 @@ bool FGStreamerVideoReceiver::Start()
         return false;
     }
 
-    // Decide GPU vs CPU on evidence, not on a timeout.
-    //
-    // This previously waited up to 4 s for the pipeline to reach PLAYING and demoted to
-    // CPU if it didn't. That conflates three different questions -- can this machine
-    // decode on the GPU, has the pipeline finished negotiating, and is the sender
-    // actually sending -- and only measures the second. A live RTP pipeline cannot
-    // finish negotiating until the sender's first keyframe arrives, so on a stream whose
-    // sender is offline (e.g. a wrist cam that isn't running) "not PLAYING yet" simply
-    // means "no data yet". Those streams were misdiagnosed as GPU failures, permanently
-    // downgraded to software decode, and cost 4 s of blocking startup each.
-    //
-    // Now the only thing that demotes is an explicit ERROR on the bus, and the question
-    // is asked once per process. If the GPU decoder is genuinely broken it will say so
-    // here; if it breaks later, the frame-pull thread already drains and logs bus errors.
+    // GPU vs CPU is decided on an explicit bus ERROR, not a timeout: a live RTP
+    // pipeline only reaches PLAYING after the sender's first keyframe, so an offline
+    // sender is not a GPU failure. Asked once per process; later errors are drained
+    // and logged by the frame-pull thread.
     if (bUsingGpuDecode_ && bUsingGpuConvert_
         && GCudaConvertVerdict.load() == static_cast<int32>(EGpuVerdict::Unknown))
     {
