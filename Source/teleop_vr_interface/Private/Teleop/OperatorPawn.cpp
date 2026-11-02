@@ -231,6 +231,8 @@ AOperatorPawn::AOperatorPawn() {
 	}
 	LeftAlignmentPanel  = CreateDefaultSubobject<UAlignmentPanelComponent>(TEXT("LeftAlignmentPanel"));
 	RightAlignmentPanel = CreateDefaultSubobject<UAlignmentPanelComponent>(TEXT("RightAlignmentPanel"));
+	LeftGraspRuler  = CreateDefaultSubobject<UGraspRulerComponent>(TEXT("LeftGraspRuler"));
+	RightGraspRuler = CreateDefaultSubobject<UGraspRulerComponent>(TEXT("RightGraspRuler"));
 	if (UMaterialInterface* LoadedPanelMat = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Materials/M_AlignmentPanel.M_AlignmentPanel"))) {
 		LeftAlignmentPanel->PanelMaterial  = LoadedPanelMat;
 		RightAlignmentPanel->PanelMaterial = LoadedPanelMat;
@@ -503,6 +505,30 @@ void AOperatorPawn::BeginPlay() {
 			}
 			LeftAlignmentPanel->Initialize(GhostOverlay, 0);
 			RightAlignmentPanel->Initialize(GhostOverlay, 1);
+		}
+		if (Config->Overlay.bGraspRuler) {
+			const auto& O = Config->Overlay;
+			FGraspRulerSettings RS;
+			RS.TableZ = O.GraspRulerTableZ;
+			RS.XAtY = O.GraspRulerXAtY;
+			RS.XFrom = O.GraspRulerXFrom;
+			RS.XTo = O.GraspRulerXTo;
+			RS.XOuter = O.GraspRulerXOuter >= 0.f ? 1.f : -1.f;
+			RS.YAtX = O.GraspRulerYAtX;
+			RS.YFrom = O.GraspRulerYFrom;
+			RS.YTo = O.GraspRulerYTo;
+			RS.YOuter = O.GraspRulerYOuter >= 0.f ? 1.f : -1.f;
+			RS.TapeX = O.GraspRulerTapeX;
+			RS.TapeY = O.GraspRulerTapeY;
+			RS.TapeHeight = O.GraspRulerTapeHeightM;
+			RS.BandWidth = O.GraspRulerBandWidthM;
+			RS.TapeBandWidth = O.GraspRulerTapeWidthM;
+			RS.LoupeGain = O.GraspRulerLoupeGain;
+			RS.LoupeHalfRange = O.GraspRulerLoupeHalfRangeM;
+			RS.BaseAlpha = O.GraspRulerBaseAlpha;
+			RS.UVBits = O.GraspRulerUVBits;
+			LeftGraspRuler->Initialize(GhostOverlay, RS, true);
+			RightGraspRuler->Initialize(GhostOverlay, RS, false);
 		}
 	}
 
@@ -846,6 +872,8 @@ void AOperatorPawn::BeginPlay() {
 	                    Config->Overlay.bIntentHighlight ? IntentHighlight.Get() : nullptr);
 	if (bOverlayEnabled_ && Config->Overlay.bAlignmentPanel)
 		NudgeReceiver->SetAlignmentPanels(LeftAlignmentPanel, RightAlignmentPanel);
+	if (bOverlayEnabled_ && Config->Overlay.bGraspRuler)
+		NudgeReceiver->SetGraspRulers(LeftGraspRuler, RightGraspRuler);
 
 	if (VideoLogger_) {
 		VideoLogger_->StartLogging(SessionDir);
@@ -2992,32 +3020,32 @@ void AOperatorPawn::UpdateWristViews(float DeltaTime) {
 	const FGazeData& G = Gaze->GetGazeData();
 	const bool bModeWants = WristViewMode_ == TEXT("always");
 
-	for (uint8 Arm = 0; Arm < 2; ++Arm) {
-		UWristViewComponent* V = WristView(Arm);
-		if (!V) continue;
+	UTexture2D* Tex[2]      = { nullptr, nullptr };
+	bool        bReceiving[2] = { false, false };
+	bool        bAnchor[2]    = { false, false };
+	FVector2D   AnchorCm[2]   = { FVector2D::ZeroVector, FVector2D::ZeroVector };
 
-		UTexture2D* Tex = nullptr;
-		bool bReceiving = false;
+	for (uint8 Arm = 0; Arm < 2; ++Arm) {
 		const int32 Idx = WristStreamIdx_[Arm];
 		if (Idx != INDEX_NONE && PiPSources_.IsValidIndex(Idx) && PiPSources_[Idx]) {
 			PiPSources_[Idx]->UpdateTexture(PiPTextures_[Idx]);
-			Tex = PiPTextures_[Idx];
-			bReceiving = PiPSources_[Idx]->GetStats().bIsReceiving;
+			Tex[Arm] = PiPTextures_[Idx];
+			bReceiving[Arm] = PiPSources_[Idx]->GetStats().bIsReceiving;
 		}
 
-		bool bAnchor = false;
-		FVector2D AnchorCm = FVector2D::ZeroVector;
 		if (ComLink->IsArmAlive(Arm) && Q.X > 0.0 && Q.Y > 0.0) {
 			const ArmStateMsg S = ComLink->PeekArmState(Arm);
 			FVector2D UV;
 			if (GhostOverlay->ProjectProtocolPointToUV(FVector(S.position[0], S.position[1], S.position[2]), UV)) {
-				AnchorCm = FVector2D((UV.X - 0.5) * Q.X, (0.5 - UV.Y) * Q.Y);
-				bAnchor  = true;
+				AnchorCm[Arm] = FVector2D((UV.X - 0.5) * Q.X, (0.5 - UV.Y) * Q.Y);
+				bAnchor[Arm]  = true;
 			}
 		}
-
-		V->UpdateView(Tex, bModeWants && bReceiving, bAnchor, AnchorCm, VideoQuadWorld_, D, bVideoLayersWorldLocked_, G, DeltaTime);
 	}
+
+	for (uint8 Arm = 0; Arm < 2; ++Arm)
+		if (UWristViewComponent* V = WristView(Arm))
+			V->UpdateView(Tex[Arm], bModeWants && bReceiving[Arm], bAnchor[Arm], AnchorCm[Arm], VideoQuadWorld_, D, bVideoLayersWorldLocked_, G, DeltaTime);
 }
 
 void AOperatorPawn::ApplyControlPanelSet(bool bWorldLocked) {

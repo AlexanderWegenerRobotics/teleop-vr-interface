@@ -24,7 +24,7 @@
     },
     "pip_streams": [
         { "name": "camera right", "enabled": false, "port": 5010, "feedback_port": 5011, "status_port": 5012 },   // bimanual: true
-        { "name": "camera left",  "enabled": true,  "port": 5013, "feedback_port": 5014, "status_port": 5015 },   // desk wrist cam + bimanual
+        { "name": "camera left",  "enabled": false, "port": 5013, "feedback_port": 5014, "status_port": 5015 },   // desk wrist cam, bimanual: true
         { "name": "operator",     "port": 5016, "local_preview": true }
     ],
 

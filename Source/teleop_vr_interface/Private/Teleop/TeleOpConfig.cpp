@@ -324,6 +324,38 @@ bool UTeleOpConfig::LoadOverlay(const FString& Path) {
         FString Frame;
         if ((*ApObj)->TryGetStringField(TEXT("frame"), Frame)) Overlay.bAlignmentPanelViewAligned = Frame.Equals(TEXT("view"), ESearchCase::IgnoreCase);
     }
+    const TSharedPtr<FJsonObject>* GrObj = nullptr;
+    if (Obj->TryGetObjectField(TEXT("grasp_ruler"), GrObj) && GrObj) {
+        const FJsonObject& G = **GrObj;
+        G.TryGetBoolField(TEXT("enabled"), Overlay.bGraspRuler);
+        G.TryGetNumberField(TEXT("table_z"), Overlay.GraspRulerTableZ);
+        G.TryGetNumberField(TEXT("band_width_m"), Overlay.GraspRulerBandWidthM);
+        G.TryGetNumberField(TEXT("loupe_gain"), Overlay.GraspRulerLoupeGain);
+        G.TryGetNumberField(TEXT("loupe_half_range_m"), Overlay.GraspRulerLoupeHalfRangeM);
+        G.TryGetNumberField(TEXT("base_alpha"), Overlay.GraspRulerBaseAlpha);
+        G.TryGetNumberField(TEXT("uv_bits"), Overlay.GraspRulerUVBits);
+        const TSharedPtr<FJsonObject>* XObj = nullptr;
+        if (G.TryGetObjectField(TEXT("x_ruler"), XObj) && XObj) {
+            (*XObj)->TryGetNumberField(TEXT("at_y"), Overlay.GraspRulerXAtY);
+            (*XObj)->TryGetNumberField(TEXT("from"), Overlay.GraspRulerXFrom);
+            (*XObj)->TryGetNumberField(TEXT("to"), Overlay.GraspRulerXTo);
+            (*XObj)->TryGetNumberField(TEXT("outer"), Overlay.GraspRulerXOuter);
+        }
+        const TSharedPtr<FJsonObject>* YObj = nullptr;
+        if (G.TryGetObjectField(TEXT("y_ruler"), YObj) && YObj) {
+            (*YObj)->TryGetNumberField(TEXT("at_x"), Overlay.GraspRulerYAtX);
+            (*YObj)->TryGetNumberField(TEXT("from"), Overlay.GraspRulerYFrom);
+            (*YObj)->TryGetNumberField(TEXT("to"), Overlay.GraspRulerYTo);
+            (*YObj)->TryGetNumberField(TEXT("outer"), Overlay.GraspRulerYOuter);
+        }
+        const TSharedPtr<FJsonObject>* TObj = nullptr;
+        if (G.TryGetObjectField(TEXT("tape"), TObj) && TObj) {
+            (*TObj)->TryGetNumberField(TEXT("x"), Overlay.GraspRulerTapeX);
+            (*TObj)->TryGetNumberField(TEXT("y"), Overlay.GraspRulerTapeY);
+            (*TObj)->TryGetNumberField(TEXT("height_m"), Overlay.GraspRulerTapeHeightM);
+            (*TObj)->TryGetNumberField(TEXT("width_m"), Overlay.GraspRulerTapeWidthM);
+        }
+    }
     UE_LOG(LogTemp, Log, TEXT("TeleOpConfig: overlay layer %s"),
         Overlay.bEnabled ? TEXT("ENABLED") : TEXT("DISABLED (\"enabled\": false)"));
 

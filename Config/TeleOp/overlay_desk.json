@@ -1,7 +1,11 @@
 {
     "enabled":               true,
     "intent_highlight": { "enabled": true, "min_prob": 0.5, "radius_cm": 8.0, "goal_radius_cm": 4.0, "goal_lift_m": 0.035, "hold_s": 0.5, "tint": [1.0, 0.75, 0.2] },
-    "alignment_panel": { "enabled": true, "size_cm": 8.0, "side_offset_cm": 12.0, "up_offset_cm": 4.0, "follow_tau_s": 0.12, "auto_scale": true, "frame": "world" },
+    "alignment_panel": { "enabled": false, "size_cm": 8.0, "side_offset_cm": 12.0, "up_offset_cm": 4.0, "follow_tau_s": 0.12, "auto_scale": true, "frame": "world" },
+    "grasp_ruler": { "enabled": true, "table_z": 0.70, "band_width_m": 0.016, "loupe_gain": 3.0, "loupe_half_range_m": 0.02, "base_alpha": 0.45, "uv_bits": 0,
+                     "x_ruler": { "at_y": -0.315, "from": 0.45, "to": 1.05, "outer": -1 },
+                     "y_ruler": { "at_x": 0.435, "from": -0.32, "to": 0.35, "outer": -1 },
+                     "tape": { "x": 0.345, "y": -0.10, "height_m": 0.15, "width_m": 0.010 } },   // world m; rulers hug the spawn area (x 0.45-0.78, y +-0.30), desk_cam cuts off the corner nearer than that
 
     "near_threshold_m":      0.03,
     "far_threshold_m":       0.15,

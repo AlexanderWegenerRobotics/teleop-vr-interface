@@ -205,6 +205,26 @@ struct FOverlayConfig
     float AlignmentPanelFollowTauS   = 0.12f;
     bool  bAlignmentPanelAutoScale   = true;
     bool  bAlignmentPanelViewAligned = false;
+
+    bool  bGraspRuler            = false;
+    float GraspRulerTableZ       = 0.70f;
+    float GraspRulerXAtY         = -0.36f;
+    float GraspRulerXFrom        = 0.40f;
+    float GraspRulerXTo          = 0.95f;
+    float GraspRulerXOuter       = -1.f;
+    float GraspRulerYAtX         = 0.40f;
+    float GraspRulerYFrom        = -0.36f;
+    float GraspRulerYTo          = 0.35f;
+    float GraspRulerYOuter       = -1.f;
+    float GraspRulerTapeX        = 0.43f;
+    float GraspRulerTapeY        = -0.33f;
+    float GraspRulerTapeHeightM  = 0.15f;
+    float GraspRulerBandWidthM   = 0.016f;
+    float GraspRulerTapeWidthM   = 0.010f;
+    float GraspRulerLoupeGain    = 3.f;
+    float GraspRulerLoupeHalfRangeM = 0.02f;
+    float GraspRulerBaseAlpha    = 0.45f;
+    int32 GraspRulerUVBits       = 0;
     float NearThresholdM = 0.03f;
     float FarThresholdM  = 0.15f;
     float MinOpacity     = 0.15f;

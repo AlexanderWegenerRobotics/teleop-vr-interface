@@ -28,6 +28,7 @@
 #include "Video/WorkspaceBoundaryComponent.h"
 #include "Video/AlignmentPanelComponent.h"
 #include "Video/WristViewComponent.h"
+#include "Video/GraspRulerComponent.h"
 #include "Networking/UdpSocket.h"
 #include "Teleop/CommandThread.h"
 #include "Teleop/EpisodeEventReceiver.h"
@@ -101,6 +102,8 @@ protected:
 	UPROPERTY() TObjectPtr<UWristViewComponent> RightWristView;
 	UPROPERTY() TObjectPtr<UAlignmentPanelComponent> LeftAlignmentPanel;
 	UPROPERTY() TObjectPtr<UAlignmentPanelComponent> RightAlignmentPanel;
+	UPROPERTY() TObjectPtr<UGraspRulerComponent> LeftGraspRuler;
+	UPROPERTY() TObjectPtr<UGraspRulerComponent> RightGraspRuler;
 
 	UPROPERTY(EditAnywhere, Category = "Logging")
 	FString LogBaseDirectory = TEXT("Saved/Logs/TeleOp/");

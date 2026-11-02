@@ -4,6 +4,7 @@
 #include "Teleop/TeleOpLogger.h"
 #include "Video/IntentHighlightComponent.h"
 #include "Video/AlignmentPanelComponent.h"
+#include "Video/GraspRulerComponent.h"
 #include "Shared/protocol.hpp"
 #include "Misc/DateTime.h"
 
@@ -108,6 +109,66 @@ void UNudgeReceiver::HandleDatagram(const uint8* Data, int32 Size) {
             return;
         }
         if (Type != TEXT("cue_command")) return;
+        if (str("primitive") == TEXT("grasp_ruler")) {
+            const FString Arm = str("arm");
+            const int32 Idx = Arm == TEXT("left") ? 0 : (Arm == TEXT("right") ? 1 : -1);
+            if (Idx < 0 || !Rulers_[Idx]) return;
+            auto pit = m.find("payload");
+            if (pit == m.end()) return;
+            std::map<std::string, msgpack::object> p;
+            pit->second.convert(p);
+            auto pflag = [&](const char* k) {
+                auto it = p.find(k);
+                if (it == p.end()) return false;
+                if (it->second.type == msgpack::type::BOOLEAN) return it->second.as<bool>();
+                return it->second.as<double>() != 0.0;
+            };
+            auto pnum = [&](const char* k, double d) { auto it = p.find(k); return it == p.end() ? d : it->second.as<double>(); };
+            auto pvec = [&](const char* k, float* Out, int N) {
+                auto it = p.find(k);
+                if (it == p.end()) return false;
+                std::vector<double> v;
+                it->second.convert(v);
+                for (int i = 0; i < N && i < (int)v.size(); ++i) Out[i] = static_cast<float>(v[i]);
+                return (int)v.size() >= N;
+            };
+            auto ppair = [&](const char* k) {
+                float v[2] = { 0.f, 0.f };
+                pvec(k, v, 2);
+                return FVector2f(v[0], v[1]);
+            };
+            auto pbands = [&](const char* k, TArray<FVector2f>& Out) {
+                auto it = p.find(k);
+                if (it == p.end()) return;
+                std::vector<std::vector<double>> v;
+                it->second.convert(v);
+                for (const auto& b : v) if (b.size() >= 2) Out.Add(FVector2f(static_cast<float>(b[0]), static_cast<float>(b[1])));
+            };
+            FGraspRulerState S;
+            S.bActive = pflag("active");
+            if (S.bActive) {
+                S.bValid = pflag("valid");
+                pvec("tcp", S.Tcp, 3);
+                S.bHasAim = pvec("aim", S.Aim, 3);
+                S.TolXY = static_cast<float>(pnum("tol_xy", 0.008));
+                S.TolZ = static_cast<float>(pnum("tol_z", 0.008));
+                pbands("bands_x", S.BandsX);
+                pbands("bands_y", S.BandsY);
+                S.ExtentX = ppair("extent_x");
+                S.ExtentY = ppair("extent_y");
+                S.ExtentZ = ppair("extent_z");
+                auto oit = p.find("ok");
+                if (oit != p.end()) {
+                    std::vector<bool> ok;
+                    oit->second.convert(ok);
+                    for (int i = 0; i < 3 && i < (int)ok.size(); ++i) S.Ok[i] = ok[i];
+                }
+                S.bNear = pflag("near");
+                S.bReady = pflag("ready");
+            }
+            Rulers_[Idx]->SetState(S);
+            return;
+        }
         FCueCommand Cue;
         Cue.Seq       = static_cast<uint32>(num("seq", 0));
         Cue.Nudge     = str("nudge");
